@@ -1,10 +1,82 @@
-# Wooting Signals
+# Wooting keyboard playground
 
-Turn your Wooting keyboard into a live status display.
+Interactive toys and visualizations for Wooting keyboards. Pick a toy, play, stop,
+and return to your normal lighting. Wootility remains the configuration tool.
 
-Wooting Signals reads local and remote signals — commands, GitHub, timers, APIs, and manual profiles — then paints temporary RGB overlays on your keyboard. Use it for build feedback, CI status, focus sessions, alerts, and ambient workstation cues.
+The binary is still named `wooting-signals` for compatibility. Existing status
+utilities (build feedback, CI, timers, and API alerts) remain available, but the
+main direction is keyboard toys rather than a workstation dashboard.
+
+## First toy: pressure-driven ripples
+
+Press a key lightly for a gentle ripple; press deeper for brighter expanding
+rings. Hold to keep emitting, release to let them fade. "Pressure" means measured
+key travel, not force. No audio capture, network access, or Accessibility access
+is used by the toy itself.
+
+Preview synthetic key travel without hardware or either native SDK:
+
+```sh
+cargo run -- toy ripples --preview
+cargo run -- toy ripples --preview --ticks 24 --format svg > ripples.svg
+```
+
+For live input, first build the RGB SDK using the quick-start instructions below.
+Then download **Analog SDK v0.9.1** from the
+[official releases](https://github.com/WootingKb/wooting-analog-sdk/releases/tag/v0.9.1)
+and extract it somewhere you control. Use the archive matching your machine:
+
+| Platform | Archive suffix | Library inside the archive |
+| --- | --- | --- |
+| Apple Silicon | `aarch64-apple-darwin.tar.gz` | `release/libwooting_analog_sdk_dist.dylib` |
+| Intel Mac | `x86_64-apple-darwin.tar.gz` | `release/libwooting_analog_sdk_dist.dylib` |
+| Linux x86-64 | `x86_64-unknown-linux-gnu.tar.gz` | `release/libwooting_analog_sdk_dist.so` |
+
+No system-wide installation is required when using the distributable library.
+The upstream Homebrew Analog SDK package is documented as outdated. On macOS,
+follow the official SDK security/permission guidance if loading or HID access is
+blocked. Linux needs permission to access the keyboard's HID interfaces (udev).
+
+```sh
+export WOOTING_ANALOG_SDK_PATH="/absolute/path/to/release/libwooting_analog_sdk_dist.dylib"
+cargo run -- toy ripples --palette ocean
+# Or use --analog-sdk-path; optionally stop automatically:
+cargo run -- toy ripples --seconds 20 --brightness 96 --fps 30
+```
+
+**First-version limits:** one connected analog keyboard, **80HE ANSI**. The typing
+block (letters, digits, punctuation, Tab, Caps Lock, Enter, Backspace, Shift and
+Space) launches ripples. Fn/custom keys, function keys and navigation keys do not
+yet launch them. Rendering uses the existing approximate spatial grid; the light
+bar has no dedicated mapping yet. Other models/layouts are rejected, not guessed.
+The public Analog SDK C API does not expose v2 physical-position metadata, so
+unusual firmware remappings/layers need hardware validation. OS text layouts are
+not used. Preview input is simulated, not a hardware compatibility test.
+
+### Living alongside Wootility
+
+- The toy **owns the RGB frame while running**; idle keys are dark. This is not a
+  transparent layer over your Wootility animation.
+- Ctrl-C or `--seconds` stops it and calls the RGB SDK's lighting restore/close
+  operation. Runtime read/write failures also attempt restoration and release
+  analog resources. Failed restoration produces a warning; force-kill/crashes
+  cannot guarantee cleanup.
+- No profile, binding, actuation or firmware settings are written. **Typing still
+  reaches the focused application**: use a blank editor while playing.
+- Stop the toy before editing live lighting in Wootility. Pause competing RGB
+  apps or automatic profile switching if they interfere; there is no ownership
+  arbitration or automatic Wootility detection yet.
+- Nothing is installed at login and no background service is started. A future
+  menu-bar launcher can wrap this same start/stop lifecycle.
+
+macOS is the primary target; the loader also supports Linux. Physical key/LED
+alignment, live coexistence, and restoration still need testing on an attached
+80HE. The implementation is covered by deterministic renderer and simulated SDK
+tests, not a claim of verified hardware behavior.
 
 ## What it does
+
+- **Ripples**: travel-driven expanding rings on an 80HE, plus offline previews.
 
 - **Command Pulse**: wraps a command and shows running / success / failure lighting.
 - **GitHub / CI Beacon**: maps Actions and PR status to keyboard zones.

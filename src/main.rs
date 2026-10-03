@@ -8,6 +8,7 @@ mod runner;
 mod scenes;
 mod sdk;
 mod signals;
+mod toys;
 
 use clap::{Parser, Subcommand};
 use config::AppConfig;
@@ -42,6 +43,11 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Play an interactive keyboard toy; stop to restore normal lighting.
+    Toy {
+        #[command(subcommand)]
+        command: toys::ToyCommand,
+    },
     /// Print connected keyboard metadata.
     Info,
     /// Print the inferred keyboard layout summary.
@@ -279,6 +285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let interrupted = install_ctrlc_handler()?;
 
     match cli.command {
+        Command::Toy { command } => toys::run(command, cli.sdk_path.as_deref(), &interrupted)?,
         Command::Info => {
             let keyboard = WootingRgb::open(cli.sdk_path.as_deref())?;
             print_info(keyboard.info());

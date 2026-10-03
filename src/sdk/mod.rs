@@ -1,8 +1,7 @@
 //! Wooting SDK backends used by the signal runtime.
 //!
-//! RGB output is implemented today through the Wooting RGB SDK. Future analog
-//! input should live in an `analog` backend that loads `wooting-analog-sdk_dist`
-//! as an application dependency, not as an Analog SDK plugin.
+//! RGB output and analog input load the official SDKs at runtime. The analog
+//! backend consumes the distributable SDK; it is not an SDK hardware plugin.
 
 pub mod analog;
 pub mod rgb;

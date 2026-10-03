@@ -76,7 +76,7 @@ pub fn preview_device() -> DeviceInfo {
     }
 }
 
-fn print_frames(
+pub(crate) fn print_frames(
     info: &DeviceInfo,
     layout: &KeyboardLayout,
     frames: &[Frame],
