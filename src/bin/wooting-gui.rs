@@ -186,6 +186,13 @@ impl Backend {
     }
 
     fn execute(&self, action: &Action) -> Result<String, String> {
+        if matches!(action, Action::StartEngine)
+            && std::env::var_os("WOOTING_DEV_SUPERVISED").is_some()
+        {
+            return Err(
+                "The development watcher owns the engine; check its terminal output".into(),
+            );
+        }
         let mut command = self.command(action);
         if matches!(action, Action::StartEngine) {
             // The window owns neither the engine lifetime nor its console streams.
@@ -377,14 +384,27 @@ struct MenuBar {
 impl MenuBar {
     fn new(context: &egui::Context) -> Result<Self, Box<dyn std::error::Error>> {
         use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+        let development = std::env::var_os("WOOTING_DEV_SUPERVISED").is_some();
         let menu = Menu::new();
         let show = MenuItem::new("Open controller", true, None);
-        let quit = MenuItem::new("Quit controller (leave engine running)", true, None);
+        let quit = MenuItem::new(
+            if development {
+                "Quit development session"
+            } else {
+                "Quit controller (leave engine running)"
+            },
+            true,
+            None,
+        );
         menu.append_items(&[&show, &quit])?;
         // Constructed by eframe's app creator on the AppKit main/event-loop thread.
         let icon = tray_icon::TrayIconBuilder::new()
-            .with_title("WS")
-            .with_tooltip("Wooting Signals")
+            .with_title(if development { "WS Dev" } else { "WS" })
+            .with_tooltip(if development {
+                "Wooting Signals — Dev"
+            } else {
+                "Wooting Signals"
+            })
             .with_menu(Box::new(menu))
             .build()?;
         let show_id = show.id().clone();
@@ -444,6 +464,9 @@ struct Controller {
     trust_config: bool,
     last_poll: Instant,
     settings_open: bool,
+    dev_supervised: bool,
+    dev_simulation: bool,
+    ripple_preview: gui_preview::RipplePreview,
 }
 
 impl Controller {
@@ -493,6 +516,9 @@ impl Controller {
             trust_config: false,
             last_poll: Instant::now() - Duration::from_secs(5),
             settings_open: false,
+            dev_supervised: std::env::var_os("WOOTING_DEV_SUPERVISED").is_some(),
+            dev_simulation: std::env::var_os("WOOTING_DEV_SIMULATION").is_some(),
+            ripple_preview: gui_preview::RipplePreview::default(),
         }
     }
 
@@ -717,6 +743,22 @@ fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egu
 }
 
 impl Controller {
+    fn ripple_preview_colors(&self) -> gui_preview::RippleColors {
+        if !self.ripple_colors_dirty
+            && let Some(status) = &self.status
+        {
+            return (status.ripple_base_color, status.ripple_color);
+        }
+        if self.ripple_colors.enabled {
+            (
+                Some(self.ripple_colors.base),
+                Some(self.ripple_colors.ripple),
+            )
+        } else {
+            (None, None)
+        }
+    }
+
     fn discard_settings(&mut self) {
         if let Some(status) = &self.status {
             self.brightness = status.brightness;
@@ -817,7 +859,8 @@ impl Controller {
                             }
                         });
                     });
-                    if ui.add_enabled(self.connected, egui::Button::new("Stop standalone engine")).clicked() { self.control(&["stop"]); }
+                    if ui.add_enabled(self.connected && !self.dev_supervised, egui::Button::new("Stop standalone engine")).clicked() { self.control(&["stop"]); }
+                    if self.dev_supervised { ui.small("The development watcher manages process lifetime. Use Ctrl-C in its terminal to stop the session."); }
                 });
                 ui.small("For a login-managed engine, use Stop managed service; stopping it directly may cause it to restart. Stopping a service keeps login enabled.");
                 ui.collapsing("Diagnostics", |ui| {
@@ -840,7 +883,7 @@ impl Controller {
                 });
                 ui.add_space(16.0);
                 let enabled = self.connected && self.status.as_ref().is_some_and(|s| s.enabled);
-                let state = if !self.connected { "Engine offline" } else {
+                let state = if self.dev_simulation { "Development simulation · hardware disabled" } else if !self.connected { "Engine offline" } else {
                     match self.status.as_ref().map(|s| s.state.as_str()) {
                         Some("active") => "Lighting active", Some("retrying") => "Reconnecting",
                         Some("error") => "Needs attention", Some("paused") => "Paused · keyboard in control", _ => "Keyboard lighting",
@@ -852,9 +895,10 @@ impl Controller {
                         ui.label(egui::RichText::new(state).color(if enabled { ACCENT } else { MUTED }));
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let button = egui::Button::new(egui::RichText::new(primary_label(self.connected, enabled)).strong().color(BG))
+                        let label = if self.dev_simulation { "Hardware disabled" } else if self.dev_supervised && !self.connected { "Waiting for engine" } else { primary_label(self.connected, enabled) };
+                        let button = egui::Button::new(egui::RichText::new(label).strong().color(BG))
                             .fill(ACCENT).corner_radius(10).min_size(egui::vec2(156.0, 44.0));
-                        if ui.add_enabled(!self.pending, button).clicked() {
+                        if ui.add_enabled(!self.pending && !self.dev_simulation && (self.connected || !self.dev_supervised), button).clicked() {
                             if !self.connected { self.dispatch(Action::StartEngine); }
                             else { self.control(&[if enabled { "pause" } else { "resume" }]); }
                         }
@@ -902,7 +946,7 @@ impl Controller {
                         if self.preset != "ripples" || !self.ripple_colors.enabled {
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Palette");
-                            for (palette, label) in PALETTES.iter().zip(["Amber", "Neon", "Ocean", "Ember", "Terminal"]) {
+                            for (palette, label) in PALETTES.iter().zip(["Wooting", "Neon", "Ocean", "Ember", "Terminal"]) {
                                 if ui.selectable_label(self.palette == *palette, label).clicked() {
                                     self.palette = (*palette).into(); self.settings_dirty = true;
                                 }
@@ -928,12 +972,12 @@ impl Controller {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(effect_description(&self.preset).0).size(18.0).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new("ILLUSTRATIVE PREVIEW").size(10.0).color(MUTED));
+                            ui.label(egui::RichText::new(if self.preset == "ripples" { "RIPPLE SIMULATION" } else { "ILLUSTRATIVE PREVIEW" }).size(10.0).color(MUTED));
                         });
                     });
-                    let ripple_colors = self.ripple_colors.enabled.then_some((self.ripple_colors.base, self.ripple_colors.ripple));
-                    gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness, ripple_colors);
-                    ui.label(egui::RichText::new("Simulation · not live input, device status or actual frame rate").small().color(MUTED));
+                    let ripple_colors = self.ripple_preview_colors();
+                    gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness, ripple_colors, self.fps, &mut self.ripple_preview);
+                    ui.label(egui::RichText::new(if self.preset == "ripples" { "80HE LED matrix · actual ripple math and draft settings · synthetic input, not device feedback" } else { "Simulation · not live input, device status or actual frame rate" }).small().color(MUTED));
                 });
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new("Choose an effect").size(18.0).strong());
@@ -949,7 +993,7 @@ impl Controller {
                     }
                 });
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("Pause returns control to your keyboard. Closing this window keeps your lighting running.").small().color(MUTED));
+                ui.label(egui::RichText::new(if self.dev_supervised { "Development session · save source to rebuild · Ctrl-C stops owned processes" } else { "Pause returns control to your keyboard. Closing this window keeps your lighting running." }).small().color(MUTED));
             });
         });
         if self.settings_open {
@@ -990,7 +1034,11 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "Wooting Signals",
+        if std::env::var_os("WOOTING_DEV_SUPERVISED").is_some() {
+            "Wooting Signals — Dev"
+        } else {
+            "Wooting Signals"
+        },
         options,
         Box::new(move |cc| Ok(Box::new(Controller::new(&cc.egui_ctx, backend)))),
     )
@@ -1022,6 +1070,58 @@ mod tests {
         assert_eq!(primary_label(true, true), "Pause lighting");
     }
 
+    #[test]
+    fn supervised_and_simulated_gui_cannot_start_untracked_engines() {
+        for (supervised, simulation, label, can_start) in [
+            (false, false, "Start engine", true),
+            (true, false, "Waiting for engine", false),
+            (true, true, "Hardware disabled", false),
+        ] {
+            let (mut app, incoming) = controller_fixture();
+            app.connected = false;
+            app.dev_supervised = supervised;
+            app.dev_simulation = simulation;
+            let context = egui::Context::default();
+            let input = |events| egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(940.0, 850.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let output = context.run(input(vec![]), |ctx| app.show_lighting(ctx));
+            let position = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .expect("primary button should be visible");
+            for pressed in [true, false] {
+                let _ = context.run(
+                    input(vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]),
+                    |ctx| app.show_lighting(ctx),
+                );
+            }
+            assert_eq!(
+                matches!(incoming.try_recv(), Ok(Action::StartEngine)),
+                can_start
+            );
+        }
+    }
+
     fn controller_fixture() -> (Controller, Receiver<Action>) {
         let (requests, incoming) = mpsc::channel();
         let (_outgoing, replies) = mpsc::channel();
@@ -1049,6 +1149,9 @@ mod tests {
             trust_config: false,
             last_poll: Instant::now(),
             settings_open: false,
+            dev_supervised: false,
+            dev_simulation: false,
+            ripple_preview: gui_preview::RipplePreview::default(),
         };
         (app, incoming)
     }
@@ -1367,6 +1470,9 @@ mod tests {
             trust_config: false,
             last_poll: Instant::now() - Duration::from_secs(10),
             settings_open: false,
+            dev_supervised: false,
+            dev_simulation: false,
+            ripple_preview: gui_preview::RipplePreview::default(),
         };
         app.ripple_colors = RippleColors {
             enabled: true,

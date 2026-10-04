@@ -51,6 +51,9 @@ pub struct RgbSdk {
 
 impl RgbSdk {
     pub fn load(explicit_path: Option<&Path>) -> Result<Self, SdkLoadError> {
+        if super::hardware_disabled() {
+            return Err(SdkLoadError::NotFound(super::SIMULATION_NOTICE.into()));
+        }
         let mut errors = Vec::new();
 
         for candidate in library_candidates(explicit_path, env::var_os("WOOTING_RGB_SDK_PATH")) {

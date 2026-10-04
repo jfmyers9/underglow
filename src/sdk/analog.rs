@@ -59,6 +59,9 @@ pub struct AnalogSdk {
 
 impl AnalogSdk {
     pub fn open(path: Option<&Path>) -> Result<Self, AnalogError> {
+        if super::hardware_disabled() {
+            return Err(AnalogError::Load(super::SIMULATION_NOTICE.into()));
+        }
         let mut failures = Vec::new();
         for candidate in library_candidates(path, std::env::var_os("WOOTING_ANALOG_SDK_PATH")) {
             // SAFETY: Loading executable code trusts the user-selected SDK path.

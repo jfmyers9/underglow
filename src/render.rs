@@ -27,19 +27,6 @@ impl Color {
         let scale = |value: u8| ((u16::from(value) * u16::from(max_channel)) / 255) as u8;
         Self::new(scale(self.red), scale(self.green), scale(self.blue))
     }
-
-    fn blend(self, other: Self, amount: u8) -> Self {
-        let blend_channel = |a: u8, b: u8| {
-            let a = u16::from(a) * u16::from(255 - amount);
-            let b = u16::from(b) * u16::from(amount);
-            ((a + b) / 255) as u8
-        };
-        Self::new(
-            blend_channel(self.red, other.red),
-            blend_channel(self.green, other.green),
-            blend_channel(self.blue, other.blue),
-        )
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,67 +104,33 @@ impl fmt::Display for PaletteName {
 
 #[derive(Clone, Debug)]
 pub struct Palette {
-    colors: &'static [Color],
+    colors: &'static [[u8; 3]],
 }
-
-const WOOTING_PALETTE: &[Color] = &[
-    Color::new(0, 180, 255),
-    Color::new(255, 255, 255),
-    Color::new(0, 90, 220),
-];
-const CYBERPUNK_PALETTE: &[Color] = &[
-    Color::new(255, 0, 120),
-    Color::new(0, 255, 255),
-    Color::new(255, 220, 0),
-];
-const OCEAN_PALETTE: &[Color] = &[
-    Color::new(0, 32, 96),
-    Color::new(0, 160, 220),
-    Color::new(120, 255, 255),
-];
-const HEAT_PALETTE: &[Color] = &[
-    Color::new(80, 0, 0),
-    Color::new(255, 64, 0),
-    Color::new(255, 220, 64),
-];
-const TERMINAL_PALETTE: &[Color] = &[
-    Color::new(0, 32, 0),
-    Color::new(0, 220, 64),
-    Color::new(180, 255, 180),
-];
 
 impl PaletteName {
     pub fn palette(self) -> Palette {
-        let colors = match self {
-            Self::Wooting => WOOTING_PALETTE,
-            Self::Cyberpunk => CYBERPUNK_PALETTE,
-            Self::Ocean => OCEAN_PALETTE,
-            Self::Heat => HEAT_PALETTE,
-            Self::Terminal => TERMINAL_PALETTE,
+        let name = match self {
+            Self::Wooting => "wooting",
+            Self::Cyberpunk => "cyberpunk",
+            Self::Ocean => "ocean",
+            Self::Heat => "heat",
+            Self::Terminal => "terminal",
         };
-        Palette { colors }
+        Palette {
+            colors: wooting_signals::ripple::palette_colors(name),
+        }
     }
 }
 
 impl Palette {
     pub fn sample(&self, tick: u32) -> Color {
-        self.colors[usize::try_from(tick).unwrap_or(0) % self.colors.len()]
+        let [r, g, b] = self.colors[usize::try_from(tick).unwrap_or(0) % self.colors.len()];
+        Color::new(r, g, b)
     }
 
     pub fn gradient(&self, position: u8) -> Color {
-        if self.colors.len() == 1 {
-            return self.colors[0];
-        }
-
-        if position == 255 {
-            return self.colors[self.colors.len() - 1];
-        }
-
-        let segments = self.colors.len() - 1;
-        let scaled = usize::from(position) * segments;
-        let index = (scaled / 255).min(segments - 1);
-        let amount = (scaled % 255) as u8;
-        self.colors[index].blend(self.colors[index + 1], amount)
+        let [r, g, b] = wooting_signals::ripple::color_gradient(self.colors, position);
+        Color::new(r, g, b)
     }
 }
 

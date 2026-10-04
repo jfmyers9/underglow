@@ -65,6 +65,10 @@ until saving works again.
 Saved settings win on restart. Configuration snapshots are limited to 256 KiB;
 socket messages to 1 MiB. Keep tokens in environment references, not TOML.
 
+`engine --paused` preserves the selection and visual settings but overrides saved
+enabled intent and persists a paused startup. The development watcher uses this
+for engine replacements so rebuilding cannot replay commands or retake hardware.
+
 ## Recovery and command safety
 
 SDK/input failures close both resources, report the error, and retry after

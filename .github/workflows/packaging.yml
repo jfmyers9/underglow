@@ -1,9 +1,9 @@
 name: Packaging fixtures
 on:
   push:
-    paths: ['packaging/**', 'scripts/**', 'src/**', 'tests/toys_cli.rs', 'Cargo.*', '.github/workflows/packaging.yml']
+    paths: ['packaging/**', 'scripts/**', 'src/**', 'tests/toys_cli.rs', 'Cargo.*', 'Makefile', '.github/workflows/packaging.yml']
   pull_request:
-    paths: ['packaging/**', 'scripts/**', 'src/**', 'tests/toys_cli.rs', 'Cargo.*', '.github/workflows/packaging.yml']
+    paths: ['packaging/**', 'scripts/**', 'src/**', 'tests/toys_cli.rs', 'Cargo.*', 'Makefile', '.github/workflows/packaging.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -32,3 +32,5 @@ jobs:
         run: WOOTING_TEST_BINARY="$PWD/target/debug/wooting-signals" python3 -m unittest discover -s packaging/tests -v
       - name: Shell syntax (no installation or service activation)
         run: for script in scripts/*.sh; do bash -n "$script"; done
+      - name: Development watcher fixtures (no GUI or hardware)
+        run: python3 -m unittest discover -s scripts/tests -v

@@ -38,10 +38,11 @@ registers login startup automatically.
 - Click an effect card: Ripples, Comet, Spectrum (rainbow), Breathe (breath),
   Matrix, or Focus (focus-cockpit). Selection preserves the enabled/paused state;
   the highlighted card follows the engine's confirmed response.
-- The animated keyboard is an **illustrative simulation**, not live input,
-  exact engine frames, or proof that a keyboard is connected. Preview animation
-  continues while lighting is paused and never opens an SDK. The simulation does
-  not demonstrate the device's frame rate.
+- The **ripple simulation** uses the same renderer, color math, and 80HE matrix
+  geometry as the engine. Use **Auto demo**, set synthetic **Pressure**, or
+  click/hold mapped keys. It uses draft brightness, colors, and FPS; it is not
+  live keyboard input or device feedback. Other effects retain illustrative
+  previews. Simulation runs while lighting is paused and never opens an SDK.
 - The main page groups **Brightness** (shown as a percentage), **Palette**, and
   **Frame rate** (1–120 FPS) under **Lighting controls**, before the preview and
   effect cards so frame rate stays visible in compact layouts. More FPS can mean
@@ -56,7 +57,7 @@ registers login startup automatically.
   pressure-driven waves blend toward the ripple color before fading back.
   Brightness scales both colors. Black base keeps the old dark idle look;
   disabling Two-tone ripple restores black idle lighting with palette-based waves.
-  The preview reflects your draft colors but remains a synthetic animation.
+  The preview renders your draft colors with synthetic input.
   Existing profiles keep their original colors until explicitly changed.
 - The fixed header has one primary action: **Start engine**, **Resume lighting**,
   or **Pause lighting**, depending on state. Resume takes lighting control; pause releases
@@ -113,7 +114,10 @@ startup failures include their diagnostic text and log path. Service-managed
 engines use the service's documented log destination. A timed-out control may
 already have applied its action; refresh status before retrying it. Helpers run
 in isolated process groups so timeout cleanup also stops their descendants.
-No HTTP server, SDK loader, or lighting code lives in the GUI.
+No HTTP server or SDK loader lives in the GUI. The GUI and engine share a pure,
+hardware-independent ripple renderer. `make dev` runs the controller with a
+supervised, isolated engine; hardware is disabled unless explicitly requested.
+See [development workflow](dev.md).
 
 ```sh
 cargo test --features gui --bin wooting-gui

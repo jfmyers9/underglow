@@ -84,6 +84,9 @@ impl Session {
         options: &SignalRunOptions,
         signal: &mut dyn SignalProgram,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        if crate::sdk::hardware_disabled() {
+            return Err(crate::sdk::SIMULATION_NOTICE.into());
+        }
         if !(1..=120).contains(&options.fps) {
             return Err("fps must be between 1 and 120".into());
         }

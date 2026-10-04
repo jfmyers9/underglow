@@ -982,3 +982,70 @@ fn engine_two_tone_cli_ipc_persistence_and_rejected_updates() {
         "paused edits/restarts must never open either SDK"
     );
 }
+
+#[test]
+fn development_start_is_paused_and_simulation_fails_closed() {
+    for simulation in [false, true] {
+        let mock = Mock::new();
+        let state_dir = mock.dir.join("runtime");
+        fs::create_dir_all(&state_dir).unwrap();
+        let config =
+            "brightness=73\n[signal]\nkind='ripples'\n[signal.ripples]\nbase_color=[1,2,3]\n";
+        fs::write(
+            state_dir.join("state.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version":1, "enabled":true, "config":config
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut command = mock.engine_command();
+        command
+            .arg("engine")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if simulation {
+            command.env("WOOTING_DEV_SIMULATION", "1");
+        } else {
+            command.arg("--paused");
+        }
+        let mut engine = EngineChild(command.spawn().unwrap());
+        let state = mock.wait_state("paused");
+        assert_eq!(state["status"]["brightness"], 73);
+        assert_eq!(
+            state["status"]["ripple_base_color"],
+            serde_json::json!([1, 2, 3])
+        );
+        assert!(mock.calls().is_empty());
+        if simulation {
+            let reply = mock.control(&["resume"]);
+            assert_eq!(reply["ok"], false);
+            assert_eq!(reply["status"]["enabled"], false);
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("development simulator")
+            );
+            // Explicit SDK overrides cannot bypass the guard, even outside the engine.
+            for args in [vec!["info"], vec!["toy", "ripples", "--seconds", "1"]] {
+                let result = mock
+                    .engine_command()
+                    .env("WOOTING_DEV_SIMULATION", "1")
+                    .arg("--sdk-path")
+                    .arg(&mock.library)
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(!result.status.success());
+                assert!(String::from_utf8_lossy(&result.stderr).contains("development simulator"));
+            }
+        }
+        assert!(
+            mock.calls().is_empty(),
+            "development startup touched an SDK"
+        );
+        assert_eq!(mock.control(&["stop"])["ok"], true);
+        assert!(engine.0.wait().unwrap().success());
+    }
+}

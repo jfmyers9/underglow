@@ -28,6 +28,10 @@ Build the optional settings app with `cargo build --features gui --bins`, then
 launch `target/debug/wooting-gui`. Closing its window leaves the engine running.
 Use Pause to restore/release lighting, or Stop engine to shut it down.
 
+For the faster development loop, run **`make dev`**: incremental rebuilds,
+automatic GUI/engine restarts, isolated settings, and hardware-free ripple
+simulation. See [development workflow](docs/dev.md) for explicit hardware testing.
+
 - [Engine, persistence, local control, and recovery](docs/engine.md)
 - [Native GUI and service controls](docs/gui.md)
 - [macOS/Linux packaging and installation](docs/install.md)

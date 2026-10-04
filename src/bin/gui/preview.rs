@@ -1,7 +1,128 @@
-//! Decorative, synthetic effect preview. Never reads device frames or touches hardware.
+//! Hardware-free previews. Ripples use the real shared renderer with synthetic input.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use std::time::Duration;
+use wooting_signals::ripple::{
+    RippleSimulation, hid_coord, palette_gradient, wooting_80he_geometry,
+};
+
+pub type RippleColors = (Option<[u8; 3]>, Option<[u8; 3]>);
+
+pub struct RipplePreview {
+    simulation: RippleSimulation,
+    last_tick: Option<f64>,
+    demo: bool,
+    pressure: f32,
+}
+
+impl Default for RipplePreview {
+    fn default() -> Self {
+        Self {
+            simulation: RippleSimulation::default(),
+            last_tick: None,
+            demo: true,
+            pressure: 0.8,
+        }
+    }
+}
+
+impl RipplePreview {
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        palette: &str,
+        brightness: u8,
+        colors: RippleColors,
+        fps: u32,
+    ) {
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut self.demo, "Auto demo");
+            ui.add(egui::Slider::new(&mut self.pressure, 0.0..=1.0).text("Pressure"));
+            if ui.button("Clear waves").clicked() {
+                self.simulation = RippleSimulation::default();
+                self.demo = false;
+            }
+        });
+        ui.small("Real ripple renderer · synthetic F-key demo or click/hold letter keys below");
+        let geometry = wooting_80he_geometry();
+        let width = ui.available_width();
+        let unit = width / 18.5;
+        let (space, _) = ui.allocate_exact_size(Vec2::new(width, unit * 6.4), Sense::hover());
+        let now = ui.input(|i| i.time);
+        let mut pressures = Vec::new();
+        if self.demo && now.rem_euclid(4.0) < 0.65 {
+            pressures.push((0x09, self.pressure));
+        }
+        let mut keys = Vec::new();
+        for key in &geometry {
+            let rect = Rect::from_min_size(
+                space.min + Vec2::new(key.x * unit, key.y * unit),
+                Vec2::splat(unit * 0.88),
+            );
+            let hid = (1..256).find(|&code| {
+                hid_coord(code).is_some_and(|c| c.row == key.row && c.column == key.column)
+            });
+            let response = ui.interact(
+                rect,
+                ui.id().with(("ripple-key", key.row, key.column)),
+                Sense::click_and_drag(),
+            );
+            if response.is_pointer_button_down_on()
+                && let Some(code) = hid
+            {
+                pressures.push((code, self.pressure));
+            }
+            keys.push((rect, hid));
+        }
+        let interval = 1.0 / f64::from(fps.clamp(1, 120));
+        let elapsed = self
+            .last_tick
+            .map(|last| (now - last).max(0.0))
+            .unwrap_or(0.0);
+        if self.last_tick.is_none() || elapsed >= interval {
+            self.simulation.advance(elapsed as f32, pressures);
+            self.last_tick = Some(now);
+        }
+        let frame = self.simulation.render(
+            &geometry,
+            |position| palette_gradient(palette, position),
+            brightness,
+            colors.0,
+            colors.1,
+        );
+        for ((rect, hid), rgb) in keys.iter().zip(frame) {
+            let color = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+            ui.painter().rect(
+                *rect,
+                4.0,
+                color,
+                Stroke::new(1.0, Color32::from_gray(65)),
+                StrokeKind::Inside,
+            );
+            let label = match hid {
+                Some(code @ 0x04..=0x1d) => char::from(b'A' + (*code as u8 - 0x04)).to_string(),
+                Some(code @ 0x1e..=0x27) => ((*code - 0x1d) % 10).to_string(),
+                Some(0x2c) => "SP".into(),
+                Some(_) => "•".into(),
+                None => String::new(),
+            };
+            let ink = if u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]) > 380 {
+                Color32::BLACK
+            } else {
+                Color32::WHITE
+            };
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                label,
+                FontId::monospace(unit * 0.34),
+                ink,
+            );
+        }
+        ui.ctx()
+            .request_repaint_after(Duration::from_secs_f64(interval));
+    }
+}
 
 /// Paint an animated, illustrative 80%-style keyboard at the available width.
 /// `brightness` is 0–255. The caller must label this as a simulated preview.
@@ -10,8 +131,14 @@ pub fn keyboard(
     mode: &str,
     palette: &str,
     brightness: u8,
-    ripple_colors: Option<([u8; 3], [u8; 3])>,
+    ripple_colors: RippleColors,
+    fps: u32,
+    ripple_preview: &mut RipplePreview,
 ) {
+    if mode == "ripples" {
+        ripple_preview.show(ui, palette, brightness, ripple_colors, fps);
+        return;
+    }
     let width = ui.available_width().clamp(400.0, 600.0);
     let unit = width / 18.7;
     let (space, _) = ui.allocate_exact_size(
@@ -25,10 +152,7 @@ pub fn keyboard(
     let origin = Pos2::new(space.center().x - width / 2.0, space.top() + unit * 0.25);
     let board = Rect::from_min_size(origin, Vec2::new(width, unit * 7.05));
     let time = ui.input(|i| i.time) as f32;
-    let accent = ripple_colors
-        .filter(|_| mode == "ripples")
-        .map(|(_, ripple)| Color32::from_rgb(ripple[0], ripple[1], ripple[2]))
-        .unwrap_or_else(|| palette_color(palette, 0.25));
+    let accent = palette_color(palette, 0.25);
 
     // Layered chassis and a narrow underside highlight give the board depth
     // without overwhelming the key illumination with a neon frame.
@@ -57,16 +181,10 @@ pub fn keyboard(
             Vec2::new(w * unit - unit * 0.12, unit * 0.86),
         );
         let (strength, hue) = illumination(mode, x + w * 0.5, y, time);
-        let (color, strength) = match ripple_colors.filter(|_| mode == "ripples") {
-            Some((base, ripple)) => (
-                ripple_color(base, ripple, strength),
-                f32::from(brightness) / 255.0,
-            ),
-            None => (
-                palette_color(palette, hue),
-                strength * f32::from(brightness) / 255.0,
-            ),
-        };
+        let (color, strength) = (
+            palette_color(palette, hue),
+            strength * f32::from(brightness) / 255.0,
+        );
         if strength > 0.05 {
             for (spread, alpha) in [(0.11, 13.0), (0.055, 27.0)] {
                 painter.rect_filled(
@@ -222,11 +340,6 @@ pub fn keyboard(
 fn illumination(mode: &str, x: f32, y: f32, time: f32) -> (f32, f32) {
     let wave = (x * 0.055 + time * 0.1).fract();
     let strength = match mode {
-        "ripples" => {
-            let radius = (time * 2.6).rem_euclid(13.0);
-            let distance = ((x - 6.0).powi(2) + (y - 3.0).powi(2)).sqrt();
-            (1.0 - (distance - radius).abs() / 1.6).max(0.0)
-        }
         "comet" => {
             let head = (time * 4.0).rem_euclid(23.0);
             let behind = head - x - y * 0.5;
@@ -261,14 +374,6 @@ fn mix(a: Color32, b: Color32, amount: f32) -> Color32 {
         (f32::from(a) + (f32::from(b) - f32::from(a)) * amount.clamp(0.0, 1.0)) as u8
     };
     Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
-}
-
-fn ripple_color(base: [u8; 3], ripple: [u8; 3], strength: f32) -> Color32 {
-    mix(
-        Color32::from_rgb(base[0], base[1], base[2]),
-        Color32::from_rgb(ripple[0], ripple[1], ripple[2]),
-        strength,
-    )
 }
 
 fn palette_color(palette: &str, phase: f32) -> Color32 {
@@ -307,7 +412,9 @@ mod tests {
                             "ripples",
                             "ocean",
                             180,
-                            Some(([0, 32, 64], [120, 255, 255])),
+                            (Some([0, 32, 64]), Some([120, 255, 255])),
+                            30,
+                            &mut RipplePreview::default(),
                         );
                     });
                 },
@@ -319,7 +426,6 @@ mod tests {
     #[test]
     fn every_effect_stays_in_color_bounds() {
         for mode in [
-            "ripples",
             "comet",
             "rainbow",
             "breath",
@@ -349,14 +455,26 @@ mod tests {
     fn two_tone_preview_keeps_base_between_waves() {
         let base = [10, 40, 90];
         let wave = [200, 120, 40];
-        assert_eq!(ripple_color(base, wave, 0.0), Color32::from_rgb(10, 40, 90));
-        assert_eq!(
-            ripple_color(base, wave, 1.0),
-            Color32::from_rgb(200, 120, 40)
-        );
-        assert_eq!(
-            ripple_color(base, wave, 0.5),
-            Color32::from_rgb(105, 80, 65)
-        );
+        let mut preview = RipplePreview::default();
+        let geometry = wooting_80he_geometry();
+        let render = |preview: &RipplePreview| {
+            preview.simulation.render(
+                &geometry,
+                |p| palette_gradient("ocean", p),
+                255,
+                Some(base),
+                Some(wave),
+            )
+        };
+        assert!(render(&preview).iter().all(|rgb| *rgb == base));
+        preview.simulation.advance(0.0, [(0x09, 1.0)]);
+        let origin = hid_coord(0x09).unwrap();
+        let index = geometry
+            .iter()
+            .position(|key| key.row == origin.row && key.column == origin.column)
+            .unwrap();
+        assert_eq!(render(&preview)[index], wave);
+        preview.simulation.advance(3.0, []);
+        assert!(render(&preview).iter().all(|rgb| *rgb == base));
     }
 }

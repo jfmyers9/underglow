@@ -1,5 +1,7 @@
 //! Interactive toys sharing the signal runtime and hardware-free previews.
-use crate::layout::{KeyboardLayout, MatrixCoord};
+use crate::layout::KeyboardLayout;
+#[cfg(test)]
+use crate::layout::MatrixCoord;
 use crate::preview::{self, PreviewFormat};
 use crate::render::{Color, Frame, PaletteName};
 use crate::runner::{SignalRunOptions, run_session};
@@ -195,71 +197,14 @@ impl SignalProgram for RippleSignal {
     }
 }
 
-const LIFETIME: f32 = 2.5;
-const MAX_RIPPLES: usize = 128;
-
-struct Ripple {
-    coord: MatrixCoord,
-    strength: f32,
-    age: f32,
-}
-
-struct Ripples {
-    waves: Vec<Ripple>,
-    previous: [f32; 256],
-    cooldown: [f32; 256],
-}
-
-impl Default for Ripples {
-    fn default() -> Self {
-        Self {
-            waves: Vec::new(),
-            previous: [0.0; 256],
-            cooldown: [0.0; 256],
-        }
-    }
-}
+/// Adapter from SDK/layout types to the shared pure renderer.
+#[derive(Default)]
+struct Ripples(wooting_signals::ripple::RippleSimulation);
 
 impl Ripples {
     fn advance(&mut self, dt: f32, keys: &[AnalogKeyPressure]) {
-        let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
-        for wave in &mut self.waves {
-            wave.age += dt;
-        }
-        self.waves.retain(|wave| wave.age < LIFETIME);
-        for cooldown in &mut self.cooldown {
-            *cooldown = (*cooldown - dt).max(0.0);
-        }
-        let mut current = [0.0f32; 256];
-        for key in keys {
-            // Do not truncate namespaces: custom/Fn keys are not ordinary USB HID keys.
-            if key.key_code < 256 && key.pressure.is_finite() {
-                let index = usize::from(key.key_code);
-                current[index] = current[index].max(key.pressure.clamp(0.0, 1.0));
-            }
-        }
-        for (index, &pressure) in current.iter().enumerate() {
-            if pressure < 0.05 {
-                continue;
-            }
-            let Some(coord) = hid_coord(index as u16) else {
-                continue;
-            };
-            // A new touch is immediate. Held keys emit at most five rings/second;
-            // their strength tracks key travel, rather than typing repeat events.
-            if self.previous[index] < 0.05 || self.cooldown[index] == 0.0 {
-                if self.waves.len() == MAX_RIPPLES {
-                    self.waves.remove(0);
-                }
-                self.waves.push(Ripple {
-                    coord,
-                    strength: pressure,
-                    age: 0.0,
-                });
-                self.cooldown[index] = 0.2;
-            }
-        }
-        self.previous = current;
+        self.0
+            .advance(dt, keys.iter().map(|key| (key.key_code, key.pressure)));
     }
 
     fn render(
@@ -269,76 +214,40 @@ impl Ripples {
         brightness: u8,
         config: &RippleConfig,
     ) -> Frame {
-        let mut frame = Frame::black();
+        let geometry: Vec<_> = layout
+            .keys()
+            .iter()
+            .map(|key| wooting_signals::ripple::KeyGeometry {
+                row: key.coord.row,
+                column: key.coord.column,
+                x: key.x,
+                y: key.y,
+            })
+            .collect();
         let palette = palette.palette();
-        let mut intensities = vec![0.0f32; layout.keys().len()];
-        for wave in &self.waves {
-            let Some(origin) = layout.keys().iter().find(|key| key.coord == wave.coord) else {
-                continue;
-            };
-            let amplitude = wave.strength * (1.0 - wave.age / LIFETIME).powi(2);
-            for (key, intensity) in layout.keys().iter().zip(&mut intensities) {
-                let distance = (key.x - origin.x).hypot(key.y - origin.y);
-                let ring = (1.0 - (distance - wave.age * 6.0).abs() / 1.1).max(0.0);
-                *intensity += ring * amplitude;
-            }
-        }
-        for (key, intensity) in layout.keys().iter().zip(intensities) {
-            let intensity = intensity.min(1.0);
-            let gradient = palette.gradient((intensity * 255.0) as u8);
-            let color = if config.base_color.is_none() && config.ripple_color.is_none() {
-                // Keep legacy quantization and palette output byte-for-byte.
-                gradient.scale((intensity * f32::from(brightness)) as u8)
-            } else {
-                let base = config.base_color.unwrap_or([0; 3]);
-                let ripple =
-                    config
-                        .ripple_color
-                        .unwrap_or([gradient.red, gradient.green, gradient.blue]);
-                let channel = |i: usize| {
-                    (f32::from(base[i]) * (1.0 - intensity) + f32::from(ripple[i]) * intensity)
-                        as u8
-                };
-                Color::new(channel(0), channel(1), channel(2)).scale(brightness)
-            };
-            frame.set_coord(key.coord, color);
+        let colors = self.0.render(
+            &geometry,
+            |position| {
+                let color = palette.gradient(position);
+                [color.red, color.green, color.blue]
+            },
+            brightness,
+            config.base_color,
+            config.ripple_color,
+        );
+        let mut frame = Frame::black();
+        for (key, [red, green, blue]) in layout.keys().iter().zip(colors) {
+            frame.set_coord(key.coord, Color::new(red, green, blue));
         }
         frame
     }
 }
 
-/// Standard ANSI HID positions in the RGB SDK's 6x21 matrix (not OS text layout).
-/// Restrict the first toy to the typing block; Fn/custom namespaces and navigation
-/// are intentionally unmapped until validated on hardware. See the SDK's
-/// resources/keyboard-matrix-rows-columns.png. Gaps are not compressed.
+#[cfg(test)]
 fn hid_coord(code: u16) -> Option<MatrixCoord> {
-    const ROWS: [&[u16]; 4] = [
-        &[
-            0x35, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x2d, 0x2e, 0x2a,
-        ],
-        &[
-            0x2b, 0x14, 0x1a, 0x08, 0x15, 0x17, 0x1c, 0x18, 0x0c, 0x12, 0x13, 0x2f, 0x30, 0x31,
-        ],
-        &[
-            0x39, 0x04, 0x16, 0x07, 0x09, 0x0a, 0x0b, 0x0d, 0x0e, 0x0f, 0x33, 0x34, 0, 0x28,
-        ],
-        &[
-            0xe1, 0, 0x1d, 0x1b, 0x06, 0x19, 0x05, 0x11, 0x10, 0x36, 0x37, 0x38, 0, 0xe5,
-        ],
-    ];
-    if code == 0 {
-        return None;
-    }
-    if code == 0x2c {
-        return Some(MatrixCoord { row: 5, column: 6 });
-    }
-    ROWS.iter().enumerate().find_map(|(row, keys)| {
-        keys.iter()
-            .position(|&key| key == code)
-            .map(|column| MatrixCoord {
-                row: row as u8 + 1,
-                column: column as u8,
-            })
+    wooting_signals::ripple::hid_coord(code).map(|coord| MatrixCoord {
+        row: coord.row,
+        column: coord.column,
     })
 }
 
@@ -346,6 +255,8 @@ fn hid_coord(code: u16) -> Option<MatrixCoord> {
 mod tests {
     use super::*;
     use clap::Parser;
+    const LIFETIME: f32 = 2.5;
+    const MAX_RIPPLES: usize = 128;
 
     #[test]
     fn two_tone_idle_peak_decay_and_live_update() {
@@ -373,7 +284,7 @@ mod tests {
         );
         assert_eq!(render(&signal, 0), Frame::black());
         signal.set_ripple_colors(Some([0; 3]), Some([255, 0, 0]));
-        assert_eq!(signal.ripples.waves.len(), 1); // no restart on edit
+        assert_eq!(signal.ripples.0.wave_count(), 1); // no restart on edit
         assert_eq!(
             render(&signal, 255).get_coord(origin),
             Color::new(255, 0, 0)
@@ -453,7 +364,7 @@ mod tests {
                 pressure: 1.0,
             }],
         );
-        assert!(ripples.waves.is_empty());
+        assert!(ripples.0.wave_count() == 0);
     }
     #[test]
     fn holds_are_rate_limited_release_stops_emission_and_state_is_bounded() {
@@ -461,11 +372,11 @@ mod tests {
         for _ in 0..10 {
             ripples.advance(0.01, &[key(1.0)]);
         }
-        assert_eq!(ripples.waves.len(), 1);
+        assert_eq!(ripples.0.wave_count(), 1);
         ripples.advance(0.2, &[key(1.0)]);
-        assert_eq!(ripples.waves.len(), 2);
+        assert_eq!(ripples.0.wave_count(), 2);
         ripples.advance(3.0, &[]);
-        assert!(ripples.waves.is_empty());
+        assert!(ripples.0.wave_count() == 0);
         let keys = (1..256)
             .map(|key_code| AnalogKeyPressure {
                 key_code,
@@ -475,6 +386,6 @@ mod tests {
         for _ in 0..100 {
             ripples.advance(0.2, &keys);
         }
-        assert!(ripples.waves.len() <= MAX_RIPPLES);
+        assert!(ripples.0.wave_count() <= MAX_RIPPLES);
     }
 }

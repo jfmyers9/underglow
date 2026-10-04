@@ -121,19 +121,18 @@ impl KeyboardLayout {
     }
 
     fn wooting_80he() -> Self {
-        let row_offsets = [0.0, 0.25, 0.45, 0.7, 1.05, 0.0];
-        let mut keys = Vec::new();
-
-        for row in 0..6u8 {
-            for column in 0..17u8 {
-                keys.push(KeyPosition {
-                    coord: MatrixCoord { row, column },
-                    x: f32::from(column) + row_offsets[usize::from(row)],
-                    y: f32::from(row),
-                    zone: zone_for_80he(row, column),
-                });
-            }
-        }
+        let keys = wooting_signals::ripple::wooting_80he_geometry()
+            .into_iter()
+            .map(|key| KeyPosition {
+                coord: MatrixCoord {
+                    row: key.row,
+                    column: key.column,
+                },
+                x: key.x,
+                y: key.y,
+                zone: zone_for_80he(key.row, key.column),
+            })
+            .collect();
 
         Self {
             name: "wooting-80he",

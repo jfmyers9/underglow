@@ -23,6 +23,9 @@ pub struct EngineOptions {
     config: Option<PathBuf>,
     #[arg(long)]
     state_dir: Option<PathBuf>,
+    /// Start paused even when saved lighting was enabled (useful for development).
+    #[arg(long)]
+    paused: bool,
 }
 #[derive(Debug, Args)]
 pub struct ControlOptions {
@@ -374,6 +377,9 @@ impl Runtime {
             Action::Status => {}
             Action::Pause | Action::Stop => self.pause()?,
             Action::Resume => {
+                if crate::sdk::hardware_disabled() {
+                    return Err(crate::sdk::SIMULATION_NOTICE.into());
+                }
                 if self.active.is_none() {
                     let mut candidate = self.saved.clone();
                     candidate.enabled = true;
@@ -532,7 +538,7 @@ pub fn run(
     }
     let config = validate(&saved.config)?;
     // Never automatically rerun a command after service/process restart.
-    if config.runs_commands() {
+    if options.paused || crate::sdk::hardware_disabled() || config.runs_commands() {
         saved.enabled = false;
     }
     let path = dir.join("control.sock");
