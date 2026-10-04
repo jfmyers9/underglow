@@ -7,6 +7,9 @@ The binary is still named `wooting-signals` for compatibility. Existing status
 utilities (build feedback, CI, timers, and API alerts) remain available, but the
 main direction is keyboard toys rather than a workstation dashboard.
 
+See the [companion app roadmap](docs/roadmap.md) for the Wootility coexistence
+model, macOS/Linux packaging, background engine, configuration, and GUI plan.
+
 ## First toy: pressure-driven ripples
 
 Press a key lightly for a gentle ripple; press deeper for brighter expanding
