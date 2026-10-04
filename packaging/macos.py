@@ -2,7 +2,8 @@
 """Build a self-contained macOS app and disk image from trusted, reviewed inputs.
 
 No downloads, mounts, installs, service activation or publishing. By default the
-result is ad-hoc signed for LOCAL TESTING ONLY, not a Gatekeeper-ready release.
+result is ad-hoc signed, not a Gatekeeper-ready release. Verified inputs require
+a hash-bound review attestation; local-test builds are NOT FOR DISTRIBUTION.
 """
 import argparse
 import ctypes
@@ -113,6 +114,44 @@ def validate_notice_tree(directory):
             raise RuntimeError('missing required notice: ' + name)
 
 
+def validate_audit(directory, architecture, origins):
+    """Check review attestation integrity, not legal sufficiency or reviewer identity.
+
+    Hash original inputs, never relocated/re-signed staging binaries. The manifest
+    binds the entire notice/source tree to that exact native dependency closure.
+    """
+    validate_notice_tree(directory)
+    path = directory / 'audit.json'
+    if not path.is_file():
+        raise RuntimeError('verified inputs require notices/audit.json')
+    audit = json.loads(path.read_text())
+    if (not isinstance(audit, dict) or type(audit.get('schema_version')) is not int
+            or audit.get('schema_version') != 1 or audit.get('status') != 'reviewed'
+            or audit.get('unresolved') != []):
+        raise RuntimeError('audit must be schema_version 1, reviewed, with unresolved: []')
+    if audit.get('architecture') != architecture:
+        raise RuntimeError('audit architecture does not match requested architecture')
+    files = {p.relative_to(directory).as_posix(): digest(p)
+             for p in directory.rglob('*') if p.is_file() and p != path}
+    if audit.get('files') != files:
+        raise RuntimeError('audit files must exactly match notice/source artifact SHA-256 hashes')
+    license_file = directory / 'APPLICATION-LICENSE.txt'
+    if (not license_file.is_file()
+            or license_file.read_bytes() != (release.ROOT / 'LICENSE').read_bytes()):
+        raise RuntimeError('audit requires complete application MIT license in APPLICATION-LICENSE.txt')
+    native = {}
+    for relative, source in origins.items():
+        name = Path(relative).name
+        source = Path(source)
+        value = digest(source)
+        if name in native and native[name] != value:
+            raise RuntimeError('conflicting audit native input basename: ' + name)
+        native[name] = value
+    if audit.get('native_inputs') != native:
+        raise RuntimeError('audit native_inputs must exactly match original dependency closure SHA-256 hashes')
+    return digest(path)
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     for flag in ('binary', 'gui', 'service', 'rgb-sdk', 'analog-sdk', 'notices', 'output'):
@@ -122,7 +161,7 @@ def parser():
     p.add_argument('--minimum-os', required=True, help='must cover every native input deployment target')
     p.add_argument('--architecture', choices=('arm64', 'x86_64', 'universal2'), required=True)
     review = p.add_mutually_exclusive_group(required=True)
-    review.add_argument('--verified-inputs', action='store_true', help='confirm all inputs/dependencies are trusted and redistribution notices reviewed')
+    review.add_argument('--verified-inputs', action='store_true', help='require hash-bound notices/audit.json review attestation for all inputs and notice artifacts')
     review.add_argument('--local-test', action='store_true', help='trusted local inputs; license review pending; NOT FOR DISTRIBUTION')
     p.add_argument('--rgb-sdk-version', default='operator-supplied; see input SHA-256')
     p.add_argument('--analog-sdk-version', default='operator-supplied; see input SHA-256')
@@ -204,6 +243,8 @@ def build(args):
             validate_native(app / relative, args.architecture, args.minimum_os)
         release.validate_notices(args.notices, origins)
         shutil.copytree(args.notices, resources / 'notices')
+        audit_sha256 = (validate_audit(resources / 'notices', args.architecture, origins)
+                        if args.verified_inputs else None)
         shutil.copytree(release.ROOT / 'examples', resources / 'examples')
         for path in macos.iterdir():
             path.chmod(0o755)
@@ -221,10 +262,11 @@ def build(args):
             create_icon(resources / 'AppIcon.icns')
         info['CFBundleIconFile'] = 'AppIcon'
         (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
-        mode = 'notarized' if args.notary_profile else ('developer-id-unnotarized' if args.sign_identity else 'ad-hoc-local-test-only')
+        mode = 'notarized' if args.notary_profile else ('developer-id-unnotarized' if args.sign_identity else ('ad-hoc-local-test-only' if args.local_test else 'ad-hoc-unnotarized'))
         provenance = {'format': 1, 'version': args.version, 'identifier': args.identifier,
                       'architecture': args.architecture, 'minimum_os': args.minimum_os,
                       'license_review': 'pending-not-for-distribution' if args.local_test else 'operator-verified',
+                      'audit_sha256': audit_sha256,
                       'sdk_versions': {'rgb': args.rgb_sdk_version, 'analog': args.analog_sdk_version},
                       'distribution': mode, 'source_revision': release.run('git', '-C', release.ROOT, 'rev-parse', 'HEAD'),
                       'source_dirty': bool(release.run('git', '-C', release.ROOT, 'status', '--porcelain')),
@@ -249,6 +291,10 @@ def build(args):
             'Drag Wooting Signals.app to Applications, then launch it.\n'
             'Login startup is optional. Updates: quit the app and stop its engine before replacing.\n'
             + ('LOCAL TEST BUILD: ad-hoc signed, not notarized; not for public distribution.\n'
+               if args.local_test else
+               'EARLY RELEASE: ad-hoc signed, NOT notarized; publisher identity is not verified.\n'
+               'Gatekeeper may block launch. For a download you trust, System Settings > Privacy & Security > Open Anyway may be available.\n'
+               'Open Anyway is not guaranteed, especially on managed Macs. Do not disable Gatekeeper.\n'
                if not args.sign_identity else 'Signing status: ' + mode + '\n'))
         dmg = product / ('Wooting-Signals-' + args.version + '-' + args.architecture + '.dmg')
         run('hdiutil', 'create', '-volname', 'Wooting Signals', '-srcfolder', image_root,

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "unresolved": [
+    {
+      "id": "objc2-apple-sdk-derived-bindings",
+      "finding": "Upstream expressly records uncertainty about redistribution of Apple SDK-derived bindings. MIT/trio-license notice collection is complete; the third-party-rights determination remains pending. This is not a finding that distribution is prohibited.",
+      "evidence": "https://github.com/madsmtm/objc2/blob/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+      "quote": "From reading the license, it is unclear whether distributing derived works such as these crates are allowed?",
+      "affected": "objc2 family in the application GUI/tray dependency graph; preserved upstream LICENSE.md files document the caveat",
+      "resolution_needed": "Documented clarification applicable to this use or qualified legal review; neither copying MIT text nor purchasing Developer ID resolves this automatically."
+    }
+  ],
+  "review_notes": [
+    "Scope is the current arm64/macOS release inputs. A changed crate, source, toolchain, SDK, native library or architecture requires recollection and review.",
+    "17 application crate records rely on actual upstream SPDX declarations plus original source packages and separately labeled canonical terms. No missing copyright attribution was invented.",
+    "Native licenses selected: MPL-2.0 for both Wooting SDKs, BSD-3-Clause alternative for hidapi, LGPL-2.1-or-later for libusb. Full native corresponding-source archives accompany notices.",
+    "Analog SDK correspondence is established by exact official release-archive/member identity, clean tag, lockfile, workflow, and observed binary version paths. This is not a byte-reproducible-build proof.",
+    "A modified libusb was rebuilt, substituted in an isolated app copy, ad-hoc signed, and its version marker read with libusb_get_version without USB initialization. Original app remained unchanged.",
+    "Public Xcode agreement EA2002 (06/08/2026) permits compliant macOS app/library distribution in section 2.4 but reserves Apple Software rights in sections 2.6-2.7. It does not explicitly resolve the upstream generated-binding caveat; it is not evidence of the exact agreement accepted for the installed command-line tools."
+  ]
+}

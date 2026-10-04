@@ -38,6 +38,8 @@ class BundleTests(unittest.TestCase):
             '--notices', str(self.notices), '--output', str(self.home / 'result'),
             '--version', '1.2.3', '--identifier', 'org.example.wooting-signals',
             '--minimum-os', '13.0', '--architecture', 'arm64', '--verified-inputs'])
+        shutil.copy2(ROOT / 'LICENSE', self.notices / 'APPLICATION-LICENSE.txt')
+        self.write_audit()
         self.calls = []
         self.mock_runner = patch.object(macos, 'run', side_effect=self.fake_run)
         self.mock_runner.start()
@@ -51,6 +53,114 @@ class BundleTests(unittest.TestCase):
         self.rename_patch = patch.object(macos, 'publish_directory', side_effect=lambda src, dst: src.rename(dst))
         self.rename_patch.start()
         self.addCleanup(self.rename_patch.stop)
+
+    def write_audit(self, **overrides):
+        audit = {
+            'schema_version': 1, 'status': 'reviewed', 'architecture': 'arm64',
+            'unresolved': [],
+            'native_inputs': {p.name: macos.digest(p) for p in self.inputs.values()},
+            'files': {p.relative_to(self.notices).as_posix(): macos.digest(p)
+                      for p in self.notices.rglob('*')
+                      if p.is_file() and p.name != 'audit.json'},
+        }
+        audit.update(overrides)
+        (self.notices / 'audit.json').write_text(json.dumps(audit))
+
+    def test_audit_missing_rejected(self):
+        (self.notices / 'audit.json').unlink()
+        with self.assertRaisesRegex(RuntimeError, 'require notices/audit.json'):
+            macos.build(self.args)
+        self.assertFalse(self.args.output.exists())
+
+    def test_audit_incomplete_wrong_architecture_and_native_inputs_rejected(self):
+        for override, error in [
+                ({'schema_version': 2}, 'schema_version'),
+                ({'status': 'pending'}, 'reviewed'),
+                ({'unresolved': ['missing notice']}, 'unresolved'),
+                ({'architecture': 'x86_64'}, 'architecture'),
+                ({'native_inputs': {}}, 'native_inputs')]:
+            with self.subTest(override=override):
+                self.write_audit(**override)
+                with self.assertRaisesRegex(RuntimeError, error):
+                    macos.build(self.args)
+                self.assertFalse(self.args.output.exists())
+
+    def test_audit_missing_fields_and_extra_native_rejected(self):
+        base = json.loads((self.notices / 'audit.json').read_text())
+        for field in base:
+            with self.subTest(field=field):
+                audit = dict(base)
+                del audit[field]
+                (self.notices / 'audit.json').write_text(json.dumps(audit))
+                with self.assertRaises(RuntimeError):
+                    macos.build(self.args)
+        native = dict(base['native_inputs'])
+        native['unused.dylib'] = '0' * 64
+        self.write_audit(native_inputs=native)
+        with self.assertRaisesRegex(RuntimeError, 'native_inputs'):
+            macos.build(self.args)
+
+    def test_audit_uses_staged_basename_for_renamed_input(self):
+        renamed = self.home / 'rgb-sdk.dylib'
+        shutil.copy2(self.args.rgb_sdk, renamed)
+        self.args.rgb_sdk = renamed
+        macos.build(self.args)
+        self.assertTrue(self.args.output.exists())
+
+    def test_audit_modified_native_input_rejected(self):
+        with self.inputs['gui'].open('ab') as stream:
+            stream.write(b'changed')
+        with self.assertRaisesRegex(RuntimeError, 'native_inputs'):
+            macos.build(self.args)
+
+    def test_audit_modified_missing_and_extra_artifacts_rejected(self):
+        for action in ('modify', 'remove', 'add'):
+            with self.subTest(action=action):
+                artifact = self.notices / 'source.tar.gz'
+                artifact.write_bytes(b'source')
+                self.write_audit()
+                if action == 'modify':
+                    artifact.write_bytes(b'changed')
+                elif action == 'remove':
+                    artifact.unlink()
+                else:
+                    (self.notices / 'extra.txt').write_text('unreviewed')
+                with self.assertRaisesRegex(RuntimeError, 'audit files'):
+                    macos.build(self.args)
+
+    def test_audit_requires_complete_application_license(self):
+        for text in (None, 'MIT License\nCopyright James Myers'):
+            with self.subTest(text=text):
+                license_file = self.notices / 'APPLICATION-LICENSE.txt'
+                if text is None:
+                    license_file.unlink()
+                else:
+                    license_file.write_text(text)
+                self.write_audit()
+                with self.assertRaisesRegex(RuntimeError, 'application MIT license'):
+                    macos.build(self.args)
+
+    def test_audit_binds_transitive_original_not_relocated_binary(self):
+        library = self.home / 'libfixture.dylib'
+        library.write_bytes(macos.MACH_MAGICS[0] + b'original library')
+        self.mapping[library.name] = 'NOTICES.md'
+        (self.notices / 'native-licenses.json').write_text(json.dumps(self.mapping))
+        self.write_audit()
+        def dependency(*args):
+            if args[:2] == ('otool', '-L') and Path(args[-1]).resolve() == self.inputs['gui'].resolve():
+                return 'fixture:\n\t' + str(library) + ' (compatibility version 1.0.0)'
+            if args[0] == 'install_name_tool':
+                with Path(args[-1]).open('ab') as stream:
+                    stream.write(b'relocated')
+            return self.fake_run(*args)
+        with patch.object(macos.release, 'run', side_effect=dependency):
+            with self.assertRaisesRegex(RuntimeError, 'native_inputs'):
+                macos.build(self.args)
+            self.inputs['transitive'] = library
+            self.write_audit()
+            macos.build(self.args)
+        staged = self.args.output / macos.APP / 'Contents/Frameworks' / library.name
+        self.assertNotEqual(macos.digest(library), macos.digest(staged))
 
     def fake_run(self, *args):
         self.calls.append(tuple(str(a) for a in args))
@@ -67,6 +177,7 @@ class BundleTests(unittest.TestCase):
             root = Path(args[args.index('-srcfolder') + 1])
             self.assertEqual(os.readlink(root / 'Applications'), '/Applications')
             self.assertTrue((root / macos.APP / 'Contents/Info.plist').is_file())
+            self.image_readme = (root / 'READ ME.txt').read_text()
             Path(args[-1]).write_bytes(b'fixture disk image')
         if tool == 'xcrun' and args[1] == 'notarytool':
             return '{"status":"Accepted"}'
@@ -74,6 +185,11 @@ class BundleTests(unittest.TestCase):
 
     def test_self_contained_layout_metadata_and_no_host_actions(self):
         macos.build(self.args)
+        provenance = json.loads((self.args.output / 'provenance.json').read_text())
+        self.assertEqual(provenance['distribution'], 'ad-hoc-unnotarized')
+        self.assertEqual(provenance['audit_sha256'], macos.digest(self.notices / 'audit.json'))
+        self.assertIn('Open Anyway is not guaranteed', self.image_readme)
+        self.assertNotIn('not for public distribution', self.image_readme)
         app = self.args.output / macos.APP
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         self.assertEqual(info['CFBundleExecutable'], 'wooting-gui')
@@ -87,7 +203,7 @@ class BundleTests(unittest.TestCase):
                          ['wooting-gui', 'wooting-service', 'wooting-signals'])
         self.assertEqual(len(list((app / 'Contents/Frameworks').iterdir())), 2)
         provenance = json.loads((self.args.output / 'provenance.json').read_text())
-        self.assertEqual(provenance['distribution'], 'ad-hoc-local-test-only')
+        self.assertEqual(provenance['distribution'], 'ad-hoc-unnotarized')
         self.assertEqual(len(provenance['native_inputs']), 5)
         self.assertIn('Contents/MacOS/wooting-service', provenance['native_inputs'])
         dmg = next(self.args.output.glob('*.dmg'))
@@ -130,9 +246,12 @@ class BundleTests(unittest.TestCase):
     def test_local_test_allows_pending_review_but_forbids_distribution_signing(self):
         self.args.verified_inputs = False
         self.args.local_test = True
+        (self.notices / 'audit.json').unlink()
         macos.build(self.args)
         provenance = json.loads((self.args.output / 'provenance.json').read_text())
         self.assertEqual(provenance['license_review'], 'pending-not-for-distribution')
+        self.assertEqual(provenance['distribution'], 'ad-hoc-local-test-only')
+        self.assertIn('not for public distribution', self.image_readme)
         self.args.output = self.home / 'signed-output'
         self.args.sign_identity = 'Developer ID Application: Test (TEST)'
         with self.assertRaisesRegex(RuntimeError, 'forbids'):

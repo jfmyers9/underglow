@@ -34,8 +34,10 @@ Settings/logs remain in `~/Library/Application Support/wooting-signals/runtime`.
 The registration is `~/Library/LaunchAgents/io.github.jfmyers9.wooting-signals.plist`.
 
 **Local-test builds are ad-hoc signed, not notarized or for public distribution.**
-Gatekeeper may block quarantined downloads. Do not disable Gatekeeper globally;
-normal public delivery requires Developer ID signing and notarization.
+Gatekeeper may block quarantined downloads. Do not disable Gatekeeper globally.
+After license review, an ad-hoc prerelease is an option with explicit warnings;
+Open Anyway may be required and is not guaranteed on managed Macs. Developer ID
+and notarization provide the normal lower-friction public delivery experience.
 
 ## Build a local candidate
 
@@ -79,7 +81,10 @@ shortcut. Packaging never mounts, installs, launches effects, or enables service
 ## Signing and distribution
 
 After completing notice/provenance review, replace `--local-test` with
-`--verified-inputs`. For public delivery, additionally supply:
+`--verified-inputs`. This now requires a hash-bound `notices/audit.json`, not just
+a nonempty notice mapping. See the [audit result and reproduction steps](license-audit.md);
+an upstream rights question currently remains unresolved. For Developer ID
+delivery, additionally supply:
 
 ```sh
 --sign-identity 'Developer ID Application: YOUR NAME (TEAMID)' \

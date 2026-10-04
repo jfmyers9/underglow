@@ -39,7 +39,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -77,7 +77,9 @@ jobs:
             --version "$CANDIDATE_VERSION" \
             --identifier io.github.jfmyers9.wooting-signals \
             --minimum-os "$MINIMUM_OS" --architecture "$architecture" \
-            --verified-inputs --output "$RUNNER_TEMP/macos-candidate"
+            --local-test --output "$RUNNER_TEMP/macos-candidate"
+          # Newly compiled binaries cannot inherit another build's audit hashes.
+          # This workflow never asserts release clearance or publishes a release.
           echo 'LOCAL TEST ONLY: ad-hoc signed, NOT notarized; native architecture, NOT universal. No release published.' >> "$GITHUB_STEP_SUMMARY"
       # DMG contains the app: avoid uploading a second loose copy (and losing modes).
       # No secrets, signing identities, notarization profiles, or release APIs used.
