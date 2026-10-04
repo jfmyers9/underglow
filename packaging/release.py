@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
@@ -17,18 +18,22 @@ LINUX_SYSTEM = re.compile(r'^(linux-vdso|ld-linux|lib(c|m|pthread|dl|rt|resolv|u
 
 
 def run(*args):
+    if platform.system() == 'Darwin' and args[0] in ('otool', 'install_name_tool', 'codesign'):
+        args = ('/usr/bin/' + args[0], *args[1:])
     return subprocess.check_output([str(a) for a in args], text=True).strip()
 
 
 def mac_dependencies(path):
     lines = run('otool', '-L', path).splitlines()[1:]
-    return [line.strip().split(' (compatibility')[0] for line in lines]
+    # Fat binaries include architecture headers between dependency lists.
+    return list(dict.fromkeys(line.strip().split(' (compatibility')[0]
+                              for line in lines if ' (compatibility' in line))
 
 
 def mac_rpaths(path):
     lines = run('otool', '-l', path).splitlines()
-    return [lines[i + 2].strip().split('path ', 1)[1].split(' (offset')[0]
-            for i, line in enumerate(lines) if line.strip() == 'cmd LC_RPATH']
+    return list(dict.fromkeys(lines[i + 2].strip().split('path ', 1)[1].split(' (offset')[0]
+                              for i, line in enumerate(lines) if line.strip() == 'cmd LC_RPATH'))
 
 
 def resolve_mac(name, source, executable):
@@ -43,8 +48,8 @@ def resolve_mac(name, source, executable):
     return Path(expand(name))
 
 
-def bundle_dependencies(stage, system):
-    lib = stage / 'lib/wooting-signals'
+def bundle_dependencies(stage, system, library_dir='lib/wooting-signals', sign=True):
+    lib = stage / library_dir
     # Retain original paths for resolving @loader_path and transitive imports.
     origins = {}
     bundled = {}
@@ -84,7 +89,7 @@ def bundle_dependencies(stage, system):
                         raise RuntimeError('missing dependency: ' + str(resolved))
                     target = lib / resolved.name
                     add(resolved, target)
-                    relative = '@loader_path/' + ('../lib/wooting-signals/' if dest.parent.name == 'bin' else '') + target.name
+                    relative = '@loader_path/' + os.path.relpath(target, dest.parent)
                     run('install_name_tool', '-change', dependency, relative, dest)
                 # All non-system imports are now loader-relative; remove stale
                 # search paths so installed binaries do not retain checkout refs.
@@ -111,7 +116,7 @@ def bundle_dependencies(stage, system):
                             run('patchelf', '--replace-needed', absolute[1], name, dest)
                 rpath = '$ORIGIN/../lib/wooting-signals' if dest.parent.name == 'bin' else '$ORIGIN'
                 run('patchelf', '--set-rpath', rpath, dest)
-        if system == 'Darwin':
+        if system == 'Darwin' and sign:
             # Rewriting Mach-O invalidates signatures; ad-hoc signing is NOT notarization.
             for dest in origins:
                 run('codesign', '--force', '--sign', '-', dest)

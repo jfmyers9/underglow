@@ -31,6 +31,7 @@ Use Pause to restore/release lighting, or Stop engine to shut it down.
 - [Engine, persistence, local control, and recovery](docs/engine.md)
 - [Native GUI and service controls](docs/gui.md)
 - [macOS/Linux packaging and installation](docs/install.md)
+- [Self-contained macOS app and disk image](docs/macos-release.md)
 - [Opt-in build/CI/timer notifications over a base effect](docs/notifications.md)
 
 No service or login startup is enabled automatically. Foreground commands refuse
@@ -440,6 +441,11 @@ cargo run -- signal run soundwave --enabled --level 0.7 --bass 0.4
 ```
 
 ## Install on macOS or Linux
+
+For a Finder-launched macOS app with both SDKs bundled, see the
+[`.app`/`.dmg` workflow](docs/macos-release.md). No SDK exports or runtime Python
+are needed. Local candidates are ad-hoc signed, not notarized public releases.
+The following is the alternative prefix/archive installation workflow.
 
 Build or obtain a reviewed release directory, then run the platform installer:
 

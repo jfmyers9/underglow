@@ -66,8 +66,9 @@ restart a process stopped directly. These operations are never automatic.
 
 The helper returns `{ok,supported,enabled,running,error?}` JSON. Unsupported
 platforms, missing helpers, and failed requests are reported in the window; the
-GUI does not silently install or repair a service. The packaged helper currently
-requires Python 3.
+GUI does not silently install or repair a service. The legacy prefix helper
+requires Python 3; the self-contained macOS app uses a bundled native helper.
+See [macOS packaging](macos-release.md) for explicit update/removal controls.
 
 For a separate engine instance:
 

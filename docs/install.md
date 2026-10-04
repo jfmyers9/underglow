@@ -1,5 +1,9 @@
 # User installation and release packaging
 
+For the self-contained Finder app and `.dmg`, use the
+[macOS app workflow](macos-release.md). It needs no user-installed Python or
+prefix. The older archive/prefix workflow below remains for Linux and CLI users.
+
 ## Contract and prerequisites
 
 macOS and Linux per-user installs use a dedicated prefix, by default

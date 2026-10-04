@@ -1,0 +1,91 @@
+name: macOS LOCAL TEST candidate (not notarized)
+on:
+  workflow_dispatch:
+    inputs:
+      input_url:
+        description: 'Maintainer-reviewed HTTPS tar.gz: SDKs, notices, optional deps'
+        required: true
+        type: string
+      input_sha256:
+        description: 'Exact reviewed archive SHA256 (64 hex characters)'
+        required: true
+        type: string
+      version:
+        description: 'Candidate app version (e.g. 0.1.0)'
+        required: true
+        type: string
+      minimum_os:
+        description: 'Minimum macOS version supported by ALL native inputs'
+        required: true
+        default: '13.0'
+        type: string
+      verified_inputs:
+        description: 'I reviewed SDK provenance, architecture, deployment target, and redistribution notices'
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  candidate:
+    if: ${{ inputs.verified_inputs }}
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: ${{ inputs.minimum_os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo test --locked --all-features
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo build --locked --bin wooting-signals
+      - name: Packaging fixtures (no host install or keyboard access)
+        run: WOOTING_TEST_BINARY="$PWD/target/debug/wooting-signals" python3 -m unittest discover -s packaging/tests -v
+      - name: Check shell syntax
+        run: for script in scripts/*.sh; do bash -n "$script"; done
+      - name: Fetch checksum-pinned reviewed inputs
+        env:
+          INPUT_URL: ${{ inputs.input_url }}
+          INPUT_SHA256: ${{ inputs.input_sha256 }}
+        run: |
+          python3 packaging/release_inputs.py --url "$INPUT_URL" --sha256 "$INPUT_SHA256" --output "$RUNNER_TEMP/reviewed-inputs"
+      - run: cargo build --release --locked --features gui --bins
+      - name: Package native-architecture LOCAL TEST candidate (ad-hoc, not notarized)
+        id: package
+        env:
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          MINIMUM_OS: ${{ inputs.minimum_os }}
+        run: |
+          architecture="$(uname -m)"
+          case "$architecture" in arm64|x86_64) ;; *) echo 'Unsupported native architecture'; exit 1;; esac
+          echo "architecture=$architecture" >> "$GITHUB_OUTPUT"
+          scripts/package-macos.sh \
+            --binary "$PWD/target/release/wooting-signals" \
+            --gui "$PWD/target/release/wooting-gui" \
+            --service "$PWD/target/release/wooting-service" \
+            --rgb-sdk "$RUNNER_TEMP/reviewed-inputs/rgb-sdk.dylib" \
+            --analog-sdk "$RUNNER_TEMP/reviewed-inputs/analog-sdk.dylib" \
+            --notices "$RUNNER_TEMP/reviewed-inputs/notices" \
+            --version "$CANDIDATE_VERSION" \
+            --identifier io.github.jfmyers9.wooting-signals \
+            --minimum-os "$MINIMUM_OS" --architecture "$architecture" \
+            --verified-inputs --output "$RUNNER_TEMP/macos-candidate"
+          echo 'LOCAL TEST ONLY: ad-hoc signed, NOT notarized; native architecture, NOT universal. No release published.' >> "$GITHUB_STEP_SUMMARY"
+      # DMG contains the app: avoid uploading a second loose copy (and losing modes).
+      # No secrets, signing identities, notarization profiles, or release APIs used.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Wooting-Signals-LOCAL-TEST-NOT-NOTARIZED-${{ steps.package.outputs.architecture }}-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/macos-candidate/*.dmg
+            ${{ runner.temp }}/macos-candidate/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
