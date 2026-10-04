@@ -48,7 +48,8 @@ soundwave-dry-run:
 	cargo run -- run --config examples/soundwave.toml --dry-run
 
 install-dry-run:
-	scripts/install-macos.sh
+	@test -n "$(PACKAGE)" || { echo 'Use make install-dry-run PACKAGE=/path/to/extracted/release' >&2; exit 2; }
+	@if [ "$$(uname -s)" = Darwin ]; then scripts/install-macos.sh --package "$(PACKAGE)"; else scripts/install-linux.sh --package "$(PACKAGE)"; fi
 
 uninstall-dry-run:
-	scripts/uninstall-macos.sh
+	@if [ "$$(uname -s)" = Darwin ]; then scripts/uninstall-macos.sh; else scripts/uninstall-linux.sh; fi
