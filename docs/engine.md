@@ -71,9 +71,13 @@ automatically and always load paused after a process restart: a build/deploy
 must not be replayed just because USB failed. Explicit resume authorizes a new run.
 Finite modes pause on completion. The engine does not auto-detect Wootility.
 
-Existing API polling and native SDK calls are synchronous and may delay frame
-and control processing until their timeouts expire. Interrupts are best-effort;
-the GUI keeps its own event loop responsive and reports controller timeouts.
+GitHub, market, and sports polling run outside the render/control loop, with a
+shared limit of four in-flight jobs and no unbounded queue. Pausing cancels new
+work and discards results immediately. A request already in flight may finish
+under its existing timeout; it keeps its capacity slot until exit. GitHub checks
+cancellation between chained requests. Construction and previews start no jobs.
+Native SDK calls remain synchronous and may delay interruption until they return.
+The GUI keeps its own event loop responsive and reports controller timeouts.
 No keyboard presses or travel buffers are logged.
 
 ## Protocol

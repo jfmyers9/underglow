@@ -1,11 +1,13 @@
 use crate::layout::Zone;
 use crate::render::{Color, Frame, RenderContext, pulse_wave};
 use crate::signals::SignalProgram;
-use crate::signals::external::{ExternalPollState, ExternalSnapshot, ExternalStatus};
+use crate::signals::external::{
+    BackgroundPoll, ExternalPollState, ExternalSnapshot, ExternalStatus,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::env;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -65,6 +67,7 @@ pub struct GitHubCiSignal {
     config: GitHubCiConfig,
     state: GitHubSnapshot,
     poll: ExternalPollState,
+    worker: BackgroundPoll<GitHubSnapshot>,
 }
 
 impl GitHubCiSignal {
@@ -81,41 +84,50 @@ impl GitHubCiSignal {
                 message: "waiting for first GitHub poll".to_string(),
             },
             poll: ExternalPollState::default(),
+            worker: BackgroundPoll::default(),
         })
     }
 
     fn poll_if_due(&mut self) {
+        if self.worker.is_cancelled() {
+            return;
+        }
         let now = std::time::Instant::now();
-        if !self.poll.should_poll(now) {
-            if let Some(snapshot) = self.poll.stale_snapshot(now, self.config.stale_seconds) {
-                self.state = github_from_external(snapshot);
+        if let Some(result) = self.worker.try_recv() {
+            match result {
+                Ok(snapshot) => {
+                    self.poll.mark_success(
+                        &external_from_github(&snapshot),
+                        now,
+                        self.config.poll_seconds,
+                    );
+                    self.state = snapshot;
+                }
+                Err(error) => {
+                    eprintln!("github-ci poll failed for {}: {error}", self.config.repo);
+                    let snapshot = GitHubSnapshot {
+                        status: GitHubCiStatus::Error,
+                        event_key: format!("error:{error}"),
+                        message: "GitHub poll failed".to_string(),
+                    };
+                    self.poll.mark_error(
+                        &external_from_github(&snapshot),
+                        now,
+                        self.config.poll_seconds,
+                    );
+                    self.state = snapshot;
+                }
             }
             return;
         }
-
-        match fetch_snapshot(&self.config) {
-            Ok(snapshot) => {
-                self.poll.mark_success(
-                    &external_from_github(&snapshot),
-                    now,
-                    self.config.poll_seconds,
-                );
-                self.state = snapshot;
-            }
-            Err(error) => {
-                eprintln!("github-ci poll failed for {}: {error}", self.config.repo);
-                let snapshot = GitHubSnapshot {
-                    status: GitHubCiStatus::Error,
-                    event_key: format!("error:{error}"),
-                    message: "GitHub poll failed".to_string(),
-                };
-                self.poll.mark_error(
-                    &external_from_github(&snapshot),
-                    now,
-                    self.config.poll_seconds,
-                );
-                self.state = snapshot;
-            }
+        if let Some(snapshot) = self.poll.stale_snapshot(now, self.config.stale_seconds) {
+            self.state = github_from_external(snapshot);
+        }
+        if self.poll.should_poll(now) && self.worker.is_idle() {
+            let config = self.config.clone();
+            self.worker.try_start(move |cancelled| {
+                fetch_snapshot(&config, cancelled).map_err(|error| error.to_string())
+            });
         }
     }
 
@@ -174,8 +186,12 @@ impl SignalProgram for GitHubCiSignal {
         snapshot.message = self.state.event_key.clone();
         Some(snapshot)
     }
-    fn tick(&mut self, _interrupted: &AtomicBool) -> crate::signals::ProgramResult {
-        self.poll_if_due();
+    fn tick(&mut self, interrupted: &AtomicBool) -> crate::signals::ProgramResult {
+        if interrupted.load(Ordering::SeqCst) {
+            self.worker.cancel();
+        } else {
+            self.poll_if_due();
+        }
         Ok(())
     }
 
@@ -225,12 +241,15 @@ impl SignalProgram for GitHubCiSignal {
     }
 
     fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
+        self.worker.cancel();
         Ok(())
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 enum FetchError {
+    #[error("GitHub poll cancelled")]
+    Cancelled,
     #[error("GitHub API request failed: {0}")]
     Request(String),
     #[error("GitHub API response was not valid UTF-8/text: {0}")]
@@ -239,38 +258,47 @@ enum FetchError {
     Json(#[from] serde_json::Error),
 }
 
-fn fetch_snapshot(config: &GitHubCiConfig) -> Result<GitHubSnapshot, FetchError> {
+fn fetch_snapshot(
+    config: &GitHubCiConfig,
+    cancelled: &AtomicBool,
+) -> Result<GitHubSnapshot, FetchError> {
     let token = env::var(&config.token_env).ok();
-    let actions = get_json(
-        config,
-        &format!(
-            "/repos/{}/actions/runs?per_page=10{}",
-            config.repo,
-            config
-                .branch
-                .as_ref()
-                .map(|branch| format!("&branch={branch}"))
-                .unwrap_or_default()
-        ),
-        token.as_deref(),
-    )?;
-    let pr = match config.pull_request {
-        Some(number) => Some(get_json(
-            config,
-            &format!("/repos/{}/pulls/{number}", config.repo),
-            token.as_deref(),
-        )?),
-        None => None,
-    };
-    let reviews = match config.pull_request {
-        Some(number) => Some(get_json(
-            config,
-            &format!("/repos/{}/pulls/{number}/reviews", config.repo),
-            token.as_deref(),
-        )?),
-        None => None,
-    };
+    fetch_snapshot_with(config, cancelled, |path| {
+        get_json(config, path, token.as_deref())
+    })
+}
 
+fn fetch_snapshot_with(
+    config: &GitHubCiConfig,
+    cancelled: &AtomicBool,
+    mut get: impl FnMut(&str) -> Result<Value, FetchError>,
+) -> Result<GitHubSnapshot, FetchError> {
+    // A switch/pause may happen during any request. Never start the next one
+    // after cancellation; the request already in flight keeps its 10s timeout.
+    let mut request = |path: &str| {
+        if cancelled.load(Ordering::SeqCst) {
+            Err(FetchError::Cancelled)
+        } else {
+            get(path)
+        }
+    };
+    let actions = request(&format!(
+        "/repos/{}/actions/runs?per_page=10{}",
+        config.repo,
+        config
+            .branch
+            .as_ref()
+            .map(|branch| format!("&branch={branch}"))
+            .unwrap_or_default(),
+    ))?;
+    let pr = config
+        .pull_request
+        .map(|number| request(&format!("/repos/{}/pulls/{number}", config.repo)))
+        .transpose()?;
+    let reviews = config
+        .pull_request
+        .map(|number| request(&format!("/repos/{}/pulls/{number}/reviews", config.repo)))
+        .transpose()?;
     Ok(normalize_snapshot(&actions, pr.as_ref(), reviews.as_ref()))
 }
 
@@ -463,6 +491,93 @@ mod tests {
             uses_small_packets: false,
             uses_multi_report: false,
         }
+    }
+
+    #[test]
+    fn background_tick_keeps_cached_state_and_shutdown_does_not_wait() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let mut signal = GitHubCiSignal::new(GitHubCiConfig {
+            repo: "fixture/repo".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        signal.worker = BackgroundPoll::isolated_for_test();
+        let original = signal.state.clone();
+        let (release, wait) = mpsc::channel();
+        let (started, entered) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        assert!(signal.worker.try_start(move |cancelled| {
+            started.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(cancelled.load(Ordering::SeqCst));
+            done.send(()).unwrap();
+            Ok(GitHubSnapshot {
+                status: GitHubCiStatus::Passing,
+                event_key: "fixture".into(),
+                message: "fixture".into(),
+            })
+        }));
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        let start = Instant::now();
+        for _ in 0..100 {
+            signal.tick(&AtomicBool::new(false)).unwrap();
+        }
+        assert_eq!(signal.state, original);
+        signal.shutdown(true).unwrap();
+        assert!(start.elapsed() < Duration::from_millis(250));
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        signal.tick(&AtomicBool::new(false)).unwrap();
+        assert_eq!(signal.state, original);
+        assert!(signal.worker.is_cancelled());
+    }
+
+    #[test]
+    fn background_results_update_cache_and_preserve_failure_backoff() {
+        let mut signal = GitHubCiSignal::new(GitHubCiConfig {
+            repo: "fixture/repo".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let snapshot = GitHubSnapshot {
+            status: GitHubCiStatus::Passing,
+            event_key: "fixture".into(),
+            message: "fixture".into(),
+        };
+        signal.worker = BackgroundPoll::ready_for_test(Ok(snapshot.clone()));
+        signal.tick(&AtomicBool::new(false)).unwrap();
+        assert_eq!(signal.state, snapshot);
+        assert!(!signal.poll.should_poll(std::time::Instant::now()));
+        signal.worker = BackgroundPoll::ready_for_test(Err("fixture failure".into()));
+        signal.tick(&AtomicBool::new(false)).unwrap();
+        assert_eq!(signal.state.status, GitHubCiStatus::Error);
+        assert!(!signal.poll.should_poll(std::time::Instant::now()));
+        signal.shutdown(true).unwrap();
+    }
+
+    #[test]
+    fn cancelled_github_poll_never_starts_next_request() {
+        let config = GitHubCiConfig {
+            repo: "fixture/repo".into(),
+            pull_request: Some(1),
+            ..Default::default()
+        };
+        let cancelled = AtomicBool::new(false);
+        let mut calls = 0;
+        let result = fetch_snapshot_with(&config, &cancelled, |_| {
+            calls += 1;
+            cancelled.store(true, Ordering::SeqCst);
+            Ok(serde_json::json!({"workflow_runs": []}))
+        });
+        assert!(matches!(result, Err(FetchError::Cancelled)));
+        assert_eq!(calls, 1);
+        assert!(matches!(
+            fetch_snapshot_with(&config, &cancelled, |_| panic!(
+                "cancelled before first request"
+            )),
+            Err(FetchError::Cancelled)
+        ));
     }
 
     #[test]

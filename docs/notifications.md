@@ -36,4 +36,6 @@ commands. Avoid commands with destructive or non-idempotent side effects.
 Constructors, validation, and previews do not execute commands, poll APIs, or open
 hardware. Preview shows only the base; deterministic composition tests use mock
 events and an injected clock. No new provider, background SDK session, or writer
-is introduced. Existing GitHub polling is synchronous and may delay a frame.
+is introduced. GitHub polling runs on bounded background workers so an HTTP
+request does not stall base frames or pause/status controls. Shutdown cancels
+new work without waiting for an in-flight request; its result is discarded.

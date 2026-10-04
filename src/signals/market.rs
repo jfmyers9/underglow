@@ -1,10 +1,12 @@
 use crate::layout::Zone;
 use crate::render::{Color, Frame, RenderContext, pulse_wave};
 use crate::signals::SignalProgram;
-use crate::signals::external::{ExternalPollState, ExternalSnapshot, ExternalStatus, fetch_json};
+use crate::signals::external::{
+    BackgroundPoll, ExternalPollState, ExternalSnapshot, ExternalStatus, fetch_json,
+};
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -40,6 +42,7 @@ pub struct MarketSignal {
     config: MarketConfig,
     state: ExternalSnapshot,
     poll: ExternalPollState,
+    worker: BackgroundPoll<ExternalSnapshot>,
 }
 
 impl MarketSignal {
@@ -48,36 +51,49 @@ impl MarketSignal {
             config,
             state: ExternalSnapshot::idle("waiting for market data"),
             poll: ExternalPollState::default(),
+            worker: BackgroundPoll::default(),
         }
     }
 
     fn poll_if_due(&mut self) {
+        if self.worker.is_cancelled() {
+            return;
+        }
         let now = Instant::now();
-        if !self.poll.should_poll(now) {
-            if let Some(snapshot) = self.poll.stale_snapshot(now, self.config.stale_seconds) {
-                self.state = snapshot;
+        if let Some(result) = self.worker.try_recv() {
+            match result {
+                Ok(snapshot) => {
+                    self.poll
+                        .mark_success(&snapshot, now, self.config.poll_seconds);
+                    self.state = snapshot;
+                }
+                Err(error) => {
+                    eprintln!("market poll failed: {error}");
+                    let snapshot = ExternalSnapshot::error("market poll failed");
+                    self.poll
+                        .mark_error(&snapshot, now, self.config.poll_seconds);
+                    self.state = snapshot;
+                }
             }
             return;
         }
-
-        match fetch_json(&self.config.api_url, &self.config.token_env) {
-            Ok(value) => {
-                let snapshot = normalize_market(
+        if let Some(snapshot) = self.poll.stale_snapshot(now, self.config.stale_seconds) {
+            self.state = snapshot;
+        }
+        if self.poll.should_poll(now) && self.worker.is_idle() {
+            let config = self.config.clone();
+            self.worker.try_start(move |cancelled| {
+                if cancelled.load(Ordering::SeqCst) {
+                    return Err("poll cancelled".into());
+                }
+                let value = fetch_json(&config.api_url, &config.token_env)
+                    .map_err(|error| error.to_string())?;
+                Ok(normalize_market(
                     &value,
-                    &self.config.watchlist,
-                    self.config.threshold_percent,
-                );
-                self.poll
-                    .mark_success(&snapshot, now, self.config.poll_seconds);
-                self.state = snapshot;
-            }
-            Err(error) => {
-                eprintln!("market-pulse poll failed: {error}");
-                let snapshot = ExternalSnapshot::error("market poll failed");
-                self.poll
-                    .mark_error(&snapshot, now, self.config.poll_seconds);
-                self.state = snapshot;
-            }
+                    &config.watchlist,
+                    config.threshold_percent,
+                ))
+            });
         }
     }
 
@@ -94,8 +110,12 @@ impl MarketSignal {
 }
 
 impl SignalProgram for MarketSignal {
-    fn tick(&mut self, _interrupted: &AtomicBool) -> crate::signals::ProgramResult {
-        self.poll_if_due();
+    fn tick(&mut self, interrupted: &AtomicBool) -> crate::signals::ProgramResult {
+        if interrupted.load(Ordering::SeqCst) {
+            self.worker.cancel();
+        } else {
+            self.poll_if_due();
+        }
         Ok(())
     }
 
@@ -126,6 +146,7 @@ impl SignalProgram for MarketSignal {
     }
 
     fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
+        self.worker.cancel();
         Ok(())
     }
 }
@@ -219,6 +240,61 @@ mod tests {
             uses_small_packets: false,
             uses_multi_report: false,
         }
+    }
+
+    #[test]
+    fn background_tick_keeps_cached_state_and_shutdown_does_not_wait() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let mut signal = MarketSignal::new(MarketConfig::default());
+        signal.worker = BackgroundPoll::isolated_for_test();
+        let original = signal.state.clone();
+        let (release, wait) = mpsc::channel();
+        let (started, entered) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        assert!(signal.worker.try_start(move |cancelled| {
+            started.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(cancelled.load(Ordering::SeqCst));
+            done.send(()).unwrap();
+            Ok(ExternalSnapshot {
+                status: ExternalStatus::Positive,
+                event_key: "fixture".into(),
+                message: "fixture".into(),
+            })
+        }));
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        let start = Instant::now();
+        for _ in 0..100 {
+            signal.tick(&AtomicBool::new(false)).unwrap();
+        }
+        assert_eq!(signal.state, original);
+        signal.shutdown(true).unwrap();
+        assert!(start.elapsed() < Duration::from_millis(250));
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        signal.tick(&AtomicBool::new(false)).unwrap();
+        assert_eq!(signal.state, original);
+        assert!(signal.worker.is_cancelled());
+    }
+
+    #[test]
+    fn background_results_update_cache_and_preserve_failure_backoff() {
+        let mut signal = MarketSignal::new(MarketConfig::default());
+        let snapshot = ExternalSnapshot {
+            status: ExternalStatus::Positive,
+            event_key: "fixture".into(),
+            message: "fixture".into(),
+        };
+        signal.worker = BackgroundPoll::ready_for_test(Ok(snapshot.clone()));
+        signal.tick(&AtomicBool::new(false)).unwrap();
+        assert_eq!(signal.state, snapshot);
+        assert!(!signal.poll.should_poll(std::time::Instant::now()));
+        signal.worker = BackgroundPoll::ready_for_test(Err("fixture failure".into()));
+        signal.tick(&AtomicBool::new(false)).unwrap();
+        assert_eq!(signal.state.status, ExternalStatus::Error);
+        assert!(!signal.poll.should_poll(std::time::Instant::now()));
+        signal.shutdown(true).unwrap();
     }
 
     #[test]
