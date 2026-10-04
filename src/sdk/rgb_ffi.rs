@@ -169,6 +169,18 @@ fn library_candidates(
     }
 
     let mut paths = Vec::new();
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(bin) = executable.parent()
+    {
+        let name = if cfg!(target_os = "macos") {
+            "libwooting-rgb-sdk.dylib"
+        } else if cfg!(target_os = "windows") {
+            "wooting-rgb-sdk.dll"
+        } else {
+            "libwooting-rgb-sdk.so"
+        };
+        paths.push(bin.join("../lib/wooting-signals").join(name));
+    }
 
     #[cfg(target_os = "macos")]
     {

@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Opt-in per-user login integration. stdout is always one JSON response."""
+import json
+import os
+from pathlib import Path
+import platform
+import plistlib
+import shutil
+import subprocess
+import sys
+
+LABEL = 'io.github.jfmyers9.wooting-signals'
+UNIT = 'wooting-signals.service'
+
+
+def run(args, check=True):
+    result = subprocess.run(args, capture_output=True, text=True)
+    if result.returncode and ('Failed to connect to' in result.stderr or 'Failed to connect to' in result.stdout):
+        raise RuntimeError('user service manager is unavailable: ' + (result.stderr.strip() or result.stdout.strip()))
+    if check and result.returncode:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or 'service command failed')
+    return result
+
+
+def paths(system=None, home=None, binary=None):
+    system = system or platform.system()
+    home = Path(home or Path.home())
+    binary = Path(binary or Path(__file__).resolve().with_name('wooting-signals'))
+    config = Path(os.environ.get('XDG_CONFIG_HOME', home / '.config'))
+    state = (home / 'Library/Application Support/wooting-signals/runtime' if system == 'Darwin'
+             else Path(os.environ.get('XDG_STATE_HOME', home / '.local/state')) / 'wooting-signals')
+    registration = (home / 'Library/LaunchAgents' / (LABEL + '.plist') if system == 'Darwin'
+                    else config / 'systemd/user' / UNIT)
+    return system, binary, state, registration
+
+
+def unit_quote(value):
+    # systemd specifiers expand even inside quotes.
+    if '\n' in str(value) or '\r' in str(value):
+        raise ValueError('service paths cannot contain newlines')
+    return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$') + '"'
+
+
+def write_registration(system, binary, state, registration, enabled):
+    registration.parent.mkdir(parents=True, exist_ok=True)
+    state.mkdir(parents=True, exist_ok=True)
+    suffix = 'dylib' if system == 'Darwin' else 'so'
+    lib = binary.parent.parent / 'lib/wooting-signals'
+    env = {'WOOTING_STATE_DIR': str(state),
+           'WOOTING_RGB_SDK_PATH': str(lib / ('libwooting-rgb-sdk.' + suffix)),
+           'WOOTING_ANALOG_SDK_PATH': str(lib / ('libwooting_analog_sdk_dist.' + suffix))}
+    args = [str(binary), 'engine', '--state-dir', str(state)]
+    if system == 'Darwin':
+        data = {'Label': LABEL, 'ProgramArguments': args, 'RunAtLoad': enabled,
+                'EnvironmentVariables': env, 'StandardOutPath': str(state / 'engine.log'),
+                'StandardErrorPath': str(state / 'engine.log')}
+        registration.write_bytes(plistlib.dumps(data))
+    else:
+        registration.write_text('[Unit]\nDescription=Wooting Signals engine\n\n[Service]\nType=simple\n'
+                                + 'ExecStart=' + ' '.join(unit_quote(a) for a in args) + '\n'
+                                + ''.join('Environment=' + unit_quote(k + '=' + v) + '\n' for k, v in env.items())
+                                + 'TimeoutStopSec=15\n\n[Install]\nWantedBy=default.target\n')
+
+
+def status(system, registration):
+    if system == 'Darwin':
+        enabled = False
+        if registration.exists():
+            enabled = bool(plistlib.loads(registration.read_bytes()).get('RunAtLoad'))
+        result = run(['launchctl', 'print', 'gui/' + str(os.getuid()) + '/' + LABEL], False)
+        running = result.returncode == 0 and 'state = running' in result.stdout
+    else:
+        enabled = run(['systemctl', '--user', 'is-enabled', UNIT], False).stdout.strip() == 'enabled'
+        running = run(['systemctl', '--user', 'is-active', UNIT], False).stdout.strip() == 'active'
+    return enabled, running
+
+
+def action(command, system=None, home=None, binary=None):
+    if command != 'status' and os.environ.get('WOOTING_STATE_DIR'):
+        raise RuntimeError('service control manages default state only; unset WOOTING_STATE_DIR first')
+    system, binary, state, registration = paths(system, home, binary)
+    manager = {'Darwin': 'launchctl', 'Linux': 'systemctl'}.get(system)
+    if not manager or not shutil.which(manager):
+        return {'ok': command == 'status', 'supported': False, 'enabled': False, 'running': False,
+                'error': 'per-user service manager unavailable'}
+    enabled, running = status(system, registration)
+    if command == 'status':
+        return dict(ok=True, supported=True, enabled=enabled, running=running)
+    if not binary.is_file():
+        raise RuntimeError('sibling wooting-signals executable is missing')
+    domain = 'gui/' + str(os.getuid())
+    if command in ('enable', 'start'):
+        write_registration(system, binary, state, registration, command == 'enable' or enabled)
+        if system == 'Linux':
+            run(['systemctl', '--user', 'daemon-reload'])
+            run(['systemctl', '--user', command, UNIT])
+        elif command == 'start':
+            loaded = run(['launchctl', 'print', domain + '/' + LABEL], False).returncode == 0
+            if not loaded:
+                run(['launchctl', 'bootstrap', domain, str(registration)])
+            run(['launchctl', 'kickstart', domain + '/' + LABEL])
+    elif command in ('stop', 'disable'):
+        if system == 'Linux':
+            if not registration.exists() and not enabled and not running:
+                return dict(ok=True, supported=True, enabled=False, running=False)
+            if command == 'disable':
+                run(['systemctl', '--user', 'disable', UNIT])
+            run(['systemctl', '--user', 'stop', UNIT])
+        else:
+            loaded = run(['launchctl', 'print', domain + '/' + LABEL], False).returncode == 0
+            if loaded:
+                run(['launchctl', 'bootout', domain + '/' + LABEL])
+        if command == 'disable':
+            registration.unlink(missing_ok=True)
+            if system == 'Linux':
+                run(['systemctl', '--user', 'daemon-reload'])
+    else:
+        raise ValueError('expected status, enable, disable, start, or stop')
+    enabled, running = status(system, registration)
+    return dict(ok=True, supported=True, enabled=enabled, running=running)
+
+
+def main():
+    try:
+        if len(sys.argv) != 2 or sys.argv[1] not in ('status', 'enable', 'disable', 'start', 'stop'):
+            raise ValueError('usage: wooting-service status|enable|disable|start|stop')
+        result = action(sys.argv[1])
+    except Exception as error:
+        result = dict(ok=False, supported=platform.system() in ('Darwin', 'Linux'),
+                      enabled=False, running=False, error=str(error))
+    print(json.dumps(result))
+    return 0 if result['ok'] else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

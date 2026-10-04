@@ -208,11 +208,18 @@ fn library_candidates(explicit: Option<&Path>, env: Option<std::ffi::OsString>) 
     } else {
         "libwooting_analog_sdk_dist.so"
     };
-    vec![
+    let mut paths = Vec::new();
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(bin) = executable.parent()
+    {
+        paths.push(bin.join("../lib/wooting-signals").join(name));
+    }
+    paths.extend([
         PathBuf::from(name),
         PathBuf::from("/usr/local/lib").join(name),
         PathBuf::from("/opt/homebrew/lib").join(name),
-    ]
+    ]);
+    paths
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-exec python3 "$repo/packaging/install.py" install "$@"
+exec python3 "$repo/packaging/release.py" "$@"

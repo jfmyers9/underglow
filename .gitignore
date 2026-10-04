@@ -3,3 +3,5 @@
 *.dylib
 *.so
 *.dll
+__pycache__/
+*.py[cod]
