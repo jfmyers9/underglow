@@ -28,7 +28,7 @@ pub struct RippleOptions {
     #[arg(long, value_enum, default_value_t = PaletteName::Ocean)]
     palette: PaletteName,
     /// Maximum RGB channel value (0–255); independent of Wootility brightness.
-    #[arg(long, default_value_t = 180)]
+    #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
     brightness: u8,
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=120))]
     fps: u32,
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn brighter_default_preserves_explicit_brightness() {
-        for (extra, expected) in [(vec![], 180), (vec!["--brightness", "96"], 96)] {
+        for (extra, expected) in [(vec![], 255), (vec!["--brightness", "96"], 96)] {
             let cli = crate::Cli::try_parse_from(
                 ["wooting-signals", "toy", "ripples"]
                     .into_iter()

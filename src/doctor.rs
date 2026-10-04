@@ -15,7 +15,7 @@ pub struct DoctorOptions {
     probe_rgb: bool,
     #[arg(long, requires = "probe_rgb", default_value_t = 3, value_parser = clap::value_parser!(u64).range(1..=30))]
     seconds: u64,
-    #[arg(long, requires = "probe_rgb", default_value_t = 48)]
+    #[arg(long, requires = "probe_rgb", default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
     brightness: u8,
     /// Also check the ripple Analog SDK backend (one 80HE); not needed for RGB effects.
     #[arg(long)]

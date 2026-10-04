@@ -23,7 +23,7 @@ impl Default for RunOptions {
         Self {
             effect: EffectKind::Rainbow,
             palette: PaletteName::Wooting,
-            brightness: 96,
+            brightness: wooting_signals::DEFAULT_BRIGHTNESS,
             fps: 30,
             seconds: Some(10),
             continuous: false,

@@ -65,7 +65,7 @@ enum Command {
     /// Paint a short row test pattern, then reset.
     Test {
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = 96)]
+        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Seconds to keep the pattern visible.
         #[arg(long, default_value_t = 3)]
@@ -80,7 +80,7 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         column: u8,
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = 96)]
+        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Seconds to keep the key visible.
         #[arg(long, default_value_t = 3)]
@@ -89,7 +89,7 @@ enum Command {
     /// Run a device-bounded rainbow animation, then reset.
     Rainbow {
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = 128)]
+        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Seconds to run the animation.
         #[arg(long, default_value_t = 10)]
@@ -107,7 +107,7 @@ enum Command {
         #[arg(long, value_enum, default_value_t = PaletteName::Wooting)]
         palette: PaletteName,
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = 128)]
+        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Seconds to run the effect.
         #[arg(long, default_value_t = 10)]
@@ -158,7 +158,7 @@ enum PreviewCommand {
         #[arg(long, value_enum, default_value_t = PaletteName::Wooting)]
         palette: PaletteName,
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = 128)]
+        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Number of ticks to render.
         #[arg(long, default_value_t = 3)]
@@ -183,7 +183,7 @@ enum SignalCommand {
         #[arg(long, value_enum, default_value_t = PaletteName::Wooting)]
         palette: PaletteName,
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = 128)]
+        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Animation frames per second.
         #[arg(long, default_value_t = 30)]
@@ -913,4 +913,48 @@ fn install_ctrlc_handler() -> Result<Arc<AtomicBool>, ctrlc::Error> {
         handler_flag.store(true, Ordering::SeqCst);
     })?;
     Ok(interrupted)
+}
+
+#[cfg(test)]
+mod brightness_tests {
+    use super::*;
+
+    #[test]
+    fn cli_brightness_defaults_to_full_and_preserves_overrides() {
+        for command in [
+            vec!["test"],
+            vec!["direct"],
+            vec!["rainbow"],
+            vec!["effect", "comet"],
+            vec!["preview", "effect", "comet"],
+            vec!["signal", "run", "static-effect"],
+        ] {
+            for (extra, expected) in [
+                (vec![], 255),
+                (vec!["--brightness", "0"], 0),
+                (vec!["--brightness", "96"], 96),
+            ] {
+                let cli = Cli::try_parse_from(
+                    std::iter::once("ws")
+                        .chain(command.iter().copied())
+                        .chain(extra),
+                )
+                .unwrap();
+                let brightness = match cli.command {
+                    Command::Test { brightness, .. }
+                    | Command::Direct { brightness, .. }
+                    | Command::Rainbow { brightness, .. }
+                    | Command::Effect { brightness, .. }
+                    | Command::Preview {
+                        command: PreviewCommand::Effect { brightness, .. },
+                    }
+                    | Command::Signal {
+                        command: SignalCommand::Run { brightness, .. },
+                    } => brightness,
+                    _ => panic!("unexpected command"),
+                };
+                assert_eq!(brightness, expected, "{command:?}");
+            }
+        }
+    }
 }

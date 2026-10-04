@@ -343,12 +343,17 @@ mod tests {
         config.validate().unwrap();
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.signal_config().kind, SignalKind::Ripples);
-        assert_eq!(config.brightness, 180);
+        assert_eq!(config.brightness, 255);
         assert!(config.continuous);
         let legacy: AppConfig = toml::from_str("effect = 'comet'").unwrap();
         legacy.validate().unwrap();
         assert_eq!(legacy.schema_version, 1);
-        assert_eq!(legacy.brightness, 96);
+        assert_eq!(legacy.brightness, 255);
+        for brightness in [0, 42, 96, 180, 255] {
+            let explicit: AppConfig =
+                toml::from_str(&format!("brightness = {brightness}")).unwrap();
+            assert_eq!(explicit.brightness, brightness);
+        }
     }
 
     #[test]
@@ -374,7 +379,7 @@ mod tests {
     fn config_defaults_to_static_effect_signal() {
         let config = AppConfig::default();
 
-        assert_eq!(config.brightness, 96);
+        assert_eq!(config.brightness, 255);
         assert_eq!(config.fps, 30);
         assert_eq!(config.seconds, Some(10));
         assert!(!config.continuous);

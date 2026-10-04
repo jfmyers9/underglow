@@ -79,7 +79,7 @@ cargo run -- toy ripples --palette ocean
 cargo run -- toy ripples --seconds 20 --brightness 180 --fps 30
 ```
 
-`toy ripples` defaults to brightness **180/255**. Use `--brightness` to tune it; this
+All effects default to **100% brightness (255/255)**. Use `--brightness` to tune it; this
 is a fixed cap, not a reading of or synchronization with Wootility's brightness.
 
 **First-version limits:** one connected analog keyboard, **80HE ANSI**. The typing
@@ -283,7 +283,7 @@ cargo run -- run --config examples/ripples.toml --preview --preview-format json
 cargo run -- run --config examples/ripples.toml
 ```
 
-The example selects `[signal] kind = "ripples"`, brightness 180, palette `ocean`,
+The example selects `[signal] kind = "ripples"`, brightness 255 (100%), palette `ocean`,
 30 FPS, and continuous operation. Set `[signal.ripples] analog_sdk_path` to
 override `WOOTING_ANALOG_SDK_PATH`. RGB-only modes never initialize analog input.
 `toy ripples` remains available and shares the same renderer and lifecycle.
@@ -293,8 +293,9 @@ Configuration compatibility and validation:
 - `schema_version = 1` is optional; existing unversioned profiles mean version 1.
   Unsupported versions are rejected, without rewriting files.
 - Existing `[signal]`, `[extension]` alias, and source/rule/scene profiles remain
-  supported. Legacy root defaults remain unchanged (including brightness 96);
-  use the ripple example for the toy's brighter settings.
+  supported. Omitted brightness now defaults to 255 (100%), including legacy
+  profiles. Explicit brightness values in profiles and saved engine settings are preserved.
+  CLI/TOML brightness still uses 0–255, not percentages.
 - Configured/live frame rates must be 1–120 FPS. A profile may contain at most
   one ripple source because the Analog SDK is process-global.
 - Dry-run validates configuration and constructs the selected mode without

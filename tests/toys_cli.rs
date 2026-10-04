@@ -439,8 +439,7 @@ fn doctor_interruption_is_incomplete_but_still_reports_cleanup() {
 #[test]
 fn configured_ripples_preview_matches_toy_and_dry_run_opens_no_sdks() {
     let mock = Mock::new();
-    let config =
-        "schema_version = 1\npalette = 'ocean'\nbrightness = 180\n[signal]\nkind = 'ripples'";
+    let config = "schema_version = 1\npalette = 'ocean'\n[signal]\nkind = 'ripples'";
     let dry = mock
         .config_command(config)
         .arg("--dry-run")

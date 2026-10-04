@@ -1,7 +1,7 @@
 # Shared runtime profile: no native SDK is loaded by --dry-run or --preview.
 schema_version = 1
 palette = "ocean"
-brightness = 180
+brightness = 255
 fps = 30
 continuous = true
 

@@ -702,6 +702,21 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn every_builtin_preset_starts_at_full_brightness() {
+        for name in [
+            "ripples",
+            "focus-cockpit",
+            "row-test",
+            "rainbow",
+            "comet",
+            "matrix",
+            "breath",
+        ] {
+            assert_eq!(validate(&preset(name)).unwrap().brightness, 255, "{name}");
+        }
+    }
+
+    #[test]
     fn strict_hex_and_cli_conflicts() {
         assert_eq!(parse_hex_color("#00aAFF").unwrap(), [0, 170, 255]);
         assert_eq!(parse_hex_color("000000").unwrap(), [0; 3]);

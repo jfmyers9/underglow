@@ -516,7 +516,7 @@ impl Controller {
             custom_state,
             bundled_app,
             preset: "ripples".into(),
-            brightness: 96,
+            brightness: wooting_signals::DEFAULT_BRIGHTNESS,
             palette: "wooting".into(),
             fps: 30,
             ripple_colors: RippleColors::default(),
