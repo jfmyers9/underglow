@@ -238,13 +238,18 @@ impl Runtime {
     }
     fn failed(&mut self, error: String) {
         let cleanup = self.release().err().map(|e| e.to_string());
+        let cleanup_failed = cleanup.is_some();
         self.last_error = Some(match cleanup {
             Some(c) => format!("{error}; cleanup: {c}"),
             None => error,
         });
         self.retry_at = None;
         // Retrying a build/deploy command can repeat external side effects.
-        if self.saved.enabled && !self.config.runs_commands() && self.retry_attempt < RETRIES {
+        if self.saved.enabled
+            && !cleanup_failed
+            && !self.config.runs_commands()
+            && self.retry_attempt < RETRIES
+        {
             self.retry_at = Some(Instant::now() + Duration::from_secs(1 << self.retry_attempt));
             self.retry_attempt += 1;
         }

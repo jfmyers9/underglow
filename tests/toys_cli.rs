@@ -811,6 +811,25 @@ fn engine_never_replays_command_presets_on_recovery_or_restart() {
     assert_eq!(fs::read_to_string(marker).unwrap(), "ran\n");
 }
 
+#[test]
+fn engine_does_not_retry_after_unacknowledged_cleanup() {
+    let mock = Mock::new();
+    let _engine = mock.engine();
+    assert_eq!(mock.control(&["resume"])["ok"], true);
+    fs::write(mock.dir.join("failure"), "read-close").unwrap();
+    let status = mock.wait_state("error");
+    assert_eq!(status["status"]["retry_attempt"], 0);
+    assert!(
+        status["status"]["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("cleanup")
+    );
+    assert_eq!(mock.calls().matches("close\n").count(), 1);
+    assert_eq!(mock.calls().matches("uninit\n").count(), 1);
+    mock.control(&["stop"]);
+}
+
 const MOCK_C: &str = r#"
 #include <stdint.h>
 #include <stdbool.h>
@@ -820,7 +839,7 @@ const MOCK_C: &str = r#"
 #include <math.h>
 static bool fail(const char *name) {
   const char *path = getenv("MOCK_FAILURE_FILE");
-  if (path) { FILE *f = fopen(path, "r"); if (f) { char value[64] = {0}; fgets(value, sizeof(value), f); fclose(f); if (!strcmp(value, name)) return true; } }
+  if (path) { FILE *f = fopen(path, "r"); if (f) { char value[64] = {0}; fgets(value, sizeof(value), f); fclose(f); if (!strcmp(value, name) || (!strcmp(value, "read-close") && (!strcmp(name, "read") || !strcmp(name, "close")))) return true; } }
   const char *s = getenv("MOCK_FAILURE"); return s && !strcmp(s, name);
 }
 static void log_call(const char *name) { FILE *f = fopen(getenv("MOCK_LOG"), "a"); if (f) { fprintf(f, "%s\n", name); fclose(f); } }

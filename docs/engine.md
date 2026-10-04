@@ -60,6 +60,8 @@ socket messages to 1 MiB. Keep tokens in environment references, not TOML.
 
 SDK/input failures close both resources, report the error, and retry after
 1, 2, 4, 8, and 16 seconds. After five retries, explicit resume is required.
+If releasing an active session also fails, automatic retries stop rather than
+fighting an uncertain device owner; inspect the error before explicitly resuming.
 Thirty seconds of stable rendering resets the retry budget. Pause cancels
 pending retries. The same path handles a device returning after disconnection;
 physical reconnect/sleep behavior still needs platform validation.

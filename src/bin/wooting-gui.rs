@@ -493,7 +493,6 @@ impl Controller {
                 }
                 Action::StartEngine => {
                     self.message = completion.result.unwrap_or_else(|e| e);
-                    self.last_poll = Instant::now() - Duration::from_secs(5);
                 }
                 Action::Control(args) => match completion.result.and_then(|body| {
                     self.diagnostics = body.clone();
@@ -789,6 +788,18 @@ mod tests {
         app.receive();
         assert!(!app.settings_dirty);
         assert_eq!(app.brightness, app.status.as_ref().unwrap().brightness);
+        outgoing
+            .send(Completion {
+                action: Action::StartEngine,
+                result: Err("fixture-start-failure".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.message.contains("fixture-start-failure"));
+        assert!(
+            app.last_poll.elapsed() < Duration::from_secs(3),
+            "startup diagnostics need an interactive interval before polling"
+        );
     }
     #[test]
     fn service_status_and_errors_are_human_readable() {
