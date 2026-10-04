@@ -107,6 +107,9 @@ engine's per-user single-instance guard.
 
 A background worker serializes subprocess operations; UI rendering never waits
 for the CLI. Control/service helpers have a 15-second deadline and bounded output.
+Status polling is visually silent: it does not dim controls or show a busy
+indicator. An explicit action during a poll is queued once behind it, rather
+than dropped. Apply/Discard controls retain their layout space while editing.
 Nonzero exits with JSON retain their structured error. An explicitly started
 engine has detached console streams and is not bound to the window's lifetime.
 Its stderr goes to private `engine.log` in the selected runtime directory; early

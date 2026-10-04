@@ -45,9 +45,11 @@ impl RipplePreview {
         });
         ui.small("Real ripple renderer · synthetic F-key demo or click/hold letter keys below");
         let geometry = wooting_80he_geometry();
-        let width = ui.available_width();
+        let width = ui.available_width().min(600.0);
         let unit = width / 18.5;
-        let (space, _) = ui.allocate_exact_size(Vec2::new(width, unit * 6.4), Sense::hover());
+        let (space, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), unit * 6.4), Sense::hover());
+        let origin = Pos2::new(space.center().x - width / 2.0, space.top());
         let now = ui.input(|i| i.time);
         let mut pressures = Vec::new();
         if self.demo && now.rem_euclid(4.0) < 0.65 {
@@ -56,7 +58,7 @@ impl RipplePreview {
         let mut keys = Vec::new();
         for key in &geometry {
             let rect = Rect::from_min_size(
-                space.min + Vec2::new(key.x * unit, key.y * unit),
+                origin + Vec2::new(key.x * unit, key.y * unit),
                 Vec2::splat(unit * 0.88),
             );
             let hid = (1..256).find(|&code| {
@@ -106,17 +108,20 @@ impl RipplePreview {
                 Some(_) => "•".into(),
                 None => String::new(),
             };
-            let ink = if u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]) > 380 {
-                Color32::BLACK
-            } else {
-                Color32::WHITE
-            };
+            // A fixed backing preserves contrast without flashing text colors as waves pass.
+            if !label.is_empty() {
+                ui.painter().rect_filled(
+                    Rect::from_center_size(rect.center(), Vec2::new(unit * 0.55, unit * 0.5)),
+                    2.0,
+                    Color32::from_black_alpha(190),
+                );
+            }
             ui.painter().text(
                 rect.center(),
                 Align2::CENTER_CENTER,
                 label,
                 FontId::monospace(unit * 0.34),
-                ink,
+                Color32::WHITE,
             );
         }
         ui.ctx()
@@ -476,5 +481,50 @@ mod tests {
         assert_eq!(render(&preview)[index], wave);
         preview.simulation.advance(3.0, []);
         assert!(render(&preview).iter().all(|rgb| *rgb == base));
+    }
+
+    #[test]
+    fn ripple_legends_keep_their_color_as_waves_pass() {
+        let context = egui::Context::default();
+        let mut preview = RipplePreview::default();
+        for time in [1.0, 4.0, 4.3] {
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 600.0))),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        keyboard(
+                            ui,
+                            "ripples",
+                            "ocean",
+                            255,
+                            (Some([0; 3]), Some([255; 3])),
+                            30,
+                            &mut preview,
+                        );
+                    });
+                },
+            );
+            let legend = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "F" => {
+                    Some(text.galley.job.sections[0].format.color)
+                }
+                _ => None,
+            });
+            assert_eq!(legend, Some(Color32::WHITE));
+            for shape in &output.shapes {
+                if let egui::Shape::Rect(key) = &shape.shape
+                    && key.stroke.color == Color32::from_gray(65)
+                {
+                    assert!(
+                        key.rect.width() < 30.0,
+                        "matrix must not expand to the entire desktop width"
+                    );
+                }
+            }
+        }
     }
 }

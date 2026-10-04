@@ -74,6 +74,12 @@ enum Action {
     Service(String),
 }
 
+impl Action {
+    fn is_status(&self) -> bool {
+        matches!(self, Self::Control(args) if args.len() == 1 && args[0] == "status")
+    }
+}
+
 #[derive(Clone)]
 struct Backend {
     directory: PathBuf,
@@ -446,6 +452,8 @@ struct Controller {
     requests: Sender<Action>,
     replies: Receiver<Completion>,
     pending: bool,
+    poll_pending: bool,
+    queued_action: Option<Action>,
     status: Option<Status>,
     connected: bool,
     message: String,
@@ -498,6 +506,8 @@ impl Controller {
             requests,
             replies,
             pending: false,
+            poll_pending: false,
+            queued_action: None,
             status: None,
             connected: false,
             message: "Checking engine…".into(),
@@ -526,9 +536,19 @@ impl Controller {
         if self.pending {
             return;
         }
+        let poll = action.is_status();
+        if self.poll_pending {
+            if !poll {
+                // Keep polling invisible, but never lose a click during a slow poll.
+                self.queued_action = Some(action);
+                self.pending = true;
+            }
+            return;
+        }
         match self.requests.send(action) {
             Ok(()) => {
-                self.pending = true;
+                self.poll_pending = poll;
+                self.pending = !poll;
                 self.last_poll = Instant::now();
             }
             Err(_) => self.message = "Background worker stopped; reopen this window".into(),
@@ -541,7 +561,12 @@ impl Controller {
 
     fn receive(&mut self) {
         while let Ok(completion) = self.replies.try_recv() {
-            self.pending = false;
+            if completion.action.is_status() {
+                self.poll_pending = false;
+                self.pending = self.queued_action.is_some();
+            } else {
+                self.pending = false;
+            }
             // Leave an interactive interval even when the previous poll was slow.
             self.last_poll = Instant::now();
             match completion.action {
@@ -588,6 +613,12 @@ impl Controller {
                     }
                 },
             }
+        }
+        if !self.poll_pending
+            && let Some(action) = self.queued_action.take()
+        {
+            self.pending = false;
+            self.dispatch(action);
         }
     }
 }
@@ -902,7 +933,7 @@ impl Controller {
                             if !self.connected { self.dispatch(Action::StartEngine); }
                             else { self.control(&[if enabled { "pause" } else { "resume" }]); }
                         }
-                        if self.pending { ui.spinner(); }
+                        ui.add_visible(self.pending, egui::Spinner::new());
                     });
                 });
                 ui.add_space(12.0);
@@ -914,9 +945,7 @@ impl Controller {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Lighting controls").size(18.0).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if self.settings_dirty {
-                                if ui.add_enabled(self.connected && !self.pending, egui::Button::new("Apply changes")).clicked() { self.apply_settings(); }
-                            } else { ui.label(egui::RichText::new("Saved").small().color(MUTED)); }
+                            if ui.add_enabled(self.settings_dirty && self.connected && !self.pending, egui::Button::new("Apply changes")).clicked() { self.apply_settings(); }
                         });
                     });
                     ui.add_enabled_ui(self.connected && !self.pending, |ui| {
@@ -959,12 +988,10 @@ impl Controller {
                             self.settings_dirty |= ui.add(egui::Slider::new(&mut self.fps, 1..=120).suffix(" FPS")).changed();
                         });
                         ui.small("More FPS can mean smoother or faster motion, with higher CPU usage.");
-                        if self.settings_dirty {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(egui::RichText::new("Unapplied changes").color(ACCENT));
-                                if ui.button("Discard changes").clicked() { self.discard_settings(); }
-                            });
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(self.settings_dirty, egui::Button::new("Discard changes")).clicked() { self.discard_settings(); }
+                            ui.label(egui::RichText::new(if self.settings_dirty { "Unapplied changes" } else { "Saved" }).small().color(MUTED));
+                        });
                     });
                 });
                 ui.add_space(8.0);
@@ -1009,7 +1036,8 @@ impl eframe::App for Controller {
             menu_bar.hide_on_close(context);
         }
         self.receive();
-        if !self.pending && self.last_poll.elapsed() >= Duration::from_secs(3) {
+        if !self.pending && !self.poll_pending && self.last_poll.elapsed() >= Duration::from_secs(3)
+        {
             self.control(&["status"]);
         }
         self.show_lighting(context);
@@ -1131,6 +1159,8 @@ mod tests {
             requests,
             replies,
             pending: false,
+            poll_pending: false,
+            queued_action: None,
             status: None,
             connected: true,
             message: "Fixture".into(),
@@ -1154,6 +1184,117 @@ mod tests {
             ripple_preview: gui_preview::RipplePreview::default(),
         };
         (app, incoming)
+    }
+
+    #[test]
+    fn polling_is_silent_and_serializes_one_user_action_without_dropping_it() {
+        let (mut app, incoming) = controller_fixture();
+        let (outgoing, replies) = mpsc::channel();
+        app.replies = replies;
+        app.control(&["status"]);
+        assert!(incoming.try_recv().unwrap().is_status());
+        assert!(app.poll_pending);
+        assert!(
+            !app.pending,
+            "polls must not disable controls or show a spinner"
+        );
+        app.control(&["status"]);
+        assert!(incoming.try_recv().is_err(), "do not accumulate polls");
+        app.control(&["pause"]);
+        assert!(app.pending);
+        assert!(
+            incoming.try_recv().is_err(),
+            "serialize behind the current poll"
+        );
+        app.control(&["resume"]);
+        outgoing
+            .send(Completion {
+                action: Action::Control(vec!["status".into()]),
+                result: Ok(format!(r#"{{"ok":true,"status":{STATUS}}}"#)),
+            })
+            .unwrap();
+        app.receive();
+        let Action::Control(args) = incoming.try_recv().unwrap() else {
+            panic!("expected pause");
+        };
+        assert_eq!(args, [OsString::from("pause")]);
+        assert!(app.pending);
+        assert!(!app.poll_pending);
+        assert!(app.queued_action.is_none());
+        assert!(
+            incoming.try_recv().is_err(),
+            "only one explicit action may queue"
+        );
+        outgoing
+            .send(Completion {
+                action: Action::Control(vec!["pause".into()]),
+                result: Err("fixture error".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(!app.pending);
+        assert!(!app.connected);
+        assert!(
+            incoming.try_recv().is_err(),
+            "failed actions are never replayed"
+        );
+    }
+
+    #[test]
+    fn polling_and_dirty_edits_do_not_shift_the_controls() {
+        let (mut app, _incoming) = controller_fixture();
+        let context = egui::Context::default();
+        configure_style(&context);
+        let frame = |app: &mut Controller| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(940.0, 850.0),
+                    )),
+                    time: Some(1.0),
+                    ..Default::default()
+                },
+                |ctx| app.show_lighting(ctx),
+            )
+        };
+        // Warm up scroll/layout state before comparing frames.
+        for _ in 0..3 {
+            let _ = frame(&mut app);
+        }
+        let labels = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t)
+                        if [
+                            "Brightness",
+                            "Palette",
+                            "Frame rate",
+                            "Apply changes",
+                            "Discard changes",
+                        ]
+                        .contains(&t.galley.job.text.as_str()) =>
+                    {
+                        Some((t.galley.job.text.clone(), t.pos))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = labels(&frame(&mut app));
+        assert_eq!(before.len(), 5);
+        app.control(&["status"]);
+        assert_eq!(labels(&frame(&mut app)), before);
+        app.settings_dirty = true;
+        assert_eq!(
+            labels(&frame(&mut app)),
+            before,
+            "dragging must not move a slider under the pointer"
+        );
+        app.settings_dirty = false;
+        assert_eq!(labels(&frame(&mut app)), before);
     }
 
     #[test]
@@ -1452,6 +1593,8 @@ mod tests {
             requests,
             replies,
             pending: true,
+            poll_pending: false,
+            queued_action: None,
             status: None,
             connected: false,
             message: String::new(),
