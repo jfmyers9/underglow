@@ -214,7 +214,7 @@ def build(args):
                 'LSMinimumSystemVersion': args.minimum_os, 'NSHighResolutionCapable': True,
                 'LSApplicationCategoryType': 'public.app-category.utilities',
                 'NSInputMonitoringUsageDescription': 'Access your Wooting keyboard for lighting and key-travel effects. Key input is not recorded.',
-                'NSHumanReadableCopyright': 'Copyright © 2026 The Keyboard Goblins (Wooting Signals contributors)'}
+                'NSHumanReadableCopyright': 'Copyright © 2026 James Myers'}
         if args.icon:
             shutil.copy2(args.icon, resources / 'AppIcon.icns')
         else:
