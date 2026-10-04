@@ -216,6 +216,15 @@ fn library_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn installed_sdk_is_considered_before_checkout_and_system_defaults() {
+        let executable = std::env::current_exe().unwrap();
+        let installed = executable.parent().unwrap().join("../lib/wooting-signals");
+        assert_eq!(
+            library_candidates(None, None)[0].parent(),
+            Some(installed.as_path())
+        );
+    }
 
     #[test]
     fn rgb_path_overrides_are_authoritative() {

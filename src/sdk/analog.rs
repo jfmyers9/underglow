@@ -226,6 +226,16 @@ fn library_candidates(explicit: Option<&Path>, env: Option<std::ffi::OsString>) 
 mod tests {
     use super::*;
     #[test]
+    fn installed_sdk_is_considered_before_system_defaults() {
+        let executable = std::env::current_exe().unwrap();
+        let installed = executable.parent().unwrap().join("../lib/wooting-signals");
+        assert_eq!(
+            library_candidates(None, None)[0].parent(),
+            Some(installed.as_path())
+        );
+    }
+
+    #[test]
     fn overrides_do_not_fall_back() {
         assert_eq!(
             library_candidates(Some(Path::new("explicit")), Some("env".into())),
