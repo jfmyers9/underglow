@@ -179,6 +179,15 @@ fn library_candidates(
         } else {
             "libwooting-rgb-sdk.so"
         };
+        #[cfg(target_os = "macos")]
+        if bin.file_name().is_some_and(|name| name == "MacOS")
+            && bin
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "Contents")
+        {
+            paths.push(bin.join("../Frameworks").join(name));
+        }
         paths.push(bin.join("../lib/wooting-signals").join(name));
     }
 

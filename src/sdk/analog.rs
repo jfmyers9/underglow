@@ -212,6 +212,15 @@ fn library_candidates(explicit: Option<&Path>, env: Option<std::ffi::OsString>) 
     if let Ok(executable) = std::env::current_exe()
         && let Some(bin) = executable.parent()
     {
+        #[cfg(target_os = "macos")]
+        if bin.file_name().is_some_and(|name| name == "MacOS")
+            && bin
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "Contents")
+        {
+            paths.push(bin.join("../Frameworks").join(name));
+        }
         paths.push(bin.join("../lib/wooting-signals").join(name));
     }
     paths.extend([

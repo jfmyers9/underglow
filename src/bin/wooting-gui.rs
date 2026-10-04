@@ -77,6 +77,19 @@ struct Backend {
 }
 
 impl Backend {
+    fn bundled_app(&self) -> bool {
+        cfg!(target_os = "macos")
+            && self
+                .directory
+                .file_name()
+                .is_some_and(|name| name == "MacOS")
+            && self
+                .directory
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "Contents")
+    }
+
     fn command(&self, action: &Action) -> Command {
         let service = matches!(action, Action::Service(_));
         let name = if service {
@@ -218,7 +231,12 @@ impl Backend {
                 log_path.display()
             ));
         }
-        run_bounded(command)
+        if matches!(action, Action::Service(_)) {
+            // Native service maintenance can require several bounded launchctl calls.
+            run_with_timeout(command, Duration::from_secs(30))
+        } else {
+            run_bounded(command)
+        }
     }
 }
 
@@ -410,6 +428,7 @@ struct Controller {
     diagnostics: String,
     service: String,
     custom_state: bool,
+    bundled_app: bool,
     preset: String,
     brightness: u8,
     palette: String,
@@ -428,6 +447,7 @@ impl Controller {
         let (outgoing, replies) = mpsc::channel();
         let repaint = context.clone();
         let custom_state = backend.state_dir.is_some();
+        let bundled_app = backend.bundled_app();
         thread::spawn(move || {
             while let Ok(action) = incoming.recv() {
                 let result = backend.execute(&action);
@@ -455,6 +475,7 @@ impl Controller {
             diagnostics: String::new(),
             service: "Not checked".into(),
             custom_state,
+            bundled_app,
             preset: "ripples".into(),
             brightness: 96,
             palette: "wooting".into(),
@@ -698,6 +719,22 @@ impl Controller {
                 ui.small(&self.service);
                 if ui.add_enabled(self.connected, egui::Button::new("Stop standalone engine")).clicked() { self.control(&["stop"]); }
                 ui.small("For a managed engine, use Stop service instead.");
+                if self.bundled_app {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Updates & removal").strong());
+                    ui.small("Before replacing this app, stop its engines, then quit the controller. Login preference and saved settings are kept.");
+                    ui.add_enabled_ui(!self.custom_state, |ui| {
+                        if ui.button("Stop engines for update").clicked() {
+                            self.dispatch(Action::Service("prepare-update".into()));
+                        }
+                        ui.collapsing("Remove this app", |ui| {
+                            ui.small("First disable login and stop background engines, then quit and move the app to Trash. Saved profiles, settings, and logs are kept.");
+                            if ui.button("Disable login & stop engines").clicked() {
+                                self.dispatch(Action::Service("remove".into()));
+                            }
+                        });
+                    });
+                }
                 ui.separator();
                 ui.collapsing("Import a trusted profile", |ui| {
                     ui.colored_label(egui::Color32::from_rgb(245, 192, 127), "Profiles can execute commands as your user.");
@@ -880,6 +917,7 @@ mod tests {
             diagnostics: String::new(),
             service: String::new(),
             custom_state: true,
+            bundled_app: true,
             preset: "comet".into(),
             brightness: 128,
             palette: "ocean".into(),
@@ -1009,6 +1047,7 @@ mod tests {
             diagnostics: String::new(),
             service: String::new(),
             custom_state: false,
+            bundled_app: false,
             preset: "ripples".into(),
             brightness: 7,
             palette: "custom".into(),
