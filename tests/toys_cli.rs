@@ -370,6 +370,7 @@ fn doctor_missing_library_still_produces_report_and_checks_arguments_before_open
             "/missing-rgb",
         ])
         .env("WOOTING_RGB_SDK_PATH", &mock.library)
+        .env("WOOTING_STATE_DIR", mock.dir.join("runtime"))
         .env("MOCK_LOG", &mock.log)
         .current_dir(std::env::temp_dir())
         .output()
