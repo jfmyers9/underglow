@@ -51,6 +51,15 @@ enum ControlCommand {
         palette: Option<PaletteName>,
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=120))]
         fps: Option<u32>,
+        /// Background RGB color, six hexadecimal digits (optional #).
+        #[arg(long, value_parser = parse_hex_color, conflicts_with = "ripple_palette")]
+        ripple_base_color: Option<[u8; 3]>,
+        /// Wave RGB color, six hexadecimal digits (optional #).
+        #[arg(long, value_parser = parse_hex_color, conflicts_with = "ripple_palette")]
+        ripple_color: Option<[u8; 3]>,
+        /// Restore black background and palette-driven ripples.
+        #[arg(long)]
+        ripple_palette: bool,
     },
 }
 #[derive(Serialize, Deserialize)]
@@ -73,6 +82,10 @@ enum Action {
         brightness: Option<u8>,
         palette: Option<String>,
         fps: Option<u32>,
+        ripple_base_color: Option<[u8; 3]>,
+        ripple_color: Option<[u8; 3]>,
+        #[serde(default)]
+        ripple_palette: bool,
     },
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -91,6 +104,8 @@ struct Status {
     brightness: u8,
     palette: String,
     fps: u32,
+    ripple_base_color: Option<[u8; 3]>,
+    ripple_color: Option<[u8; 3]>,
     last_error: Option<String>,
     retry_attempt: u32,
 }
@@ -99,6 +114,72 @@ struct Response {
     ok: bool,
     error: Option<String>,
     status: Status,
+}
+
+fn parse_hex_color(value: &str) -> Result<[u8; 3], String> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("expected six hexadecimal digits, optionally prefixed with #".into());
+    }
+    Ok(std::array::from_fn(|i| {
+        u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("validated hex")
+    }))
+}
+
+/// Edit only the selected ripple table, retaining paths, notifications and scenes.
+fn update_ripple_config(
+    value: &mut toml::Value,
+    config: &AppConfig,
+    base: Option<[u8; 3]>,
+    ripple: Option<[u8; 3]>,
+    reset: bool,
+) -> ProgramResult {
+    if reset && (base.is_some() || ripple.is_some()) {
+        return Err("ripple-palette conflicts with explicit ripple colors".into());
+    }
+    if config.signal_config().kind != crate::signals::SignalKind::Ripples
+        || (config.signal.is_none() && config.sources.len() != 1)
+    {
+        return Err("ripple colors require a single ripple mode".into());
+    }
+    let root = value
+        .as_table_mut()
+        .ok_or("configuration must be a table")?;
+    let selected = if config.signal.is_some() {
+        let name = if root.contains_key("signal") {
+            "signal"
+        } else {
+            "extension"
+        };
+        root.get_mut(name).and_then(toml::Value::as_table_mut)
+    } else {
+        root.get_mut("sources")
+            .and_then(toml::Value::as_array_mut)
+            .and_then(|sources| sources.first_mut())
+            .and_then(toml::Value::as_table_mut)
+    }
+    .ok_or("missing ripple configuration")?;
+    let colors = selected
+        .entry("ripples")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or("ripples must be a table")?;
+    for (key, color) in [("base_color", base), ("ripple_color", ripple)] {
+        if reset {
+            colors.remove(key);
+        } else if let Some(color) = color {
+            colors.insert(
+                key.into(),
+                toml::Value::Array(
+                    color
+                        .into_iter()
+                        .map(|v| toml::Value::Integer(v.into()))
+                        .collect(),
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn read_limited(path: &Path) -> Result<String, Error> {
@@ -226,6 +307,8 @@ impl Runtime {
             brightness: self.config.brightness,
             palette: self.config.palette.to_string(),
             fps: self.config.fps,
+            ripple_base_color: selected.ripples.base_color,
+            ripple_color: selected.ripples.ripple_color,
             last_error: self.last_error.clone(),
             retry_attempt: self.retry_attempt,
         }
@@ -332,6 +415,9 @@ impl Runtime {
                 brightness,
                 palette,
                 fps,
+                ripple_base_color,
+                ripple_color,
+                ripple_palette,
             } => {
                 let mut value: toml::Value = toml::from_str(&self.saved.config)?;
                 let table = value
@@ -346,6 +432,17 @@ impl Runtime {
                 if let Some(v) = fps {
                     table.insert("fps".into(), toml::Value::Integer(v.into()));
                 }
+                let colors_changed =
+                    ripple_base_color.is_some() || ripple_color.is_some() || ripple_palette;
+                if colors_changed {
+                    update_ripple_config(
+                        &mut value,
+                        &self.config,
+                        ripple_base_color,
+                        ripple_color,
+                        ripple_palette,
+                    )?;
+                }
                 let config = toml::to_string(&value)?;
                 let parsed = validate(&config)?;
                 let candidate = Saved {
@@ -356,6 +453,12 @@ impl Runtime {
                 self.saved = candidate;
                 self.config = parsed;
                 if let Some(active) = &mut self.active {
+                    if colors_changed {
+                        let colors = self.config.signal_config().ripples;
+                        active
+                            .signal
+                            .set_ripple_colors(colors.base_color, colors.ripple_color);
+                    }
                     active
                         .session
                         .set_visuals(&self.config.signal_run_options());
@@ -537,10 +640,16 @@ pub fn control(options: ControlOptions) -> ProgramResult {
                 brightness,
                 palette,
                 fps,
+                ripple_base_color,
+                ripple_color,
+                ripple_palette,
             } => Action::Settings {
                 brightness,
                 palette: palette.map(|v| v.to_string()),
                 fps,
+                ripple_base_color,
+                ripple_color,
+                ripple_palette,
             },
         };
         let mut stream = UnixStream::connect(dir.join("control.sock"))
@@ -577,6 +686,163 @@ pub fn control(options: ControlOptions) -> ProgramResult {
                 serde_json::json!({"ok":false,"error":error.to_string()})
             );
             Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn strict_hex_and_cli_conflicts() {
+        assert_eq!(parse_hex_color("#00aAFF").unwrap(), [0, 170, 255]);
+        assert_eq!(parse_hex_color("000000").unwrap(), [0; 3]);
+        for value in ["fff", "0x123456", " 123456", "1234567", "gg0000", "é1234"] {
+            assert!(parse_hex_color(value).is_err(), "{value}");
+        }
+        assert!(
+            crate::Cli::try_parse_from(["ws", "control", "settings", "--ripple-color", "abcdef"])
+                .is_ok()
+        );
+        assert!(
+            crate::Cli::try_parse_from([
+                "ws",
+                "control",
+                "settings",
+                "--ripple-color",
+                "abcdef",
+                "--ripple-palette"
+            ])
+            .is_err()
+        );
+        let old: Action = serde_json::from_str(r#"{"action":"settings","brightness":42}"#).unwrap();
+        assert!(matches!(
+            old,
+            Action::Settings {
+                ripple_palette: false,
+                ripple_color: None,
+                ..
+            }
+        ));
+        assert!(
+            serde_json::from_str::<Action>(r#"{"action":"settings","ripple_color":[256,0,0]}"#)
+                .is_err()
+        );
+    }
+
+    fn runtime(text: String, dir: PathBuf) -> Runtime {
+        Runtime {
+            config: validate(&text).unwrap(),
+            saved: Saved {
+                schema_version: 1,
+                enabled: false,
+                config: text,
+            },
+            dir,
+            sdk: None,
+            active: None,
+            last_error: None,
+            retry_attempt: 0,
+            retry_at: None,
+            next_frame: Instant::now(),
+            healthy_since: Instant::now(),
+        }
+    }
+
+    fn colors(base: Option<[u8; 3]>, ripple: Option<[u8; 3]>, reset: bool) -> Action {
+        Action::Settings {
+            brightness: None,
+            palette: None,
+            fps: None,
+            ripple_base_color: base,
+            ripple_color: ripple,
+            ripple_palette: reset,
+        }
+    }
+
+    #[test]
+    fn colors_persist_reset_and_preserve_configuration() {
+        let dir = std::env::temp_dir().join(format!("wooting-ripple-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for header in [
+            "[signal]\nkind='ripples'\n[signal.ripples]",
+            "[extension]\nkind='ripples'\n[extension.ripples]",
+            "[[sources]]\nid='keys'\ntype='ripples'\n[sources.ripples]",
+        ] {
+            let text = format!("brightness=73\n{header}\nanalog_sdk_path='/test/analog.dylib'\n");
+            let mut rt = runtime(text, dir.clone());
+            rt.action(colors(Some([0; 3]), Some([120, 255, 255]), false))
+                .unwrap();
+            assert_eq!(rt.status().ripple_base_color, Some([0; 3]));
+            let saved: Saved =
+                serde_json::from_str(&fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
+            let config = validate(&saved.config).unwrap();
+            assert_eq!(config.brightness, 73);
+            assert_eq!(
+                config.signal_config().ripples.ripple_color,
+                Some([120, 255, 255])
+            );
+            assert_eq!(
+                config.signal_config().ripples.analog_sdk_path,
+                Some(PathBuf::from("/test/analog.dylib"))
+            );
+            rt.action(colors(None, Some([255, 0, 0]), false)).unwrap();
+            assert_eq!(rt.status().ripple_base_color, Some([0; 3]));
+            let before = rt.saved.config.clone();
+            assert!(rt.action(colors(Some([1; 3]), None, true)).is_err());
+            assert_eq!(rt.saved.config, before);
+            rt.action(colors(None, None, true)).unwrap();
+            assert_eq!(rt.status().ripple_color, None);
+            assert_eq!(rt.status().ripple_base_color, None);
+        }
+        let mut rt = runtime(preset("comet"), dir.clone());
+        let before = rt.saved.config.clone();
+        assert!(rt.action(colors(Some([1; 3]), None, false)).is_err());
+        assert_eq!(rt.saved.config, before);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn live_color_hook_reaches_wrapped_programs_without_initialization() {
+        let notification = "[[notifications]]\nid='timer'\nduration_seconds=5\nzones=['function']\nstatuses=['break']\n[notifications.signal]\nkind='focus-cockpit'\n";
+        for source in [
+            "[signal]\nkind='ripples'\n",
+            "[[sources]]\nid='keys'\ntype='ripples'\n[scenes.unused]\neffect='comet'\n",
+        ] {
+            let config = validate(&format!("{source}{notification}")).unwrap();
+            let mut signal = crate::build_config_signal(&config).unwrap();
+            let info = crate::preview::preview_device();
+            let layout = crate::layout::KeyboardLayout::for_device(&info);
+            let ctx = crate::render::RenderContext {
+                info: &info,
+                layout: &layout,
+                brightness: 255,
+                palette: PaletteName::Ocean,
+                tick: 0,
+            };
+            assert_eq!(signal.render(&ctx), crate::render::Frame::black());
+            signal.set_ripple_colors(Some([0, 32, 64]), Some([120, 255, 255]));
+            assert_eq!(
+                signal.render(&ctx).get_coord(layout.keys()[0].coord),
+                crate::render::Color::new(0, 32, 64)
+            );
+            signal.set_ripple_colors(None, None);
+            assert_eq!(signal.render(&ctx), crate::render::Frame::black());
+        }
+    }
+
+    #[test]
+    fn ripple_color_config_rejects_invalid_arrays() {
+        for color in ["[1,2]", "[1,2,3,4]", "[256,0,0]", "[-1,0,0]", "'ffffff'"] {
+            assert!(
+                validate(&format!(
+                    "[signal]\nkind='ripples'\n[signal.ripples]\nbase_color={color}"
+                ))
+                .is_err(),
+                "accepted {color}"
+            );
         }
     }
 }

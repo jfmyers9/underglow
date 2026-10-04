@@ -876,3 +876,109 @@ bool wooting_rgb_array_set_full(const uint8_t *colors) {
 RgbInfo *wooting_rgb_device_info(void) { return fail("metadata-null") ? NULL : &rgb; }
 int wooting_rgb_device_layout(void) { return fail("unknown-layout") ? -1 : fail("layout") ? 1 : 0; }
 "#;
+
+#[test]
+fn engine_two_tone_cli_ipc_persistence_and_rejected_updates() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mock = Mock::new();
+    let mut engine = mock.engine();
+    let initial = mock.wait_state("paused");
+    assert!(initial["status"]["ripple_base_color"].is_null());
+    assert!(initial["status"]["ripple_color"].is_null());
+
+    let applied = mock.control(&[
+        "settings",
+        "--ripple-base-color",
+        "#000000",
+        "--ripple-color",
+        "78fFff",
+        "--brightness",
+        "73",
+    ]);
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(
+        applied["status"]["ripple_base_color"],
+        serde_json::json!([0, 0, 0])
+    );
+    assert_eq!(
+        applied["status"]["ripple_color"],
+        serde_json::json!([120, 255, 255])
+    );
+    assert_eq!(applied["status"]["brightness"], 73);
+    let state = mock.dir.join("runtime/state.json");
+    let before = fs::read(&state).unwrap();
+    let status = mock.control(&["status"])["status"].clone();
+
+    // Malformed CLI arguments must fail before IPC, with the snapshot unchanged.
+    for args in [
+        vec!["settings", "--ripple-color", "ffffff0"],
+        vec!["settings", "--ripple-base-color", "GG0000"],
+        vec!["settings", "--ripple-color", "ffffff", "--ripple-palette"],
+    ] {
+        let output = mock
+            .engine_command()
+            .arg("control")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(fs::read(&state).unwrap(), before);
+        assert_eq!(mock.control(&["status"])["status"], status);
+    }
+    // Bypassing clap cannot bypass atomic validation or reset/color conflicts.
+    for fields in [
+        r#""ripple_color":[256,0,0]"#,
+        r#""ripple_color":[0,0,0,0]"#,
+        r#""ripple_base_color":[1,2,3],"ripple_palette":true"#,
+        r#""ripple_color":[1,2,3],"fps":0"#,
+    ] {
+        let mut stream = UnixStream::connect(mock.dir.join("runtime/control.sock")).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        writeln!(
+            stream,
+            "{{\"schema_version\":1,\"action\":\"settings\",{fields}}}"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(json["ok"], false, "{response}");
+        assert_eq!(fs::read(&state).unwrap(), before);
+        assert_eq!(json["status"], status);
+    }
+
+    assert_eq!(mock.control(&["stop"])["ok"], true);
+    assert!(engine.0.wait().unwrap().success());
+    let mut restarted = mock.engine();
+    assert_eq!(mock.wait_state("paused")["status"], status);
+    let partial = mock.control(&["settings", "--ripple-color", "ff0000"]);
+    assert_eq!(
+        partial["status"]["ripple_base_color"],
+        serde_json::json!([0, 0, 0])
+    );
+    assert_eq!(
+        partial["status"]["ripple_color"],
+        serde_json::json!([255, 0, 0])
+    );
+    let reset = mock.control(&["settings", "--ripple-palette"]);
+    assert_eq!(reset["ok"], true);
+    assert!(reset["status"]["ripple_color"].is_null());
+    assert!(reset["status"]["ripple_base_color"].is_null());
+    assert_eq!(reset["status"]["brightness"], 73);
+
+    assert_eq!(mock.control(&["select", "--preset", "comet"])["ok"], true);
+    let before = fs::read(&state).unwrap();
+    let rejected = mock.control(&["settings", "--ripple-color", "ffffff", "--brightness", "12"]);
+    assert_eq!(rejected["ok"], false);
+    assert_eq!(fs::read(&state).unwrap(), before);
+    assert_eq!(mock.control(&["stop"])["ok"], true);
+    assert!(restarted.0.wait().unwrap().success());
+    assert!(
+        mock.calls().is_empty(),
+        "paused edits/restarts must never open either SDK"
+    );
+}

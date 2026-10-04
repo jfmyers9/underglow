@@ -1,7 +1,7 @@
 //! Interactive toys sharing the signal runtime and hardware-free previews.
 use crate::layout::{KeyboardLayout, MatrixCoord};
 use crate::preview::{self, PreviewFormat};
-use crate::render::{Frame, PaletteName};
+use crate::render::{Color, Frame, PaletteName};
 use crate::runner::{SignalRunOptions, run_session};
 use crate::sdk::analog::{AnalogKeyPressure, AnalogSdk};
 use crate::sdk::rgb::{DeviceInfo, DeviceType, Layout};
@@ -59,6 +59,7 @@ fn run_ripples(
 ) -> ProgramResult {
     let mut signal = RippleSignal::new(RippleConfig {
         analog_sdk_path: options.analog_sdk_path.clone(),
+        ..RippleConfig::default()
     });
     let run = SignalRunOptions {
         palette: options.palette,
@@ -79,6 +80,22 @@ fn run_ripples(
 #[serde(default, deny_unknown_fields)]
 pub struct RippleConfig {
     pub analog_sdk_path: Option<PathBuf>,
+    #[serde(deserialize_with = "deserialize_rgb")]
+    pub base_color: Option<[u8; 3]>,
+    #[serde(deserialize_with = "deserialize_rgb")]
+    pub ripple_color: Option<[u8; 3]>,
+}
+
+fn deserialize_rgb<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<[u8; 3]>, D::Error> {
+    let channels = Option::<Vec<u8>>::deserialize(deserializer)?;
+    channels
+        .map(|v| {
+            v.try_into()
+                .map_err(|_| serde::de::Error::custom("RGB color requires exactly three channels"))
+        })
+        .transpose()
 }
 
 /// Construction is side-effect-free. Only initialize opens the analog SDK.
@@ -101,6 +118,11 @@ impl RippleSignal {
 }
 
 impl SignalProgram for RippleSignal {
+    fn set_ripple_colors(&mut self, base: Option<[u8; 3]>, ripple: Option<[u8; 3]>) {
+        self.config.base_color = base;
+        self.config.ripple_color = ripple;
+    }
+
     fn initialize(&mut self) -> ProgramResult {
         if self.analog.is_some() {
             return Err("ripples is already initialized".into());
@@ -153,7 +175,8 @@ impl SignalProgram for RippleSignal {
     }
 
     fn render(&self, ctx: &crate::render::RenderContext<'_>) -> Frame {
-        self.ripples.render(ctx.layout, ctx.palette, ctx.brightness)
+        self.ripples
+            .render(ctx.layout, ctx.palette, ctx.brightness, &self.config)
     }
 
     fn finished(&self) -> bool {
@@ -239,7 +262,13 @@ impl Ripples {
         self.previous = current;
     }
 
-    fn render(&self, layout: &KeyboardLayout, palette: PaletteName, brightness: u8) -> Frame {
+    fn render(
+        &self,
+        layout: &KeyboardLayout,
+        palette: PaletteName,
+        brightness: u8,
+        config: &RippleConfig,
+    ) -> Frame {
         let mut frame = Frame::black();
         let palette = palette.palette();
         let mut intensities = vec![0.0f32; layout.keys().len()];
@@ -256,12 +285,23 @@ impl Ripples {
         }
         for (key, intensity) in layout.keys().iter().zip(intensities) {
             let intensity = intensity.min(1.0);
-            frame.set_coord(
-                key.coord,
-                palette
-                    .gradient((intensity * 255.0) as u8)
-                    .scale((intensity * f32::from(brightness)) as u8),
-            );
+            let gradient = palette.gradient((intensity * 255.0) as u8);
+            let color = if config.base_color.is_none() && config.ripple_color.is_none() {
+                // Keep legacy quantization and palette output byte-for-byte.
+                gradient.scale((intensity * f32::from(brightness)) as u8)
+            } else {
+                let base = config.base_color.unwrap_or([0; 3]);
+                let ripple =
+                    config
+                        .ripple_color
+                        .unwrap_or([gradient.red, gradient.green, gradient.blue]);
+                let channel = |i: usize| {
+                    (f32::from(base[i]) * (1.0 - intensity) + f32::from(ripple[i]) * intensity)
+                        as u8
+                };
+                Color::new(channel(0), channel(1), channel(2)).scale(brightness)
+            };
+            frame.set_coord(key.coord, color);
         }
         frame
     }
@@ -308,6 +348,48 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn two_tone_idle_peak_decay_and_live_update() {
+        let layout = KeyboardLayout::for_device(&preview::preview_device());
+        let mut signal = RippleSignal::new(RippleConfig::default());
+        signal.set_ripple_colors(Some([0, 32, 64]), Some([120, 255, 255]));
+        let render = |signal: &RippleSignal, brightness| {
+            signal
+                .ripples
+                .render(&layout, PaletteName::Ocean, brightness, &signal.config)
+        };
+        let origin = hid_coord(0x09).unwrap();
+        assert_eq!(
+            render(&signal, 255).get_coord(origin),
+            Color::new(0, 32, 64)
+        );
+        signal.ripples.advance(0.0, &[key(1.0)]);
+        assert_eq!(
+            render(&signal, 255).get_coord(origin),
+            Color::new(120, 255, 255)
+        );
+        assert_eq!(
+            render(&signal, 96).get_coord(origin),
+            Color::new(120, 255, 255).scale(96)
+        );
+        assert_eq!(render(&signal, 0), Frame::black());
+        signal.set_ripple_colors(Some([0; 3]), Some([255, 0, 0]));
+        assert_eq!(signal.ripples.waves.len(), 1); // no restart on edit
+        assert_eq!(
+            render(&signal, 255).get_coord(origin),
+            Color::new(255, 0, 0)
+        );
+        signal.ripples.advance(LIFETIME, &[]);
+        assert_eq!(render(&signal, 255), Frame::black());
+        signal.set_ripple_colors(Some([0, 32, 64]), Some([120, 255, 255]));
+        assert_eq!(
+            render(&signal, 255).get_coord(origin),
+            Color::new(0, 32, 64)
+        );
+        signal.set_ripple_colors(None, None);
+        assert_eq!(render(&signal, 255), Frame::black());
+    }
+
+    #[test]
     fn brighter_default_preserves_explicit_brightness() {
         for (extra, expected) in [(vec![], 180), (vec!["--brightness", "96"], 96)] {
             let cli = crate::Cli::try_parse_from(
@@ -340,6 +422,7 @@ mod tests {
             &KeyboardLayout::for_device(&preview::preview_device()),
             PaletteName::Ocean,
             96,
+            &RippleConfig::default(),
         )
     }
     #[test]

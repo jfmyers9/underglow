@@ -439,7 +439,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let env = parse_env_vars(env)?;
                 let (config, options) = match signal {
                     SignalKind::Ripples => (
-                        signals::SignalConfig::ripples(toys::RippleConfig { analog_sdk_path }),
+                        signals::SignalConfig::ripples(toys::RippleConfig {
+                            analog_sdk_path,
+                            ..Default::default()
+                        }),
                         SignalRunOptions {
                             palette,
                             brightness,

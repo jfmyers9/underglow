@@ -11,3 +11,10 @@ kind = "ripples"
 # Optional; otherwise use WOOTING_ANALOG_SDK_PATH or a platform library default.
 # [signal.ripples]
 # analog_sdk_path = "/absolute/path/to/libwooting_analog_sdk_dist.dylib"
+
+# Optional two-tone lighting (RGB channels 0–255, before global brightness).
+# Absent colors preserve the black background and palette-driven waves.
+# base_color = [0, 32, 64]
+# ripple_color = [120, 255, 255]
+# Live engine: control settings --ripple-base-color 002040 --ripple-color 78ffff
+# Restore legacy colors: control settings --ripple-palette

@@ -29,6 +29,9 @@ use std::sync::atomic::AtomicBool;
 pub type ProgramResult = Result<(), Box<dyn std::error::Error>>;
 
 pub trait SignalProgram {
+    /// Update ripple visuals without reacquiring hardware or replaying commands.
+    fn set_ripple_colors(&mut self, _base: Option<[u8; 3]>, _ripple: Option<[u8; 3]>) {}
+
     /// Acquire mode-specific resources only for a live run, never for previews.
     fn initialize(&mut self) -> ProgramResult {
         Ok(())

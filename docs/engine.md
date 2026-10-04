@@ -10,6 +10,7 @@ wooting-signals engine
 wooting-signals control status
 wooting-signals control select --preset ripples
 wooting-signals control settings --brightness 180 --palette ocean --fps 30
+wooting-signals control settings --ripple-base-color 002040 --ripple-color 78ffff
 wooting-signals control resume
 wooting-signals control pause
 wooting-signals control select --preset comet
@@ -18,6 +19,14 @@ wooting-signals control stop
 ```
 
 Available built-ins: ripples, comet, rainbow, breath, matrix, focus-cockpit.
+For the ripple mode, the optional RGB hex colors keep idle keys lit and blend
+pressure-driven waves toward the ripple color. Global brightness scales both.
+`control settings --ripple-palette` restores the original black background and
+palette-based waves. Color edits persist and update live without restarting the
+effect or replaying commands; they are restricted to a single ripple source.
+In TOML, use RGB arrays under `[signal.ripples]` or `[sources.ripples]`, as shown
+in `examples/ripples.toml`. Omitted colors retain legacy behavior.
+
 For CI or another trusted configuration, use
 `control select --config /absolute/path/profile.toml`. Selecting while paused
 does not start providers. Selecting while active applies immediately; imported

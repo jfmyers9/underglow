@@ -51,6 +51,13 @@ registers login startup automatically.
   unapplied edits. **Discard changes**, also on the main page, restores the latest
   confirmed engine values locally without fetching them again. Brightness still
   uses the engine's 0–255 range internally.
+- For **Ripples**, enable **Two-tone ripple** and choose **Base color** and
+  **Ripple color**, then **Apply changes**. Idle keys keep the base color and
+  pressure-driven waves blend toward the ripple color before fading back.
+  Brightness scales both colors. Black base keeps the old dark idle look;
+  disabling Two-tone ripple restores black idle lighting with palette-based waves.
+  The preview reflects your draft colors but remains a synthetic animation.
+  Existing profiles keep their original colors until explicitly changed.
 - The fixed header has one primary action: **Start engine**, **Resume lighting**,
   or **Pause lighting**, depending on state. Resume takes lighting control; pause releases
   SDK lighting so the keyboard/Wootility can render again. It does not rewrite

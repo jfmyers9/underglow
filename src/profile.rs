@@ -55,6 +55,12 @@ impl ProfileRuntimeSignal {
 }
 
 impl SignalProgram for ProfileRuntimeSignal {
+    fn set_ripple_colors(&mut self, base: Option<[u8; 3]>, ripple: Option<[u8; 3]>) {
+        for source in &mut self.sources {
+            source.program_mut().set_ripple_colors(base, ripple);
+        }
+    }
+
     fn initialize(&mut self) -> crate::signals::ProgramResult {
         for source in &mut self.sources {
             source.program_mut().initialize()?;

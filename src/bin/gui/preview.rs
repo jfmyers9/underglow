@@ -5,7 +5,13 @@ use std::time::Duration;
 
 /// Paint an animated, illustrative 80%-style keyboard at the available width.
 /// `brightness` is 0–255. The caller must label this as a simulated preview.
-pub fn keyboard(ui: &mut egui::Ui, mode: &str, palette: &str, brightness: u8) {
+pub fn keyboard(
+    ui: &mut egui::Ui,
+    mode: &str,
+    palette: &str,
+    brightness: u8,
+    ripple_colors: Option<([u8; 3], [u8; 3])>,
+) {
     let width = ui.available_width().clamp(400.0, 600.0);
     let unit = width / 18.7;
     let (space, _) = ui.allocate_exact_size(
@@ -19,7 +25,10 @@ pub fn keyboard(ui: &mut egui::Ui, mode: &str, palette: &str, brightness: u8) {
     let origin = Pos2::new(space.center().x - width / 2.0, space.top() + unit * 0.25);
     let board = Rect::from_min_size(origin, Vec2::new(width, unit * 7.05));
     let time = ui.input(|i| i.time) as f32;
-    let accent = palette_color(palette, 0.25);
+    let accent = ripple_colors
+        .filter(|_| mode == "ripples")
+        .map(|(_, ripple)| Color32::from_rgb(ripple[0], ripple[1], ripple[2]))
+        .unwrap_or_else(|| palette_color(palette, 0.25));
 
     // Layered chassis and a narrow underside highlight give the board depth
     // without overwhelming the key illumination with a neon frame.
@@ -48,8 +57,16 @@ pub fn keyboard(ui: &mut egui::Ui, mode: &str, palette: &str, brightness: u8) {
             Vec2::new(w * unit - unit * 0.12, unit * 0.86),
         );
         let (strength, hue) = illumination(mode, x + w * 0.5, y, time);
-        let strength = strength * f32::from(brightness) / 255.0;
-        let color = palette_color(palette, hue);
+        let (color, strength) = match ripple_colors.filter(|_| mode == "ripples") {
+            Some((base, ripple)) => (
+                ripple_color(base, ripple, strength),
+                f32::from(brightness) / 255.0,
+            ),
+            None => (
+                palette_color(palette, hue),
+                strength * f32::from(brightness) / 255.0,
+            ),
+        };
         if strength > 0.05 {
             for (spread, alpha) in [(0.11, 13.0), (0.055, 27.0)] {
                 painter.rect_filled(
@@ -246,6 +263,14 @@ fn mix(a: Color32, b: Color32, amount: f32) -> Color32 {
     Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
 }
 
+fn ripple_color(base: [u8; 3], ripple: [u8; 3], strength: f32) -> Color32 {
+    mix(
+        Color32::from_rgb(base[0], base[1], base[2]),
+        Color32::from_rgb(ripple[0], ripple[1], ripple[2]),
+        strength,
+    )
+}
+
 fn palette_color(palette: &str, phase: f32) -> Color32 {
     let (a, b) = match palette {
         "cyberpunk" => ([194, 123, 244], [85, 215, 232]),
@@ -277,7 +302,13 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        keyboard(ui, "ripples", "ocean", 180);
+                        keyboard(
+                            ui,
+                            "ripples",
+                            "ocean",
+                            180,
+                            Some(([0, 32, 64], [120, 255, 255])),
+                        );
                     });
                 },
             );
@@ -312,5 +343,20 @@ mod tests {
         let b = Color32::from_rgb(230, 180, 120);
         assert_eq!(mix(a, b, 0.0), a);
         assert_eq!(mix(a, b, 1.0), b);
+    }
+
+    #[test]
+    fn two_tone_preview_keeps_base_between_waves() {
+        let base = [10, 40, 90];
+        let wave = [200, 120, 40];
+        assert_eq!(ripple_color(base, wave, 0.0), Color32::from_rgb(10, 40, 90));
+        assert_eq!(
+            ripple_color(base, wave, 1.0),
+            Color32::from_rgb(200, 120, 40)
+        );
+        assert_eq!(
+            ripple_color(base, wave, 0.5),
+            Color32::from_rgb(105, 80, 65)
+        );
     }
 }

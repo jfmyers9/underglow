@@ -41,6 +41,10 @@ struct Status {
     brightness: u8,
     palette: String,
     fps: u32,
+    #[serde(default)]
+    ripple_base_color: Option<[u8; 3]>,
+    #[serde(default)]
+    ripple_color: Option<[u8; 3]>,
     last_error: Option<String>,
     retry_attempt: u32,
 }
@@ -433,6 +437,8 @@ struct Controller {
     brightness: u8,
     palette: String,
     fps: u32,
+    ripple_colors: RippleColors,
+    ripple_colors_dirty: bool,
     settings_dirty: bool,
     config_path: String,
     trust_config: bool,
@@ -480,6 +486,8 @@ impl Controller {
             brightness: 96,
             palette: "wooting".into(),
             fps: 30,
+            ripple_colors: RippleColors::default(),
+            ripple_colors_dirty: false,
             settings_dirty: false,
             config_path: String::new(),
             trust_config: false,
@@ -527,6 +535,7 @@ impl Controller {
                     Ok(reply) => {
                         if reply.ok && args.first().is_some_and(|arg| arg == "settings") {
                             self.settings_dirty = false;
+                            self.ripple_colors_dirty = false;
                         }
                         self.connected = reply.status.is_some();
                         self.message = reply.error.unwrap_or_else(|| {
@@ -542,6 +551,7 @@ impl Controller {
                                 self.brightness = status.brightness;
                                 self.palette = status.palette.clone();
                                 self.fps = status.fps;
+                                self.ripple_colors = RippleColors::from_status(&status);
                             }
                             self.status = Some(status);
                         }
@@ -562,6 +572,44 @@ const BORDER: egui::Color32 = egui::Color32::from_rgb(42, 53, 66);
 const INK: egui::Color32 = egui::Color32::from_rgb(234, 241, 247);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(143, 160, 179);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(128, 232, 200);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RippleColors {
+    enabled: bool,
+    base: [u8; 3],
+    ripple: [u8; 3],
+}
+
+impl Default for RippleColors {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base: [0, 32, 64],
+            ripple: [120, 255, 255],
+        }
+    }
+}
+
+impl RippleColors {
+    fn from_status(status: &Status) -> Self {
+        let defaults = Self::default();
+        Self {
+            enabled: status.ripple_base_color.is_some() || status.ripple_color.is_some(),
+            base: status
+                .ripple_base_color
+                .unwrap_or(if status.ripple_color.is_some() {
+                    [0; 3]
+                } else {
+                    defaults.base
+                }),
+            ripple: status.ripple_color.unwrap_or(defaults.ripple),
+        }
+    }
+}
+
+fn color_hex(color: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
+}
 
 fn configure_style(context: &egui::Context) {
     let mut style = (*context.style()).clone();
@@ -674,12 +722,14 @@ impl Controller {
             self.brightness = status.brightness;
             self.palette = status.palette.clone();
             self.fps = status.fps;
+            self.ripple_colors = RippleColors::from_status(status);
             self.settings_dirty = false;
+            self.ripple_colors_dirty = false;
         }
     }
 
     fn apply_settings(&mut self) {
-        self.dispatch(Action::Control(vec![
+        let mut args = vec![
             "settings".into(),
             "--brightness".into(),
             self.brightness.to_string().into(),
@@ -687,7 +737,20 @@ impl Controller {
             self.palette.clone().into(),
             "--fps".into(),
             self.fps.to_string().into(),
-        ]));
+        ];
+        if self.preset == "ripples" && self.ripple_colors_dirty {
+            if self.ripple_colors.enabled {
+                args.extend([
+                    "--ripple-base-color".into(),
+                    color_hex(self.ripple_colors.base).into(),
+                    "--ripple-color".into(),
+                    color_hex(self.ripple_colors.ripple).into(),
+                ]);
+            } else {
+                args.push("--ripple-palette".into());
+            }
+        }
+        self.dispatch(Action::Control(args));
     }
 
     fn show_settings(&mut self, context: &egui::Context) {
@@ -820,6 +883,23 @@ impl Controller {
                             self.settings_dirty |= ui.add(egui::Slider::new(&mut self.brightness, 0..=255).show_value(false)).changed();
                             ui.label(format!("{}%", (u32::from(self.brightness) * 100 + 127) / 255));
                         });
+                        if self.preset == "ripples" {
+                            let mut changed = ui.checkbox(&mut self.ripple_colors.enabled, "Two-tone ripple").changed();
+                            if self.ripple_colors.enabled {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label("Base color");
+                                    changed |= ui.color_edit_button_srgb(&mut self.ripple_colors.base).changed();
+                                    ui.small(color_hex(self.ripple_colors.base));
+                                    ui.label("Ripple color");
+                                    changed |= ui.color_edit_button_srgb(&mut self.ripple_colors.ripple).changed();
+                                    ui.small(color_hex(self.ripple_colors.ripple));
+                                });
+                                ui.small("Keys stay lit in the base color; presses send waves of the ripple color. Black base restores a dark idle keyboard.");
+                            }
+                            self.settings_dirty |= changed;
+                            self.ripple_colors_dirty |= changed;
+                        }
+                        if self.preset != "ripples" || !self.ripple_colors.enabled {
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Palette");
                             for (palette, label) in PALETTES.iter().zip(["Amber", "Neon", "Ocean", "Ember", "Terminal"]) {
@@ -828,6 +908,7 @@ impl Controller {
                                 }
                             }
                         });
+                        }
                         ui.horizontal(|ui| {
                             ui.label("Frame rate");
                             ui.spacing_mut().slider_width = (ui.available_width() - 110.0).max(120.0);
@@ -850,7 +931,8 @@ impl Controller {
                             ui.label(egui::RichText::new("ILLUSTRATIVE PREVIEW").size(10.0).color(MUTED));
                         });
                     });
-                    gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness);
+                    let ripple_colors = self.ripple_colors.enabled.then_some((self.ripple_colors.base, self.ripple_colors.ripple));
+                    gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness, ripple_colors);
                     ui.label(egui::RichText::new("Simulation · not live input, device status or actual frame rate").small().color(MUTED));
                 });
                 ui.add_space(8.0);
@@ -960,6 +1042,8 @@ mod tests {
             brightness: 128,
             palette: "ocean".into(),
             fps: 30,
+            ripple_colors: RippleColors::default(),
+            ripple_colors_dirty: false,
             settings_dirty: false,
             config_path: String::new(),
             trust_config: false,
@@ -1066,6 +1150,108 @@ mod tests {
             incoming.try_recv().is_err(),
             "discard must not change the engine"
         );
+    }
+
+    #[test]
+    fn ripple_colors_are_explicit_preserved_and_only_sent_for_ripples() {
+        let (mut app, incoming) = controller_fixture();
+        app.preset = "ripples".into();
+        app.ripple_colors = RippleColors {
+            enabled: true,
+            base: [0, 32, 64],
+            ripple: [120, 255, 255],
+        };
+        app.ripple_colors_dirty = true;
+        app.settings_dirty = true;
+        app.apply_settings();
+        let Action::Control(args) = incoming.try_recv().unwrap() else {
+            panic!("expected settings");
+        };
+        assert_eq!(
+            &args[7..],
+            [
+                "--ripple-base-color",
+                "#002040",
+                "--ripple-color",
+                "#78ffff"
+            ]
+            .map(OsString::from)
+        );
+
+        app.pending = false;
+        app.ripple_colors.enabled = false;
+        app.apply_settings();
+        let Action::Control(args) = incoming.try_recv().unwrap() else {
+            panic!("expected settings");
+        };
+        assert_eq!(&args[7..], [OsString::from("--ripple-palette")]);
+
+        // Brightness/FPS-only edits must preserve advanced, partially specified colors.
+        app.pending = false;
+        app.ripple_colors_dirty = false;
+        app.apply_settings();
+        let Action::Control(args) = incoming.try_recv().unwrap() else {
+            panic!("expected settings");
+        };
+        assert_eq!(args.len(), 7);
+        app.pending = false;
+        app.preset = "comet".into();
+        app.ripple_colors_dirty = true;
+        app.apply_settings();
+        let Action::Control(args) = incoming.try_recv().unwrap() else {
+            panic!("expected settings");
+        };
+        assert_eq!(args.len(), 7);
+
+        let mut status: Status = serde_json::from_str(STATUS).unwrap();
+        assert!(!RippleColors::from_status(&status).enabled);
+        status.ripple_base_color = Some([12, 34, 56]);
+        status.ripple_color = Some([200, 150, 100]);
+        app.status = Some(status);
+        app.discard_settings();
+        assert_eq!(
+            app.ripple_colors,
+            RippleColors {
+                enabled: true,
+                base: [12, 34, 56],
+                ripple: [200, 150, 100]
+            }
+        );
+        assert!(!app.ripple_colors_dirty);
+        assert!(!app.settings_dirty);
+    }
+
+    #[test]
+    fn ripple_color_pickers_render_on_the_main_page() {
+        let (mut app, incoming) = controller_fixture();
+        app.preset = "ripples".into();
+        app.ripple_colors.enabled = true;
+        let context = egui::Context::default();
+        configure_style(&context);
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(620.0, 640.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| app.show_lighting(ctx),
+        );
+        let mut text = String::new();
+        for shape in &output.shapes {
+            painted_text(&shape.shape, &mut text);
+        }
+        for label in [
+            "Two-tone ripple",
+            "Base color",
+            "Ripple color",
+            "Frame rate",
+        ] {
+            assert!(text.contains(label), "{label} missing in compact layout");
+        }
+        assert!(!text.contains("Palette"));
+        assert!(incoming.try_recv().is_err());
     }
     const STATUS: &str = r#"{"schema_version":1,"state":"retrying","enabled":true,"mode":"ripples","brightness":96,"palette":"wooting","fps":30,"last_error":"unplugged","retry_attempt":2}"#;
 
@@ -1174,12 +1360,20 @@ mod tests {
             brightness: 7,
             palette: "custom".into(),
             fps: 12,
+            ripple_colors: RippleColors::default(),
+            ripple_colors_dirty: false,
             settings_dirty: true,
             config_path: String::new(),
             trust_config: false,
             last_poll: Instant::now() - Duration::from_secs(10),
             settings_open: false,
         };
+        app.ripple_colors = RippleColors {
+            enabled: true,
+            base: [20, 40, 60],
+            ripple: [200, 180, 160],
+        };
+        app.ripple_colors_dirty = true;
         outgoing
             .send(Completion {
                 action: Action::Control(vec!["status".into()]),
@@ -1193,6 +1387,8 @@ mod tests {
         assert_eq!(app.brightness, 7);
         assert_eq!(app.fps, 12);
         assert_eq!(app.palette, "custom");
+        assert_eq!(app.ripple_colors.base, [20, 40, 60]);
+        assert!(app.ripple_colors_dirty);
         outgoing
             .send(Completion {
                 action: Action::Control(vec!["settings".into()]),
@@ -1213,6 +1409,8 @@ mod tests {
         app.receive();
         assert!(!app.settings_dirty);
         assert_eq!(app.brightness, app.status.as_ref().unwrap().brightness);
+        assert!(!app.ripple_colors.enabled);
+        assert!(!app.ripple_colors_dirty);
         outgoing
             .send(Completion {
                 action: Action::StartEngine,

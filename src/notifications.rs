@@ -157,6 +157,10 @@ impl NotificationProgram {
 }
 
 impl SignalProgram for NotificationProgram {
+    fn set_ripple_colors(&mut self, base: Option<[u8; 3]>, ripple: Option<[u8; 3]>) {
+        self.base.set_ripple_colors(base, ripple);
+    }
+
     fn initialize(&mut self) -> ProgramResult {
         self.started = Instant::now();
         self.base.initialize()?;
