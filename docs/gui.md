@@ -35,24 +35,30 @@ registers login startup automatically.
 - Opening the GUI only polls status. If unavailable, **Start engine** explicitly
   starts a standalone engine. Fresh state starts paused; existing persisted
   enabled state remains the engine's responsibility. The GUI does not force resume.
-- Choose ripples, comet, rainbow, breath, matrix, or focus-cockpit and **Select**.
-  Selection preserves the current enabled/paused state.
-- Adjust brightness (0–255), palette, and FPS (1–120), then **Apply settings**.
-  Background polling does not overwrite unapplied edits. **Reload settings**
-  discards edits and fetches the engine's values.
-- **Resume effects** takes lighting control. **Pause / return lighting** releases
+- Click an effect card: Ripples, Comet, Spectrum (rainbow), Breathe (breath),
+  Matrix, or Focus (focus-cockpit). Selection preserves the enabled/paused state;
+  the highlighted card follows the engine's confirmed response.
+- The animated keyboard is an **illustrative simulation**, not live input,
+  exact engine frames, or proof that a keyboard is connected. Preview animation
+  continues while lighting is paused and never opens an SDK.
+- Adjust brightness (shown as a percentage) and palette, then **Apply changes**.
+  Frame rate (1–120 FPS) lives in **Settings**. Background polling does not
+  overwrite unapplied edits. **Reload settings** discards edits and fetches the
+  engine's values. Brightness still uses the engine's 0–255 range internally.
+- The fixed header has one primary action: **Start engine**, **Resume lighting**,
+  or **Pause lighting**, depending on state. Resume takes lighting control; pause releases
   SDK lighting so the keyboard/Wootility can render again. It does not rewrite
   saved keyboard profiles.
-- Trusted configuration accepts a path only after an explicit trust checkbox.
+- **Settings → Import a trusted profile** accepts a path only after an explicit trust checkbox.
   **Configurations can execute commands as your user.** Editing the path resets
   acknowledgement. Do not select untrusted downloaded files.
-- State, mode, enabled flag, retry count, and the latest engine error are shown.
-  The diagnostics section exposes the last engine JSON response. Disconnected
-  values are marked **Last seen**, not presented as live status.
+- The main screen shows engine state and lighting errors. Settings contains the
+  detailed connection message, recovery count, and last engine JSON response.
+  Disconnected engine details are marked **Last seen**, not presented as live status.
 
 ### Login / service settings
 
-**Service status** checks the helper. **Enable login** registers startup only;
+In Settings, **Check service** checks the helper. **Enable login** registers startup only;
 **Start service** launches now. **Disable login** removes the registration and
 stops the managed service. **Stop service** stops it without removing login opt-in.
 Use **Stop standalone engine** only for an unmanaged engine; service managers may
