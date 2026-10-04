@@ -10,6 +10,32 @@ main direction is keyboard toys rather than a workstation dashboard.
 See the [companion app roadmap](docs/roadmap.md) for the Wootility coexistence
 model, macOS/Linux packaging, background engine, configuration, and GUI plan.
 
+## Companion app
+
+The optional native GUI and CLI control the same persistent engine. A fresh
+engine starts paused; nothing takes over lighting until you explicitly resume.
+
+```sh
+cargo run -- engine
+# In another terminal:
+cargo run -- control select --preset ripples
+cargo run -- control resume
+cargo run -- control settings --brightness 180 --palette ocean
+cargo run -- control pause
+```
+
+Build the optional settings app with `cargo build --features gui --bins`, then
+launch `target/debug/wooting-gui`. Closing its window leaves the engine running.
+Use Pause to restore/release lighting, or Stop engine to shut it down.
+
+- [Engine, persistence, local control, and recovery](docs/engine.md)
+- [Native GUI and service controls](docs/gui.md)
+- [macOS/Linux packaging and installation](docs/install.md)
+- [Opt-in build/CI/timer notifications over a base effect](docs/notifications.md)
+
+No service or login startup is enabled automatically. Foreground commands refuse
+while the engine owns hardware; pause it before using `doctor` or a standalone toy.
+
 ## First toy: pressure-driven ripples
 
 Press a key lightly for a gentle ripple; press deeper for brighter expanding
@@ -73,8 +99,8 @@ not used. Preview input is simulated, not a hardware compatibility test.
   Stop the toy before editing live lighting in Wootility. Pause competing RGB
   apps or automatic profile switching if they interfere; there is no ownership
   arbitration or automatic Wootility detection yet.
-- Nothing is installed at login and no background service is started. A future
-  menu-bar launcher can wrap this same start/stop lifecycle.
+- Standalone toy commands install no login item and start no background service.
+  The optional GUI and engine use this same start/stop lifecycle.
 
 macOS is the primary target; the loader also supports Linux. A timed ripple
 session on an attached 80HE completed without SDK errors and the effect was
@@ -268,9 +294,9 @@ Configuration compatibility and validation:
 - Dry-run validates configuration and constructs the selected mode without
   loading SDKs, polling APIs, or starting commands. Preview uses synthetic input;
   JSON/SVG stdout contains only the requested preview, not a config preamble.
-- Configuration is read once at startup. Stop, edit, validate, and rerun to
-  change modes. Live select/pause/resume, atomic saves, and retaining a running
-  configuration after a rejected reload belong to the future persistent engine.
+- Foreground `run` reads configuration once. For live selection/settings,
+  persisted pause, and atomic configuration snapshots, use the engine controls.
+  Invalid engine selections leave its previous configuration and mode intact.
 
 Validate without touching the keyboard:
 
@@ -413,44 +439,27 @@ Soundwave is disabled unless explicitly enabled and currently uses manual levels
 cargo run -- signal run soundwave --enabled --level 0.7 --bass 0.4
 ```
 
-## macOS install helper
+## Install on macOS or Linux
 
-The installer is conservative: it can install the binary and write a LaunchAgent plist, but it does not load the agent unless you opt in.
-
-Dry-run install:
+Build or obtain a reviewed release directory, then run the platform installer:
 
 ```sh
-scripts/install-macos.sh
+# Dry-run first; --apply installs only, never enables login startup.
+scripts/install-macos.sh --package /path/to/release
+scripts/install-macos.sh --package /path/to/release --apply
+# Linux equivalent:
+scripts/install-linux.sh --package /path/to/release --apply
 ```
 
-Apply install:
+Packages include the selected native SDKs and relocated dependencies, the CLI,
+optional GUI, and a user-service helper. Installed binaries do not depend on a
+checkout. Upgrade/uninstall preserve external config and runtime state. Python 3
+is required for installation/service management, not for foreground CLI usage.
 
-```sh
-scripts/install-macos.sh --apply
-```
-
-Installed paths:
-
-| Item        | Path                                                              |
-| ----------- | ----------------------------------------------------------------- |
-| Binary      | `~/.local/bin/wooting-signals`                                    |
-| Config      | `~/Library/Application Support/wooting-signals/config.toml`       |
-| Log         | `~/Library/Logs/wooting-signals.log`                              |
-| LaunchAgent | `~/Library/LaunchAgents/io.github.jfmyers9.wooting-signals.plist` |
-
-After reviewing the config, opt into LaunchAgent mode manually:
-
-```sh
-launchctl bootstrap gui/$UID ~/Library/LaunchAgents/io.github.jfmyers9.wooting-signals.plist
-launchctl kickstart gui/$UID/io.github.jfmyers9.wooting-signals
-launchctl print gui/$UID/io.github.jfmyers9.wooting-signals
-```
-
-Uninstall binary and LaunchAgent plist:
-
-```sh
-scripts/uninstall-macos.sh --apply
-```
+See [installation and release requirements](docs/install.md) for SDK inputs,
+license-review gates, platform prerequisites, explicit login enable/start,
+uninstall, and signing/notarization limitations. No signed release or Linux
+hardware certification is implied by the packaging tests.
 
 ## Safety and coexistence
 

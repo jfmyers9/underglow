@@ -53,11 +53,19 @@ As of this document:
 - Versioned TOML selects ripples, effects, signals, and source/rule/scene profiles.
   All live modes share resource startup, frame execution, and shutdown; the toy
   CLI remains available. Dry-run and previews acquire no hardware resources.
-- A preliminary macOS installer can generate a LaunchAgent, but points at the
-  SDK inside a repository checkout. It is not a self-contained product installer.
-- No Linux installer, persistent control API, live mode switching, or GUI exists.
-- 85 tests and Clippy passed after runtime/configuration unification. These include
-  deterministic previews, config validation, and simulated SDK lifecycle/errors.
+- A single-instance engine supports live selection/settings, persisted pause,
+  local status/control, SIGTERM cleanup, and bounded recovery. Foreground commands
+  coordinate through a hardware lease. Command presets are never auto-replayed.
+- Optional native GUI, macOS/Linux installers, user-service controls, and a
+  dependency-bundling release builder are implemented. Release inputs, dependency
+  notices, signing, and physical cross-platform verification remain release gates.
+- Opt-in bounded build/CI/timer notifications compose over the base effect without
+  another hardware writer. Default toy presets start no network or command sources.
+- Existing API polls run off the render/control loop with a shared four-job cap;
+  switching or pausing cancels new work without waiting on HTTP responses.
+- Hardware-free tests cover configuration, previews, SDK/IPC failure lifecycles,
+  GUI control construction, packaging with fake service managers, and native
+  dependency relocation. These do not substitute for physical acceptance tests.
 
 ### Hardware findings
 
@@ -231,10 +239,10 @@ startup. Constructors and previews are hardware-free. The shared session attempt
 RGB restoration and mode shutdown after normal exit, interruption, and errors,
 including partially completed startup. RGB-only modes do not require analog.
 
-**Still pending:** live selection/pause/resume/status, atomic persistence, and
-retaining a running last-valid configuration after a rejected edit. These will
-be implemented with the persistent engine below; current commands read config
-once and do not modify it. The criteria below are not yet fully complete.
+**Implemented controls:** the engine supports live select/pause/resume/status,
+atomic snapshots, and rejection of invalid edits without changing the active
+configuration. Shared brightness/palette/FPS edits do not restart command presets.
+Original TOML inputs remain unchanged; see [engine behavior](engine.md).
 
 Bring ripples into the shared runtime/configuration model alongside existing
 animations and status utilities. Introduce clear select, pause, resume, and status
@@ -247,6 +255,11 @@ resources. Mode selection no longer depends on unrelated execution paths.
 
 ### 3. Add the persistent engine and control API
 
+**Implemented and mock-tested:** per-user engine/hardware leases, private Unix
+IPC, persistent enabled/paused intent, live switching, bounded recovery, and
+SIGINT/SIGTERM/SIGHUP cleanup. Commands never auto-retry or auto-resume on restart.
+Physical reconnect/sleep and platform service acceptance remain unverified.
+
 Add single-instance enforcement, local control, live switching, status reporting,
 bounded recovery, and graceful service shutdown. Handle SIGTERM as well as Ctrl-C.
 Preserve explicit pause across restarts and reconnects. Define how foreground
@@ -258,6 +271,12 @@ and physical lifecycle tests pass. Closing a client leaves runtime state intact.
 
 ### 4. Package for macOS and Linux
 
+**Implemented tooling:** dependency-complete release builder, relocation,
+staged installers, state-preserving upgrades/uninstall, opt-in LaunchAgent and
+systemd-user helpers, and desktop launchers. Synthetic packaging/relocation tests
+pass; reviewed SDK/license inputs, signed/notarized distribution, clean-machine
+acceptance, and Linux hardware tests remain release gates. See [install](install.md).
+
 Produce self-contained or dependency-complete release artifacts, user-service
 definitions, installation instructions, and diagnostics. Replace checkout-based
 SDK paths. Make login startup an explicit choice.
@@ -268,6 +287,12 @@ Record hardware verification per supported platform, not just compilation result
 
 ### 5. Add the thin GUI
 
+**Implemented:** optional native settings controller using the same CLI/IPC,
+preset/settings selection, explicit trusted-config import, pause/resume, engine
+and login controls, and status/errors. Worker threads keep controller calls off
+the UI thread; closing the client does not stop the engine. Build/headless tests
+pass; graphical platform acceptance requires a display and manual validation.
+
 Build the picker, settings, handoff, startup controls, and status surface on the
 same control API used by the CLI. Keep headless operation supported.
 
@@ -277,6 +302,10 @@ persist; closing the settings window does not accidentally stop the engine.
 
 ### 6. Compose notifications over a base visualization
 
+**Implemented and deterministic-test covered:** explicit command/CI/focus sources,
+status filters, priority, selected zones, and 1–60 second expiration. Base input
+continues advancing; stable events do not repeat. See [notifications](notifications.md).
+
 Add opt-in build/CI/timer notifications with defined priority, duration, zone,
 and resume behavior. Start with existing integrations rather than new providers.
 
@@ -284,15 +313,18 @@ and resume behavior. Start with existing integrations rather than new providers.
 cleanly without a second hardware writer. A simple visualization-only setup stays
 simple and makes no unnecessary network requests.
 
-## Deferred decisions
+## Remaining acceptance and deferred work
 
-No blocking product questions remain. Resolve these through the milestones rather
-than guessing now:
+The software pieces above are implemented and hardware-free checks pass. This
+does not claim the physical/release completion criteria are satisfied:
 
 - Exact Wootility coexistence restrictions: milestone 1 hardware evidence.
-- Config migration details and IPC schema: milestones 2–3.
-- GUI toolkit, package formats, minimum OS versions, and signing/distribution
-  arrangements: milestones 4–5.
+- Config and IPC currently use version 1; future versions need explicit migrations.
+- The GUI uses optional eframe plus a macOS menu-bar launcher; Linux uses the
+  desktop/settings-window fallback. Native interaction still needs manual review.
+- Prepared archive/install tooling exists. Verified release SDK inputs, complete
+  dependency notices, minimum-OS acceptance, signing/notarization, and distribution
+  arrangements remain release gates. No publishing is performed by the tooling.
 - Automatic Wootility handoff, additional layouts/models, light-bar behavior,
   real audio capture, screen ambilight, and multi-device support: later work after
   the core experience is reliable.
