@@ -137,7 +137,9 @@ impl SignalProgram for FixtureSignal {
         self.finished
     }
 
-    fn shutdown(&mut self, _interrupted: bool) {}
+    fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

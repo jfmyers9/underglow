@@ -72,7 +72,9 @@ impl SignalProgram for SoundwaveSignal {
         false
     }
 
-    fn shutdown(&mut self, _interrupted: bool) {}
+    fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

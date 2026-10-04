@@ -125,7 +125,9 @@ impl SignalProgram for MarketSignal {
         false
     }
 
-    fn shutdown(&mut self, _interrupted: bool) {}
+    fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 }
 
 pub fn normalize_market(

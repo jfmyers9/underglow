@@ -1,0 +1,44 @@
+schema_version = 1
+continuous = true
+brightness = 96
+fps = 30
+
+[signal]
+kind = "static-effect"
+effect = "comet"
+
+# Timer only: this example performs no network requests or commands.
+[[notifications]]
+id = "focus-timer"
+priority = 20
+duration_seconds = 5
+zones = ["function", "arrows"]
+statuses = ["break", "overtime"]
+[notifications.signal]
+kind = "focus-cockpit"
+focus_minutes = 25
+break_minutes = 5
+cycles = 1
+
+# Explicit opt-in only: uncomment to execute a trusted command once per live run.
+# [[notifications]]
+# id = "build"
+# priority = 100
+# duration_seconds = 6
+# zones = ["function"]
+# statuses = ["success", "failure", "timeout"]
+# [notifications.signal]
+# kind = "command-pulse"
+# command = ["cargo", "test"]
+
+# Explicit opt-in only: uncomment and set a repository to poll GitHub.
+# [[notifications]]
+# id = "ci"
+# priority = 50
+# duration_seconds = 5
+# zones = ["function", "navigation"]
+# statuses = ["passing", "failing", "conflict", "reviewrequested"]
+# [notifications.signal]
+# kind = "github-ci"
+# repo = "owner/repository"
+# poll_seconds = 30

@@ -27,5 +27,7 @@ impl SignalProgram for StaticEffectSignal {
         false
     }
 
-    fn shutdown(&mut self, _interrupted: bool) {}
+    fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 }

@@ -1,7 +1,10 @@
 mod config;
 mod doctor;
 mod effects;
+mod engine;
 mod layout;
+mod notifications;
+mod ownership;
 mod preview;
 mod profile;
 mod render;
@@ -44,6 +47,10 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Run the per-user engine. Fresh state starts paused; opt in with control resume.
+    Engine(engine::EngineOptions),
+    /// Control a running engine over its user-private Unix socket; emits JSON.
+    Control(engine::ControlOptions),
     /// Check SDK access and restoration (opens/resets RGB; opt in to an animation).
     Doctor(doctor::DoctorOptions),
     /// Play an interactive keyboard toy; stop to restore normal lighting.
@@ -290,7 +297,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let interrupted = install_ctrlc_handler()?;
 
+    let needs_hardware = match &cli.command {
+        Command::Engine(_) | Command::Control(_) | Command::Preview { .. } => false,
+        Command::Run {
+            dry_run, preview, ..
+        } => !dry_run && !preview,
+        Command::Toy {
+            command: toys::ToyCommand::Ripples(options),
+        } => !options.preview,
+        _ => true,
+    };
+    let _hardware = if needs_hardware {
+        Some(ownership::Lease::acquire("hardware")?)
+    } else {
+        None
+    };
+
     match cli.command {
+        Command::Engine(options) => engine::run(options, cli.sdk_path, &interrupted)?,
+        Command::Control(options) => engine::control(options)?,
         Command::Doctor(options) => doctor::run(options, cli.sdk_path.as_deref(), &interrupted)?,
         Command::Toy { command } => toys::run(command, cli.sdk_path.as_deref(), &interrupted)?,
         Command::Info => {
@@ -607,11 +632,13 @@ fn build_config_signal(
     config: &AppConfig,
 ) -> Result<Box<dyn signals::SignalProgram>, Box<dyn std::error::Error>> {
     config.validate()?;
-    if ProfileRuntimeSignal::is_profile_runtime_config(config) {
-        Ok(Box::new(ProfileRuntimeSignal::new(config.clone())?))
-    } else {
-        build_signal(&config.signal_config(), config.effect)
-    }
+    let base: Box<dyn signals::SignalProgram> =
+        if ProfileRuntimeSignal::is_profile_runtime_config(config) {
+            Box::new(ProfileRuntimeSignal::new(config.clone())?)
+        } else {
+            build_signal(&config.signal_config(), config.effect)?
+        };
+    notifications::wrap(base, &config.notifications, config.effect)
 }
 
 fn run_keyboard(

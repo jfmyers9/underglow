@@ -58,7 +58,9 @@ pub fn print_signal_preview(
             })
         })
         .collect::<Vec<_>>();
-    signal.shutdown(false);
+    if let Err(error) = signal.shutdown(false) {
+        eprintln!("warning: {error}");
+    }
     print_frames(&info, &layout, &frames, format);
 }
 

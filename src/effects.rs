@@ -163,7 +163,7 @@ fn scale_down(a: u8, b: u8) -> u8 {
 mod tests {
     use super::*;
     use crate::layout::KeyboardLayout;
-    use crate::render::{RenderContext, FRAME_BYTES};
+    use crate::render::{FRAME_BYTES, RenderContext};
     use crate::sdk::rgb::{DeviceInfo, DeviceType, Layout};
 
     fn info(rows: u8, columns: u8) -> DeviceInfo {

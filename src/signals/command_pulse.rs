@@ -281,6 +281,9 @@ impl CommandPulseSignal {
 }
 
 impl SignalProgram for CommandPulseSignal {
+    fn notification_snapshot(&self) -> Option<SignalSnapshot> {
+        Some(self.snapshot("command-pulse"))
+    }
     fn tick(&mut self, interrupted: &AtomicBool) -> crate::signals::ProgramResult {
         match self.state {
             CommandPulseState::Pending => self.start(),
@@ -364,7 +367,7 @@ impl SignalProgram for CommandPulseSignal {
         }
     }
 
-    fn shutdown(&mut self, interrupted: bool) {
+    fn shutdown(&mut self, interrupted: bool) -> crate::signals::ProgramResult {
         if self.child.is_some() {
             let elapsed = match self.state {
                 CommandPulseState::Running { started } => started.elapsed(),
@@ -379,6 +382,7 @@ impl SignalProgram for CommandPulseSignal {
             }
         }
         self.maybe_print_summary();
+        Ok(())
     }
 }
 

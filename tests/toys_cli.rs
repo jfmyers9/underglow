@@ -16,7 +16,8 @@ struct Mock {
 }
 impl Mock {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!(
+        // Keep Unix socket paths below macOS's sockaddr_un limit.
+        let dir = PathBuf::from("/tmp").join(format!(
             "wooting-toy-test-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -63,7 +64,8 @@ impl Mock {
             .arg(&self.library)
             .arg("--sdk-path")
             .arg(&self.library)
-            .env("MOCK_LOG", &self.log);
+            .env("MOCK_LOG", &self.log)
+            .env("WOOTING_STATE_DIR", self.dir.join("runtime"));
         command
     }
     fn calls(&self) -> String {
@@ -75,7 +77,8 @@ impl Mock {
         command
             .args(["doctor", "--json", "--sdk-path"])
             .arg(&self.library)
-            .env("MOCK_LOG", &self.log);
+            .env("MOCK_LOG", &self.log)
+            .env("WOOTING_STATE_DIR", self.dir.join("runtime"));
         command
     }
 
@@ -90,7 +93,8 @@ impl Mock {
             .arg("--sdk-path")
             .arg(&self.library)
             .env("WOOTING_ANALOG_SDK_PATH", &self.library)
-            .env("MOCK_LOG", &self.log);
+            .env("MOCK_LOG", &self.log)
+            .env("WOOTING_STATE_DIR", self.dir.join("runtime"));
         command
     }
 }
@@ -228,6 +232,7 @@ fn ctrl_c_restores_lighting() {
         .arg("--sdk-path")
         .arg(&mock.library)
         .env("MOCK_LOG", &mock.log)
+        .env("WOOTING_STATE_DIR", mock.dir.join("runtime"))
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut child = command.spawn().unwrap();
@@ -572,6 +577,240 @@ fn profile_sources_forward_ripple_lifecycle_and_preview_without_input() {
     assert_eq!(mock.calls().matches("close\n").count(), 1);
 }
 
+struct EngineChild(std::process::Child);
+impl Drop for EngineChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+impl Mock {
+    fn engine_command(&self) -> Command {
+        let mut command = Command::new(BINARY);
+        command
+            .env("WOOTING_STATE_DIR", self.dir.join("runtime"))
+            .env("WOOTING_RGB_SDK_PATH", &self.library)
+            .env("WOOTING_ANALOG_SDK_PATH", &self.library)
+            .env("MOCK_LOG", &self.log)
+            .env("MOCK_FAILURE_FILE", self.dir.join("failure"));
+        command
+    }
+    fn control(&self, args: &[&str]) -> serde_json::Value {
+        let output = self
+            .engine_command()
+            .arg("control")
+            .args(args)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+            panic!(
+                "invalid response: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+    }
+    fn engine(&self) -> EngineChild {
+        let mut command = self.engine_command();
+        command
+            .arg("engine")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = EngineChild(command.spawn().unwrap());
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "engine exited before becoming ready"
+            );
+            if self.control(&["status"])["ok"] == true {
+                return child;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("engine did not become ready: {}", self.control(&["status"]));
+    }
+    fn wait_state(&self, wanted: &str) -> serde_json::Value {
+        let start = Instant::now();
+        loop {
+            let response = self.control(&["status"]);
+            if response["status"]["state"] == wanted {
+                return response;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "{response}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+#[test]
+fn engine_paused_persistence_switching_and_single_writer() {
+    let mock = Mock::new();
+    let mut engine = mock.engine();
+    assert_eq!(mock.wait_state("paused")["status"]["mode"], "ripples");
+    assert!(
+        mock.calls().is_empty(),
+        "starting paused must never open SDKs"
+    );
+    assert_eq!(
+        mock.control(&["settings", "--brightness", "77", "--palette", "terminal"])["ok"],
+        true
+    );
+    assert_eq!(mock.control(&["resume"])["ok"], true);
+    mock.wait_state("active");
+    let denied = mock.doctor().output().unwrap();
+    assert!(!denied.status.success());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("hardware lock"));
+    let duplicate = mock
+        .engine_command()
+        .args(["engine", "--state-dir"])
+        .arg(mock.dir.join("other"))
+        .output()
+        .unwrap();
+    assert!(!duplicate.status.success());
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("engine lock"));
+
+    let before = fs::read(mock.dir.join("runtime/state.json")).unwrap();
+    let invalid = mock.dir.join("invalid.toml");
+    fs::write(&invalid, "fps = 0").unwrap();
+    assert_eq!(
+        mock.control(&["select", "--config", invalid.to_str().unwrap()])["ok"],
+        false
+    );
+    assert_eq!(
+        fs::read(mock.dir.join("runtime/state.json")).unwrap(),
+        before
+    );
+    assert_eq!(mock.control(&["status"])["status"]["brightness"], 77);
+    assert!(!mock.calls().contains("close\n"));
+    assert_eq!(mock.control(&["select", "--preset", "comet"])["ok"], true);
+    assert_eq!(mock.calls().matches("uninit\n").count(), 1);
+    assert_eq!(mock.control(&["pause"])["ok"], true);
+    assert!(
+        mock.doctor().output().unwrap().status.success(),
+        "paused engine must release device lock"
+    );
+
+    assert_eq!(mock.control(&["stop"])["ok"], true);
+    assert!(engine.0.wait().unwrap().success());
+    let calls = mock.calls();
+    let mut restarted = mock.engine();
+    assert_eq!(mock.wait_state("paused")["status"]["mode"], "comet");
+    assert_eq!(
+        mock.calls(),
+        calls,
+        "explicit pause survives restart without opening SDKs"
+    );
+    mock.control(&["stop"]);
+    assert!(restarted.0.wait().unwrap().success());
+}
+#[test]
+fn engine_sigterm_restores_and_retry_is_cancelled_by_pause() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    let mock = Mock::new();
+    let mut engine = mock.engine();
+    assert_eq!(mock.control(&["resume"])["ok"], true);
+    fs::write(mock.dir.join("failure"), "read").unwrap();
+    let status = mock.wait_state("retrying");
+    assert_eq!(status["status"]["retry_attempt"], 1);
+    assert_eq!(mock.control(&["pause"])["ok"], true);
+    let calls = mock.calls();
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(mock.calls(), calls, "pause must cancel scheduled retry");
+    fs::remove_file(mock.dir.join("failure")).unwrap();
+    assert_eq!(mock.control(&["resume"])["ok"], true);
+    // Deliver termination inside request handling, after the outer loop check.
+    let mut partial = UnixStream::connect(mock.dir.join("runtime/control.sock")).unwrap();
+    partial
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    partial
+        .write_all(b"{\"schema_version\":1,\"action\":")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let result = Command::new("kill")
+        .args(["-TERM", &engine.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(result.success());
+    // The signal may interrupt the read and close this partial request first.
+    let _ = partial.write_all(b"\"status\"}\n");
+    let mut response = String::new();
+    let _ = partial.read_to_string(&mut response);
+    assert!(engine.0.wait().unwrap().success());
+    assert_eq!(
+        mock.calls().lines().filter(|line| *line == "init").count(),
+        mock.calls().matches("uninit\n").count()
+    );
+    assert!(!mock.dir.join("runtime/control.sock").exists());
+    // SIGTERM preserves enabled intent; explicit pause above did not.
+    let saved: serde_json::Value =
+        serde_json::from_slice(&fs::read(mock.dir.join("runtime/state.json")).unwrap()).unwrap();
+    assert_eq!(saved["enabled"], true);
+}
+#[test]
+fn engine_invalid_protocol_and_pause_persistence_failure_are_safe() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    let mock = Mock::new();
+    let _engine = mock.engine();
+    for message in [
+        "{\"schema_version\":99,\"action\":\"resume\"}\n",
+        "{\"schema_version\":1,\"action\":\"settings\",\"fps\":0,\"brightness\":null,\"palette\":null}\n",
+    ] {
+        let mut stream = UnixStream::connect(mock.dir.join("runtime/control.sock")).unwrap();
+        stream.write_all(message.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(json["ok"], false);
+    }
+    assert!(mock.calls().is_empty());
+    assert_eq!(mock.control(&["resume"])["ok"], true);
+    let state = mock.dir.join("runtime/state.json");
+    fs::remove_file(&state).unwrap();
+    fs::create_dir(&state).unwrap(); // force atomic-rename failure
+    let response = mock.control(&["pause"]);
+    assert_eq!(response["ok"], false);
+    assert_eq!(response["status"]["state"], "paused");
+    assert_eq!(mock.calls().matches("close\n").count(), 1);
+    assert_eq!(mock.calls().matches("uninit\n").count(), 1);
+    assert!(mock.doctor().output().unwrap().status.success());
+}
+#[test]
+fn engine_never_replays_command_presets_on_recovery_or_restart() {
+    let mock = Mock::new();
+    let mut engine = mock.engine();
+    let marker = mock.dir.join("ran");
+    let config = mock.dir.join("command.toml");
+    fs::write(&config, format!("continuous = true\n[signal]\nkind = 'command-pulse'\ncommand = ['sh', '-c', 'echo ran >> {}; exec sleep 10']\noutput = 'quiet'\n", marker.display())).unwrap();
+    assert_eq!(
+        mock.control(&["select", "--config", config.to_str().unwrap()])["ok"],
+        true
+    );
+    assert!(
+        !marker.exists(),
+        "importing while paused must not execute a command"
+    );
+    assert_eq!(mock.control(&["resume"])["ok"], true);
+    let start = Instant::now();
+    while !marker.exists() {
+        assert!(start.elapsed() < Duration::from_secs(3));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    fs::write(mock.dir.join("failure"), "write").unwrap();
+    let error = mock.wait_state("error");
+    assert_eq!(error["status"]["retry_attempt"], 0);
+    assert_eq!(fs::read_to_string(&marker).unwrap(), "ran\n");
+    Command::new("kill")
+        .args(["-TERM", &engine.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(engine.0.wait().unwrap().success());
+    let _restarted = mock.engine();
+    mock.wait_state("paused");
+    assert_eq!(fs::read_to_string(marker).unwrap(), "ran\n");
+}
+
 const MOCK_C: &str = r#"
 #include <stdint.h>
 #include <stdbool.h>
@@ -579,7 +818,11 @@ const MOCK_C: &str = r#"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-static bool fail(const char *name) { const char *s = getenv("MOCK_FAILURE"); return s && !strcmp(s, name); }
+static bool fail(const char *name) {
+  const char *path = getenv("MOCK_FAILURE_FILE");
+  if (path) { FILE *f = fopen(path, "r"); if (f) { char value[64] = {0}; fgets(value, sizeof(value), f); fclose(f); if (!strcmp(value, name)) return true; } }
+  const char *s = getenv("MOCK_FAILURE"); return s && !strcmp(s, name);
+}
 static void log_call(const char *name) { FILE *f = fopen(getenv("MOCK_LOG"), "a"); if (f) { fprintf(f, "%s\n", name); fclose(f); } }
 typedef struct { uint16_t vid, pid; char *manufacturer, *name; uint64_t id; int type; } AnalogInfo;
 static AnalogInfo analog = {0x31e3, 0x1400, "Wooting", "80HE", 42, 1};

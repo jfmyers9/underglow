@@ -82,7 +82,9 @@ impl SignalProgram for AppAuraSignal {
         false
     }
 
-    fn shutdown(&mut self, _interrupted: bool) {}
+    fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 }
 
 fn profile_color(profile: AppAuraProfile, tick: u32) -> Color {

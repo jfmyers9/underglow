@@ -1,5 +1,5 @@
 use crate::layout::{KeyboardLayout, MatrixCoord, Zone};
-use crate::render::{pulse_wave, Color, Frame, RenderContext};
+use crate::render::{Color, Frame, RenderContext, pulse_wave};
 
 pub fn fill(frame: &mut Frame, layout: &KeyboardLayout, color: Color) {
     for key in layout.keys() {
@@ -237,16 +237,20 @@ mod tests {
             Color::new(255, 0, 0),
         );
 
-        assert!(layout
-            .keys()
-            .iter()
-            .filter(|key| key.zone == Zone::Function)
-            .any(|key| frame.get_coord(key.coord) != Color::BLACK));
-        assert!(layout
-            .keys()
-            .iter()
-            .filter(|key| key.zone == Zone::Alpha)
-            .all(|key| frame.get_coord(key.coord) == Color::BLACK));
+        assert!(
+            layout
+                .keys()
+                .iter()
+                .filter(|key| key.zone == Zone::Function)
+                .any(|key| frame.get_coord(key.coord) != Color::BLACK)
+        );
+        assert!(
+            layout
+                .keys()
+                .iter()
+                .filter(|key| key.zone == Zone::Alpha)
+                .all(|key| frame.get_coord(key.coord) == Color::BLACK)
+        );
     }
 
     #[test]

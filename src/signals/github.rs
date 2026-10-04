@@ -166,6 +166,14 @@ fn github_from_external(snapshot: ExternalSnapshot) -> GitHubSnapshot {
 }
 
 impl SignalProgram for GitHubCiSignal {
+    fn notification_snapshot(&self) -> Option<crate::signals::SignalSnapshot> {
+        let mut snapshot = crate::signals::SignalSnapshot::status(
+            "github-ci",
+            format!("{:?}", self.state.status).to_lowercase(),
+        );
+        snapshot.message = self.state.event_key.clone();
+        Some(snapshot)
+    }
     fn tick(&mut self, _interrupted: &AtomicBool) -> crate::signals::ProgramResult {
         self.poll_if_due();
         Ok(())
@@ -216,7 +224,9 @@ impl SignalProgram for GitHubCiSignal {
         false
     }
 
-    fn shutdown(&mut self, _interrupted: bool) {}
+    fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

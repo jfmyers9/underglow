@@ -121,6 +121,15 @@ fn duration_progress(elapsed: Duration, total: Duration) -> f32 {
 }
 
 impl SignalProgram for FocusSignal {
+    fn notification_snapshot(&self) -> Option<crate::signals::SignalSnapshot> {
+        let state = self.current_state();
+        let mut snapshot = crate::signals::SignalSnapshot::status(
+            "focus-cockpit",
+            format!("{:?}", state.phase).to_lowercase(),
+        );
+        snapshot.message = state.cycle.to_string();
+        Some(snapshot)
+    }
     fn tick(&mut self, _interrupted: &AtomicBool) -> crate::signals::ProgramResult {
         Ok(())
     }
@@ -133,7 +142,9 @@ impl SignalProgram for FocusSignal {
         false
     }
 
-    fn shutdown(&mut self, _interrupted: bool) {}
+    fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 }
 
 fn render_focus(ctx: &RenderContext<'_>, state: FocusState, dim_mode: bool) -> Frame {

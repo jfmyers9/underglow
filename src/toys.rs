@@ -35,7 +35,7 @@ pub struct RippleOptions {
     seconds: Option<u64>,
     /// Render synthetic key presses without loading either SDK or touching hardware.
     #[arg(long)]
-    preview: bool,
+    pub(crate) preview: bool,
     #[arg(long, requires = "preview", default_value_t = 12, value_parser = clap::value_parser!(u32).range(1..=600))]
     ticks: u32,
     #[arg(long, requires = "preview", value_enum, default_value_t = PreviewFormat::Ansi)]
@@ -160,13 +160,15 @@ impl SignalProgram for RippleSignal {
         false
     }
 
-    fn shutdown(&mut self, _interrupted: bool) {
-        if let Some(mut analog) = self.analog.take()
-            && let Err(error) = analog.close()
-        {
-            eprintln!("warning: {error}");
-        }
+    fn shutdown(&mut self, _interrupted: bool) -> ProgramResult {
+        let result = self
+            .analog
+            .take()
+            .map(|mut analog| analog.close())
+            .transpose();
         self.ripples = Ripples::default();
+        result?;
+        Ok(())
     }
 }
 

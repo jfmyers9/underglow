@@ -111,9 +111,17 @@ impl SignalProgram for ProfileRuntimeSignal {
         !self.sources.is_empty() && self.sources.iter().all(RuntimeSource::finished)
     }
 
-    fn shutdown(&mut self, interrupted: bool) {
+    fn shutdown(&mut self, interrupted: bool) -> crate::signals::ProgramResult {
+        let mut errors = Vec::new();
         for source in &mut self.sources {
-            source.shutdown(interrupted);
+            if let Err(error) = source.shutdown(interrupted) {
+                errors.push(error.to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; ").into())
         }
     }
 }
@@ -208,7 +216,7 @@ impl RuntimeSource {
         }
     }
 
-    fn shutdown(&mut self, interrupted: bool) {
+    fn shutdown(&mut self, interrupted: bool) -> crate::signals::ProgramResult {
         match self {
             RuntimeSource::Static { signal, .. } => signal.shutdown(interrupted),
             RuntimeSource::CommandPulse { signal, .. } => signal.shutdown(interrupted),

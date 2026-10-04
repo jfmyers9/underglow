@@ -23,6 +23,7 @@ pub struct AppConfig {
     pub warn_on_close_error: bool,
     #[serde(alias = "extension")]
     pub signal: Option<SignalConfig>,
+    pub notifications: Vec<crate::notifications::NotificationConfig>,
     pub sources: Vec<SourceConfig>,
     pub rules: Vec<RuleConfig>,
     pub scenes: BTreeMap<String, SceneConfig>,
@@ -157,6 +158,7 @@ impl Default for AppConfig {
             continuous: false,
             warn_on_close_error: true,
             signal: None,
+            notifications: Vec::new(),
             sources: Vec::new(),
             rules: Vec::new(),
             scenes: BTreeMap::new(),
@@ -176,6 +178,7 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        crate::notifications::validate(&self.notifications).map_err(ConfigError::Invalid)?;
         if self.schema_version != 1 {
             return Err(ConfigError::Invalid(
                 "unsupported schema_version; expected 1".into(),
@@ -209,6 +212,23 @@ impl AppConfig {
             seconds: self.seconds,
             continuous: self.continuous,
         }
+    }
+
+    /// Only effective sources count: an explicit signal overrides legacy sources.
+    pub fn runs_commands(&self) -> bool {
+        use crate::signals::SignalKind;
+        let base = if crate::profile::ProfileRuntimeSignal::is_profile_runtime_config(self) {
+            self.sources
+                .iter()
+                .filter_map(|source| source.signal_config(self.effect))
+                .any(|signal| signal.kind == SignalKind::CommandPulse)
+        } else {
+            self.signal_config().kind == SignalKind::CommandPulse
+        };
+        base || self
+            .notifications
+            .iter()
+            .any(|notification| notification.signal.kind == SignalKind::CommandPulse)
     }
 
     pub fn signal_config(&self) -> SignalConfig {
@@ -263,6 +283,59 @@ pub enum ConfigError {
 mod tests {
     use super::*;
     use crate::signals::SignalKind;
+
+    #[test]
+    fn command_detection_follows_effective_source_selection() {
+        for (text, expected) in [
+            ("", false),
+            (
+                "[signal]\nkind = 'command-pulse'\ncommand = ['never-run']",
+                true,
+            ),
+            (
+                "[[sources]]\ntype = 'static-effect'\n[[sources]]\ntype = 'command-pulse'",
+                false,
+            ),
+            (
+                "[[sources]]\ntype = 'static-effect'\n[[sources]]\ntype = 'command-pulse'\n[scenes.base]\neffect = 'comet'",
+                true,
+            ),
+            (
+                "[signal]\nkind = 'static-effect'\n[[sources]]\ntype = 'command-pulse'\n[scenes.base]\neffect = 'comet'",
+                false,
+            ),
+        ] {
+            let config: AppConfig = toml::from_str(text).unwrap();
+            assert_eq!(config.runs_commands(), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn command_detection_uses_signal_kind_not_dormant_command_fields() {
+        let notification = "\n[[notifications]]\nid = 'overlay'\nduration_seconds = 2\nzones = ['function']\n[notifications.signal]\n";
+        for (text, expected) in [
+            (
+                "[signal]\nkind = 'static-effect'\ncommand = ['never-run']".to_string(),
+                false,
+            ),
+            (
+                format!(
+                    "[signal]\nkind = 'static-effect'{notification}kind = 'command-pulse'\ncommand = ['never-run']"
+                ),
+                true,
+            ),
+            (
+                format!(
+                    "[signal]\nkind = 'static-effect'\n[[sources]]\ntype = 'command-pulse'{notification}kind = 'focus-cockpit'\ncommand = ['never-run']"
+                ),
+                false,
+            ),
+        ] {
+            let config: AppConfig = toml::from_str(&text).unwrap();
+            config.validate().unwrap();
+            assert_eq!(config.runs_commands(), expected, "{text}");
+        }
+    }
 
     #[test]
     fn ripples_config_and_legacy_version_defaults() {

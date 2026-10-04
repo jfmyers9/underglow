@@ -39,9 +39,13 @@ pub trait SignalProgram {
     fn tick(&mut self, interrupted: &AtomicBool) -> ProgramResult;
     /// Deterministic preview input; must not open hardware, poll APIs, or spawn commands.
     fn preview_tick(&mut self, _tick: u32) {}
+    /// Stable notification identity. Exclude continuously changing progress/intensity.
+    fn notification_snapshot(&self) -> Option<SignalSnapshot> {
+        None
+    }
     fn render(&self, ctx: &RenderContext<'_>) -> Frame;
     fn finished(&self) -> bool;
-    fn shutdown(&mut self, interrupted: bool);
+    fn shutdown(&mut self, interrupted: bool) -> ProgramResult;
 }
 
 #[derive(Clone, Debug, PartialEq)]
