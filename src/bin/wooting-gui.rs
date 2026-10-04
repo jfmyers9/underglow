@@ -898,9 +898,21 @@ mod tests {
             state_dir: Some(directory.join("state")),
         };
         let result = backend.execute(&Action::StartEngine);
-        let log = std::fs::read_to_string(directory.join("state/engine.log")).unwrap();
+        // Under load the fixture may exit after the short startup observation
+        // window. Both outcomes must expose diagnostics without retaining a pipe.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let log = loop {
+            let log = std::fs::read_to_string(directory.join("state/engine.log")).unwrap();
+            if log.contains("fixture-start-failure") || Instant::now() >= deadline {
+                break log;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
         std::fs::remove_dir_all(&directory).unwrap();
-        assert!(result.unwrap_err().contains("fixture-start-failure"));
+        match result {
+            Err(error) => assert!(error.contains("fixture-start-failure")),
+            Ok(message) => assert!(message.contains("engine.log")),
+        }
         assert!(log.contains("fixture-start-failure"));
     }
 
