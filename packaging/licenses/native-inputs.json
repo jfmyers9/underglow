@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "architecture": "arm64",
+  "scope": "Reviewed source pins and license selections for four native dylibs, not complete release approval. SHA256 identifies content, not a signature or reproducible-build proof.",
+  "components": [
+    {
+      "id": "rgb",
+      "version": "451f40dc056e0edefccdaba7807a72b694520e92",
+      "license_selection": "MPL-2.0",
+      "bundle_name": "libwooting-rgb-sdk.dylib",
+      "input_sha256": "a5493de48363e9a0ffdbfaf976b2a1e70cccfaffe9e21b9f37aebcfa146ee23c",
+      "source": {
+        "file": "rgb-451f40d.tar.gz",
+        "url": "https://codeload.github.com/WootingKb/wooting-rgb-sdk/tar.gz/451f40dc056e0edefccdaba7807a72b694520e92",
+        "sha256": "d584dd67c528c4bcfe803ff6d7204720e7023741f97bd2895f63842b582fda3b",
+        "root": "wooting-rgb-sdk-451f40dc056e0edefccdaba7807a72b694520e92"
+      },
+      "notice_members": [
+        "LICENSE",
+        "README.md",
+        "mac/Makefile",
+        "src/wooting-usb.c",
+        "src/wooting-rgb-sdk.c"
+      ]
+    },
+    {
+      "id": "analog",
+      "version": "0.9.1",
+      "license_selection": "MPL-2.0",
+      "bundle_name": "libwooting_analog_sdk_dist.dylib",
+      "input_sha256": "4e11e8179a32d96646e16ca483b284a54eebd40a347879a464fcc8298e986c4b",
+      "source": {
+        "file": "analog-v0.9.1.tar.gz",
+        "url": "https://codeload.github.com/WootingKb/wooting-analog-sdk/tar.gz/refs/tags/v0.9.1",
+        "sha256": "179c3ed2d768a74e7affb0ac5fbf9c77efc963c9598a818ab4fa03a828702098",
+        "root": "wooting-analog-sdk-0.9.1"
+      },
+      "notice_members": [
+        "LICENSE",
+        "Cargo.toml",
+        "Cargo.lock",
+        ".cargo/config.toml",
+        ".github/workflows/deploy.yml",
+        "ci/package.sh",
+        "docs/BUILD.md",
+        "wooting-analog-sdk/Cargo.toml",
+        "wooting-analog-sdk/build.rs"
+      ],
+      "upstream_binary": {
+        "file": "analog-binary-v0.9.1.tar.gz",
+        "url": "https://github.com/WootingKb/wooting-analog-sdk/releases/download/v0.9.1/wooting-analog-sdk-v0.9.1-aarch64-apple-darwin.tar.gz",
+        "sha256": "c995ec9efc242dfa91b31bb0ce0e37ab0a62e93f3af04d2a921df246b105f40c",
+        "member": "release/libwooting_analog_sdk_dist.dylib"
+      },
+      "source_revision": "be67cbf479eb1e10e2859e71dbdcc12fff7ba266",
+      "features": [
+        "ffi",
+        "dist"
+      ],
+      "rustc_revision": "ed61e7d7e242494fb7057f2657300d9e77bb4fcb"
+    },
+    {
+      "id": "hidapi",
+      "version": "0.15.0",
+      "license_selection": "BSD-3-Clause",
+      "bundle_name": "libhidapi.0.dylib",
+      "input_sha256": "a0c874cc8baf16a556b97a6371d0a93510e02a394c17551e7565b1c0144a36de",
+      "source": {
+        "file": "hidapi-0.15.0.tar.gz",
+        "url": "https://github.com/libusb/hidapi/archive/refs/tags/hidapi-0.15.0.tar.gz",
+        "sha256": "5d84dec684c27b97b921d2f3b73218cb773cf4ea915caee317ac8fc73cef8136",
+        "root": "hidapi-hidapi-0.15.0"
+      },
+      "notice_members": [
+        "LICENSE.txt",
+        "LICENSE-bsd.txt",
+        "AUTHORS.txt",
+        "mac/hid.c"
+      ],
+      "cellar_name": "libhidapi.0.15.0.dylib",
+      "homebrew_evidence": {
+        "INSTALL_RECEIPT.json": "8b94b56d8f48372ea63f2c10f627ed2dbdbe38a5834914413230a53d844c883a",
+        "sbom.spdx.json": "049e0746f8e01d94179f46fc5ff59b853987248b798cb878cbe257f55745572e",
+        ".brew/hidapi.rb": "b9904132f43da3f692b3193a09bcca2e2ba8c233559812968858900b3d0491ee"
+      }
+    },
+    {
+      "id": "libusb",
+      "version": "1.0.30",
+      "license_selection": "LGPL-2.1-or-later",
+      "bundle_name": "libusb-1.0.0.dylib",
+      "input_sha256": "c083aa7f842e0fc061c9306b5b65ec036ae5f95a8dd29cf70e8faace3f06775f",
+      "source": {
+        "file": "libusb-1.0.30.tar.bz2",
+        "url": "https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2",
+        "sha256": "fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf",
+        "root": "libusb-1.0.30"
+      },
+      "notice_members": [
+        "COPYING",
+        "AUTHORS",
+        "README",
+        "INSTALL"
+      ],
+      "homebrew_evidence": {
+        "INSTALL_RECEIPT.json": "9c1d32b838bbf6f46ec7680e2c2f20b121d5119871b4f21e316ab07b8e07d1f8",
+        "sbom.spdx.json": "d8f830bc703321d51ddccddbba251e0685a9d6f0ac7ad270491635b844dfb3b0",
+        ".brew/libusb.rb": "fad2c080e3d107b6c1e453864992fd26b89202e7b894aabc4d2facfed2193340"
+      }
+    }
+  ]
+}
