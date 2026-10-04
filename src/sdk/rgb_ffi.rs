@@ -53,7 +53,7 @@ impl RgbSdk {
     pub fn load(explicit_path: Option<&Path>) -> Result<Self, SdkLoadError> {
         let mut errors = Vec::new();
 
-        for candidate in library_candidates(explicit_path) {
+        for candidate in library_candidates(explicit_path, env::var_os("WOOTING_RGB_SDK_PATH")) {
             // SAFETY: Loading a dynamic library is inherently unsafe because it
             // trusts the file at `candidate`. The path is either user-supplied,
             // from WOOTING_RGB_SDK_PATH, or a documented platform default.
@@ -155,16 +155,20 @@ fn load_symbol<T: Copy>(library: &Library, symbol: &'static [u8]) -> Result<T, S
         })
 }
 
-fn library_candidates(explicit_path: Option<&Path>) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
+fn library_candidates(
+    explicit_path: Option<&Path>,
+    environment_path: Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
+    // Overrides are authoritative. Falling back on a typo could silently load
+    // an old SDK or touch real hardware during an isolated diagnostic test.
     if let Some(path) = explicit_path {
-        paths.push(path.to_path_buf());
+        return vec![path.to_path_buf()];
+    }
+    if let Some(path) = environment_path {
+        return vec![PathBuf::from(path)];
     }
 
-    if let Some(path) = env::var_os("WOOTING_RGB_SDK_PATH") {
-        paths.push(PathBuf::from(path));
-    }
+    let mut paths = Vec::new();
 
     #[cfg(target_os = "macos")]
     {
@@ -195,4 +199,21 @@ fn library_candidates(explicit_path: Option<&Path>) -> Vec<PathBuf> {
     }
 
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgb_path_overrides_are_authoritative() {
+        assert_eq!(
+            library_candidates(Some(Path::new("explicit")), Some("env".into())),
+            vec![PathBuf::from("explicit")]
+        );
+        assert_eq!(
+            library_candidates(None, Some("env".into())),
+            vec![PathBuf::from("env")]
+        );
+    }
 }

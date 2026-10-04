@@ -74,7 +74,19 @@ impl WootingRgb {
 
         sdk.array_auto_update(false);
 
-        let info = DeviceInfo::from_sdk(&sdk)?;
+        let info = match DeviceInfo::from_sdk(&sdk) {
+            Ok(info) => info,
+            Err(error) => {
+                // The SDK has already initialized RGB. Self does not exist yet,
+                // so Drop cannot release the session on a metadata failure.
+                if !sdk.close() {
+                    eprintln!(
+                        "warning: RGB setup failed and SDK restore/close was not acknowledged"
+                    );
+                }
+                return Err(error);
+            }
+        };
         Ok(Self {
             sdk,
             info,

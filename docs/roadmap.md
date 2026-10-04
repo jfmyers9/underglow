@@ -50,13 +50,14 @@ As of this document:
 - A pressure-driven ripple toy using the official RGB and Analog SDKs. Its input
   mapping covers the 80HE ANSI typing block; spatial layout is approximate and
   the light bar has no dedicated mapping.
-- TOML configuration exists for older effects, signals, and source/rule/scene
-  profiles. Ripples is currently a separate CLI path, not a TOML-configurable mode.
+- Versioned TOML selects ripples, effects, signals, and source/rule/scene profiles.
+  All live modes share resource startup, frame execution, and shutdown; the toy
+  CLI remains available. Dry-run and previews acquire no hardware resources.
 - A preliminary macOS installer can generate a LaunchAgent, but points at the
   SDK inside a repository checkout. It is not a self-contained product installer.
 - No Linux installer, persistent control API, live mode switching, or GUI exists.
-- 72 tests and Clippy passed after the latest brightness change. These include
-  deterministic rendering and simulated SDK lifecycle/error tests.
+- 85 tests and Clippy passed after runtime/configuration unification. These include
+  deterministic previews, config validation, and simulated SDK lifecycle/errors.
 
 ### Hardware findings
 
@@ -70,9 +71,26 @@ the user confirmed seeing the effect on an 80HE connected to macOS. The observed
 brightness was 96/255; the default was subsequently raised to 180/255 without a
 new hardware run.
 
-This does **not** establish that Wootility must stay closed, nor that concurrent
-use is safe. Side-by-side operation with the fixed SDK, exact key alignment,
-visual restoration, sleep/wake, and Linux operation still need validation.
+Subsequent `doctor --probe-rgb --analog --json` comet probes on this macOS/80HE
+setup passed RGB metadata/write/restore and analog open/read/close checks:
+
+| Condition | User-confirmed observation |
+| --- | --- |
+| Wootility alone, initially idle | Stable effect, normal lighting returned, Wootility could edit afterward |
+| Wootility and Background Service, initially idle | Same successful effect and handoff |
+| Mode key during a 30-second probe at brightness 48 | Profile indicator changed while the key animation continued; exit revealed the newly selected profile's lighting |
+
+This supports allowing Wootility to remain running and treating our output as a
+temporary RGB override, not a keyboard-configuration replacement. It is not a
+shared compositor or an exclusive-access guarantee. These observations are for
+one setup, not a versioned compatibility matrix; exact firmware/Wootility version
+metadata was not recorded with every observation.
+
+Background Service alone, App Linking, concurrent live lighting edits, physical
+key alignment, disconnect/reconnect, sleep/wake, and Linux remain unverified.
+The new shared-runtime path has hardware-free regression coverage, but has not
+received another physical keyboard run. Repeatable checks are documented in the
+[README](../README.md#repeatable-coexistence-checks).
 
 ## Runtime and coexistence model
 
@@ -205,6 +223,18 @@ not the old SDK timeout. Do not block ordinary static lighting on unnecessary
 analog permissions or dependencies.
 
 ### 2. Unify modes and configuration
+
+**Implemented foundation:** `examples/ripples.toml` selects the same ripple
+implementation as `toy ripples`. Optional `schema_version = 1` preserves legacy
+profiles; unsupported versions and invalid frame rates fail before hardware
+startup. Constructors and previews are hardware-free. The shared session attempts
+RGB restoration and mode shutdown after normal exit, interruption, and errors,
+including partially completed startup. RGB-only modes do not require analog.
+
+**Still pending:** live selection/pause/resume/status, atomic persistence, and
+retaining a running last-valid configuration after a rejected edit. These will
+be implemented with the persistent engine below; current commands read config
+once and do not modify it. The criteria below are not yet fully complete.
 
 Bring ripples into the shared runtime/configuration model alongside existing
 animations and status utilities. Introduce clear select, pause, resume, and status

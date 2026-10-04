@@ -1,5 +1,5 @@
 use crate::layout::Zone;
-use crate::render::{pulse_wave, Color, Frame, RenderContext};
+use crate::render::{Color, Frame, RenderContext, pulse_wave};
 use crate::signals::{SignalProgram, SignalSnapshot};
 use clap::ValueEnum;
 use serde::Deserialize;
@@ -281,7 +281,7 @@ impl CommandPulseSignal {
 }
 
 impl SignalProgram for CommandPulseSignal {
-    fn tick(&mut self, interrupted: &AtomicBool) {
+    fn tick(&mut self, interrupted: &AtomicBool) -> crate::signals::ProgramResult {
         match self.state {
             CommandPulseState::Pending => self.start(),
             CommandPulseState::Running { .. } => self.poll_child(interrupted),
@@ -291,6 +291,7 @@ impl SignalProgram for CommandPulseSignal {
             | CommandPulseState::Interrupted { .. } => {}
         }
         self.maybe_print_summary();
+        Ok(())
     }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Frame {
@@ -469,7 +470,7 @@ failure = [4, 5, 6]
         let interrupted = AtomicBool::new(false);
         let mut signal = CommandPulseSignal::new(config("true")).unwrap();
         for _ in 0..100 {
-            signal.tick(&interrupted);
+            signal.tick(&interrupted).unwrap();
             if signal.finished() {
                 assert!(matches!(signal.state, CommandPulseState::Success { .. }));
                 return;
@@ -484,7 +485,7 @@ failure = [4, 5, 6]
         let interrupted = AtomicBool::new(false);
         let mut signal = CommandPulseSignal::new(config("false")).unwrap();
         for _ in 0..100 {
-            signal.tick(&interrupted);
+            signal.tick(&interrupted).unwrap();
             if signal.finished() {
                 assert!(matches!(signal.state, CommandPulseState::Failure { .. }));
                 return;
@@ -514,7 +515,7 @@ failure = [4, 5, 6]
         let mut signal = CommandPulseSignal::new(config).unwrap();
 
         for _ in 0..100 {
-            signal.tick(&interrupted);
+            signal.tick(&interrupted).unwrap();
             if signal.finished() {
                 assert!(cwd.join("command-pulse-cwd-ok").exists());
                 std::fs::remove_dir_all(&cwd).unwrap();
@@ -535,9 +536,9 @@ failure = [4, 5, 6]
         config.timeout_seconds = 0;
         let mut signal = CommandPulseSignal::new(config).unwrap();
 
-        signal.tick(&interrupted);
+        signal.tick(&interrupted).unwrap();
         thread::sleep(Duration::from_millis(10));
-        signal.tick(&interrupted);
+        signal.tick(&interrupted).unwrap();
 
         assert!(matches!(signal.state, CommandPulseState::TimedOut { .. }));
         assert!(signal.child.is_none());
@@ -550,9 +551,9 @@ failure = [4, 5, 6]
         let interrupted = AtomicBool::new(false);
         let mut signal = CommandPulseSignal::new(config_args(&["sleep", "1"])).unwrap();
 
-        signal.tick(&interrupted);
+        signal.tick(&interrupted).unwrap();
         interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
-        signal.tick(&interrupted);
+        signal.tick(&interrupted).unwrap();
 
         assert!(matches!(
             signal.state,

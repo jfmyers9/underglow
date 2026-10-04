@@ -54,6 +54,7 @@ pub struct AnalogSdk {
     uninitialise: Uninitialise,
     read_buffer: ReadBuffer,
     device_id: u64,
+    closed: bool,
 }
 
 impl AnalogSdk {
@@ -106,6 +107,7 @@ impl AnalogSdk {
             uninitialise,
             read_buffer,
             device_id: 0,
+            closed: false,
         };
         // From here Drop also handles partial setup failures.
         // SAFETY: 0 is the documented HID keycode mode.
@@ -149,14 +151,21 @@ impl AnalogSdk {
             })
             .collect())
     }
+
+    pub fn close(&mut self) -> Result<(), AnalogError> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
+        // SAFETY: Library is loaded and initialise succeeded before Self was constructed.
+        checked("uninitialise", unsafe { (self.uninitialise)() }).map(|_| ())
+    }
 }
 
 impl Drop for AnalogSdk {
     fn drop(&mut self) {
-        // SAFETY: Library is still loaded and initialise succeeded before Self was constructed.
-        let code = unsafe { (self.uninitialise)() };
-        if code < 0 {
-            eprintln!("warning: Analog SDK uninitialise failed ({code})");
+        if let Err(error) = self.close() {
+            eprintln!("warning: {error}");
         }
     }
 }

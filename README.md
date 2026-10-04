@@ -47,7 +47,7 @@ cargo run -- toy ripples --palette ocean
 cargo run -- toy ripples --seconds 20 --brightness 180 --fps 30
 ```
 
-Ripples defaults to brightness **180/255**. Use `--brightness` to tune it; this
+`toy ripples` defaults to brightness **180/255**. Use `--brightness` to tune it; this
 is a fixed cap, not a reading of or synchronization with Wootility's brightness.
 
 **First-version limits:** one connected analog keyboard, **80HE ANSI**. The typing
@@ -69,16 +69,83 @@ not used. Preview input is simulated, not a hardware compatibility test.
   cannot guarantee cleanup.
 - No profile, binding, actuation or firmware settings are written. **Typing still
   reaches the focused application**: use a blank editor while playing.
-- Stop the toy before editing live lighting in Wootility. Pause competing RGB
+- Wootility and its Background Service may remain running on the tested setup.
+  Stop the toy before editing live lighting in Wootility. Pause competing RGB
   apps or automatic profile switching if they interfere; there is no ownership
   arbitration or automatic Wootility detection yet.
 - Nothing is installed at login and no background service is started. A future
   menu-bar launcher can wrap this same start/stop lifecycle.
 
-macOS is the primary target; the loader also supports Linux. Physical key/LED
-alignment, live coexistence, and restoration still need testing on an attached
-80HE. The implementation is covered by deterministic renderer and simulated SDK
-tests, not a claim of verified hardware behavior.
+macOS is the primary target; the loader also supports Linux. A timed ripple
+session on an attached 80HE completed without SDK errors and the effect was
+visually confirmed. Subsequent comet probes confirmed stable lighting and visual
+restoration with Wootility alone and with its Background Service; Wootility could
+edit lighting afterward. Pressing Mode changed the profile indicator while our
+key animation continued; stopping revealed the newly selected profile's lighting.
+See [hardware findings](docs/roadmap.md#hardware-findings) for the evidence limits.
+App Linking, simultaneous live lighting edits, exact key/LED alignment,
+disconnect/sleep recovery, and Linux behavior remain unverified. Automated tests
+cover deterministic rendering and simulated SDK failures, not visual behavior.
+
+### Repeatable coexistence checks
+
+Use `doctor` to distinguish SDK failures from observations that require a person:
+
+```sh
+# Open/check/close RGB, without painting an animation. Analog SDK is not required.
+cargo run -- doctor
+
+# Explicit three-second comet probe at low brightness, followed by restore/close.
+cargo run -- doctor --probe-rgb --seconds 3 --brightness 48
+
+# Also test the ripple analog backend while the RGB session is open.
+# Set WOOTING_ANALOG_SDK_PATH first, or pass --analog-sdk-path.
+cargo run -- doctor --probe-rgb --analog --json
+```
+
+**This is not a read-only monitor:** opening the RGB SDK initializes a lighting
+session, and closing it requests restoration, even without `--probe-rgb`. Do not
+run it alongside another instance of this app. It does not write keyboard
+configuration, change service settings, or stop other processes. The analog check
+uses the current single-80HE backend and never logs pressed keys. Other RGB
+effects and RGB-only diagnostics do not require the Analog SDK.
+
+The report separates enumeration, usable metadata, optional frame writes,
+optional analog access, and SDK cleanup acknowledgements. `--json` emits the
+report on stdout; application diagnostics go to stderr. Failure or interruption
+exits nonzero, with cleanup attempted before the report. An acknowledged reset
+is **not** proof of visual restoration or exclusive access. SDK calls may have
+their own timeout, so interruption is best-effort rather than instantaneous.
+An explicit `--sdk-path` or `WOOTING_RGB_SDK_PATH` is authoritative: a missing
+library fails rather than silently selecting a different installed SDK.
+
+For milestone 1, repeat the same probe under each condition below. Start with
+Wootility idle; separately test live lighting edits and App Linking/profile
+switches once the idle combination works. Manage Wootility/Background Service
+manually and verify actual process state: a start-at-login preference is not a
+stop button. Do not infer a conflict just because one happens to be running.
+
+| Scenario | What to observe |
+| --- | --- |
+| Wootility and Background Service stopped | Baseline communication and restoration |
+| Only Wootility running, initially idle | SDK results, stable effect, post-exit editing |
+| Only Background Service running | Stable effect; profile switches as a separate case |
+| Both running, initially idle | Same checks, then live edits/profile changes separately |
+| Ctrl-C during a longer probe | Incomplete probe reported; cleanup acknowledged; normal lighting returns |
+| Unplug during a probe, then reconnect | Clear error and cleanup attempt; a fresh command works after reconnect |
+| Sleep/wake during a longer probe | Record actual behavior; automatic recovery is not implemented yet |
+
+Use `--seconds 30` for interruption/reconnection checks. Do not force a host to
+sleep or change profiles without coordinating with the person using it. After
+every run, verify both **normal lighting returned** and **Wootility can edit it**.
+Then separately run ripples to check physical key alignment; `doctor` does not
+validate analog-to-LED mapping or light-bar coverage.
+
+When comparing results, record OS/architecture, keyboard/firmware, RGB SDK
+revision, Wootility version, process state, command/report, and the person's
+observations. Repeat on Linux with appropriate HID permissions before claiming
+Linux compatibility. These are test scenarios, not a list of verified supported
+combinations. Keep the SDK response-size fix in place throughout these tests.
 
 ## What it does
 
@@ -174,6 +241,36 @@ cargo run -- run --config examples/fixture-replay.toml --dry-run --preview --pre
 ## Run from a profile
 
 Profiles are TOML files that let you save a signal, brightness, FPS, timing, and integration settings.
+
+Ripples uses the same runtime and configuration as animations and status modes:
+
+```sh
+cargo run -- run --config examples/ripples.toml --dry-run
+cargo run -- run --config examples/ripples.toml --preview --preview-format json
+# Live keyboard input; Ctrl-C restores/releases lighting:
+cargo run -- run --config examples/ripples.toml
+```
+
+The example selects `[signal] kind = "ripples"`, brightness 180, palette `ocean`,
+30 FPS, and continuous operation. Set `[signal.ripples] analog_sdk_path` to
+override `WOOTING_ANALOG_SDK_PATH`. RGB-only modes never initialize analog input.
+`toy ripples` remains available and shares the same renderer and lifecycle.
+
+Configuration compatibility and validation:
+
+- `schema_version = 1` is optional; existing unversioned profiles mean version 1.
+  Unsupported versions are rejected, without rewriting files.
+- Existing `[signal]`, `[extension]` alias, and source/rule/scene profiles remain
+  supported. Legacy root defaults remain unchanged (including brightness 96);
+  use the ripple example for the toy's brighter settings.
+- Configured/live frame rates must be 1–120 FPS. A profile may contain at most
+  one ripple source because the Analog SDK is process-global.
+- Dry-run validates configuration and constructs the selected mode without
+  loading SDKs, polling APIs, or starting commands. Preview uses synthetic input;
+  JSON/SVG stdout contains only the requested preview, not a config preamble.
+- Configuration is read once at startup. Stop, edit, validate, and rerun to
+  change modes. Live select/pause/resume, atomic saves, and retaining a running
+  configuration after a rejected reload belong to the future persistent engine.
 
 Validate without touching the keyboard:
 

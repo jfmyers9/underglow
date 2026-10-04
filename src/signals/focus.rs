@@ -1,5 +1,5 @@
 use crate::layout::Zone;
-use crate::render::{pulse_wave, Color, Frame, RenderContext};
+use crate::render::{Color, Frame, RenderContext, pulse_wave};
 use crate::signals::SignalProgram;
 use serde::Deserialize;
 use std::sync::atomic::AtomicBool;
@@ -121,7 +121,9 @@ fn duration_progress(elapsed: Duration, total: Duration) -> f32 {
 }
 
 impl SignalProgram for FocusSignal {
-    fn tick(&mut self, _interrupted: &AtomicBool) {}
+    fn tick(&mut self, _interrupted: &AtomicBool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Frame {
         render_focus(ctx, self.current_state(), self.config.dim)

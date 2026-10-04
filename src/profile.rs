@@ -3,8 +3,8 @@ use crate::layout::Zone;
 use crate::render::{Frame, RenderContext};
 use crate::scenes;
 use crate::signals::{
-    build_signal, CommandPulseSignal, FixtureSignal, SignalProgram, SignalSnapshot,
-    StaticEffectSignal,
+    CommandPulseSignal, FixtureSignal, SignalProgram, SignalSnapshot, StaticEffectSignal,
+    build_signal,
 };
 use std::sync::atomic::AtomicBool;
 
@@ -34,6 +34,7 @@ enum RuntimeSource {
 
 impl ProfileRuntimeSignal {
     pub fn new(config: AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        config.validate()?;
         let sources = config
             .sources
             .iter()
@@ -54,10 +55,31 @@ impl ProfileRuntimeSignal {
 }
 
 impl SignalProgram for ProfileRuntimeSignal {
-    fn tick(&mut self, interrupted: &AtomicBool) {
+    fn initialize(&mut self) -> crate::signals::ProgramResult {
         for source in &mut self.sources {
-            source.tick(interrupted);
+            source.program_mut().initialize()?;
         }
+        Ok(())
+    }
+
+    fn validate_device(&self, info: &crate::sdk::rgb::DeviceInfo) -> crate::signals::ProgramResult {
+        for source in &self.sources {
+            source.program().validate_device(info)?;
+        }
+        Ok(())
+    }
+
+    fn preview_tick(&mut self, tick: u32) {
+        for source in &mut self.sources {
+            source.program_mut().preview_tick(tick);
+        }
+    }
+
+    fn tick(&mut self, interrupted: &AtomicBool) -> crate::signals::ProgramResult {
+        for source in &mut self.sources {
+            source.tick(interrupted)?;
+        }
+        Ok(())
     }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Frame {
@@ -97,6 +119,24 @@ impl SignalProgram for ProfileRuntimeSignal {
 }
 
 impl RuntimeSource {
+    fn program(&self) -> &dyn SignalProgram {
+        match self {
+            Self::Static { signal, .. } => signal,
+            Self::CommandPulse { signal, .. } => signal,
+            Self::Fixture { signal, .. } => signal,
+            Self::Generic { signal, .. } => &**signal,
+        }
+    }
+
+    fn program_mut(&mut self) -> &mut dyn SignalProgram {
+        match self {
+            Self::Static { signal, .. } => signal,
+            Self::CommandPulse { signal, .. } => signal,
+            Self::Fixture { signal, .. } => signal,
+            Self::Generic { signal, .. } => &mut **signal,
+        }
+    }
+
     fn new(
         source: &SourceConfig,
         fallback_effect: crate::effects::EffectKind,
@@ -132,7 +172,7 @@ impl RuntimeSource {
         })
     }
 
-    fn tick(&mut self, interrupted: &AtomicBool) {
+    fn tick(&mut self, interrupted: &AtomicBool) -> crate::signals::ProgramResult {
         match self {
             RuntimeSource::Static { signal, .. } => signal.tick(interrupted),
             RuntimeSource::CommandPulse { signal, .. } => signal.tick(interrupted),
@@ -302,7 +342,7 @@ zones = ["function"]
         let layout = KeyboardLayout::for_device(&info);
         let interrupted = AtomicBool::new(false);
 
-        runtime.tick(&interrupted);
+        runtime.tick(&interrupted).unwrap();
         let frame = runtime.render(&RenderContext {
             info: &info,
             layout: &layout,

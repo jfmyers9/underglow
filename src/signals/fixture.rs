@@ -112,8 +112,9 @@ impl FixtureSignal {
 }
 
 impl SignalProgram for FixtureSignal {
-    fn tick(&mut self, _interrupted: &AtomicBool) {
+    fn tick(&mut self, _interrupted: &AtomicBool) -> crate::signals::ProgramResult {
         self.advance();
+        Ok(())
     }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Frame {
@@ -209,7 +210,7 @@ hold_seconds = 1
         let interrupted = AtomicBool::new(false);
 
         assert_eq!(signal.snapshot("demo").status, "running");
-        signal.tick(&interrupted);
+        signal.tick(&interrupted).unwrap();
         assert_eq!(signal.snapshot("demo").status, "success");
     }
 

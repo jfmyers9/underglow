@@ -1,4 +1,5 @@
 mod config;
+mod doctor;
 mod effects;
 mod layout;
 mod preview;
@@ -17,7 +18,7 @@ use layout::KeyboardLayout;
 use preview::PreviewFormat;
 use profile::ProfileRuntimeSignal;
 use render::{Color, PaletteName};
-use runner::{RunOptions, SignalRunOptions, run_effect, run_signal, sleep_interruptibly};
+use runner::{RunOptions, SignalRunOptions, run_session, sleep_interruptibly};
 use sdk::rgb::{DeviceInfo, WootingRgb};
 use signals::{
     AppAuraConfig, CommandPulseConfig, CommandPulseOutput, FixtureConfig, FocusConfig,
@@ -43,6 +44,8 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Check SDK access and restoration (opens/resets RGB; opt in to an animation).
+    Doctor(doctor::DoctorOptions),
     /// Play an interactive keyboard toy; stop to restore normal lighting.
     Toy {
         #[command(subcommand)]
@@ -178,9 +181,12 @@ enum SignalCommand {
         /// Animation frames per second.
         #[arg(long, default_value_t = 30)]
         fps: u32,
-        /// Seconds to run static-effect.
+        /// Seconds to run static-effect or ripples.
         #[arg(long, default_value_t = 10)]
         seconds: u64,
+        /// Analog SDK distributable for ripples; otherwise use WOOTING_ANALOG_SDK_PATH.
+        #[arg(long)]
+        analog_sdk_path: Option<PathBuf>,
         /// Working directory for command-pulse.
         #[arg(long)]
         cwd: Option<PathBuf>,
@@ -285,6 +291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let interrupted = install_ctrlc_handler()?;
 
     match cli.command {
+        Command::Doctor(options) => doctor::run(options, cli.sdk_path.as_deref(), &interrupted)?,
         Command::Toy { command } => toys::run(command, cli.sdk_path.as_deref(), &interrupted)?,
         Command::Info => {
             let keyboard = WootingRgb::open(cli.sdk_path.as_deref())?;
@@ -401,10 +408,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bass,
                 cpu_limit_percent,
                 stale_seconds,
+                analog_sdk_path,
                 command,
             } => {
                 let env = parse_env_vars(env)?;
                 let (config, options) = match signal {
+                    SignalKind::Ripples => (
+                        signals::SignalConfig::ripples(toys::RippleConfig { analog_sdk_path }),
+                        SignalRunOptions {
+                            palette,
+                            brightness,
+                            fps,
+                            seconds: Some(seconds),
+                            continuous: false,
+                        },
+                    ),
                     SignalKind::StaticEffect => (
                         signals::SignalConfig::static_effect(effect),
                         SignalRunOptions {
@@ -556,7 +574,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             preview_ticks,
         } => {
             let config = AppConfig::load(&config)?;
-            print_config(&config);
             if preview {
                 let mut signal = build_config_signal(&config)?;
                 preview::print_signal_preview(
@@ -575,6 +592,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config.warn_on_close_error,
                     &interrupted,
                 )?;
+            } else {
+                // Validate constructors without acquiring hardware or starting providers.
+                let _ = build_config_signal(&config)?;
+                print_config(&config);
             }
         }
     }
@@ -585,6 +606,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn build_config_signal(
     config: &AppConfig,
 ) -> Result<Box<dyn signals::SignalProgram>, Box<dyn std::error::Error>> {
+    config.validate()?;
     if ProfileRuntimeSignal::is_profile_runtime_config(config) {
         Ok(Box::new(ProfileRuntimeSignal::new(config.clone())?))
     } else {
@@ -606,11 +628,14 @@ fn run_keyboard_with_close_policy(
     warn_on_close_error: bool,
     interrupted: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut keyboard = WootingRgb::open(sdk_path.as_deref())?;
-    print_info(keyboard.info());
-    run_effect(&keyboard, options, interrupted)?;
-    close_best_effort(&mut keyboard, warn_on_close_error);
-    Ok(())
+    let mut signal = signals::StaticEffectSignal::new(options.effect);
+    run_session(
+        sdk_path.as_deref(),
+        &SignalRunOptions::from(options),
+        &mut signal,
+        warn_on_close_error,
+        interrupted,
+    )
 }
 
 fn run_keyboard_signal(
@@ -620,11 +645,13 @@ fn run_keyboard_signal(
     warn_on_close_error: bool,
     interrupted: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut keyboard = WootingRgb::open(sdk_path.as_deref())?;
-    print_info(keyboard.info());
-    run_signal(&keyboard, options, signal, interrupted)?;
-    close_best_effort(&mut keyboard, warn_on_close_error);
-    Ok(())
+    run_session(
+        sdk_path.as_deref(),
+        options,
+        signal,
+        warn_on_close_error,
+        interrupted,
+    )
 }
 
 fn close_best_effort(keyboard: &mut WootingRgb, warn: bool) {
@@ -640,6 +667,7 @@ fn close_best_effort(keyboard: &mut WootingRgb, warn: bool) {
 fn print_config(config: &AppConfig) {
     let signal = config.signal_config();
     println!("config:");
+    println!("  schema_version: {}", config.schema_version);
     println!("  sdk_path: {}", path_display(config.sdk_path.as_ref()));
     println!("  signal: {:?}", signal.kind);
     println!("  effect: {}", config.effect);
@@ -709,6 +737,12 @@ fn print_config(config: &AppConfig) {
         }
     }
     match signal.kind {
+        SignalKind::Ripples => {
+            println!(
+                "  analog_sdk_path: {}",
+                path_display(signal.ripples.analog_sdk_path.as_ref())
+            );
+        }
         SignalKind::CommandPulse => {
             println!("  command: {:?}", signal.command_pulse.command);
             println!("  cwd: {}", path_display(signal.command_pulse.cwd.as_ref()));

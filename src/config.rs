@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
+    pub schema_version: u32,
     pub sdk_path: Option<PathBuf>,
     pub effect: EffectKind,
     pub palette: PaletteName,
@@ -34,6 +35,7 @@ pub struct SourceConfig {
     #[serde(rename = "type")]
     pub kind: SourceKind,
     pub effect: Option<EffectKind>,
+    pub ripples: crate::toys::RippleConfig,
     #[serde(flatten)]
     pub command_pulse: CommandPulseConfig,
     #[serde(flatten)]
@@ -57,6 +59,7 @@ pub struct SourceConfig {
 pub enum SourceKind {
     #[default]
     StaticEffect,
+    Ripples,
     CommandPulse,
     #[serde(rename = "github-ci", alias = "git-hub-ci")]
     GithubCi,
@@ -108,6 +111,7 @@ pub struct SelectedScene<'a> {
 impl SourceConfig {
     pub fn signal_config(&self, fallback_effect: EffectKind) -> Option<SignalConfig> {
         match self.kind {
+            SourceKind::Ripples => Some(SignalConfig::ripples(self.ripples.clone())),
             SourceKind::StaticEffect => Some(SignalConfig::static_effect(
                 self.effect.unwrap_or(fallback_effect),
             )),
@@ -143,6 +147,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         let run = RunOptions::default();
         Self {
+            schema_version: 1,
             sdk_path: None,
             effect: run.effect,
             palette: run.palette,
@@ -165,7 +170,35 @@ impl AppConfig {
             path: path.to_path_buf(),
             source,
         })?;
-        toml::from_str(&content).map_err(ConfigError::Parse)
+        let config: Self = toml::from_str(&content).map_err(ConfigError::Parse)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.schema_version != 1 {
+            return Err(ConfigError::Invalid(
+                "unsupported schema_version; expected 1".into(),
+            ));
+        }
+        if !(1..=120).contains(&self.fps) {
+            return Err(ConfigError::Invalid("fps must be between 1 and 120".into()));
+        }
+        // The analog SDK is process-global. Never initialize multiple instances
+        // through a multi-source profile, even if a scene temporarily hides one.
+        if self.signal.is_none()
+            && self
+                .sources
+                .iter()
+                .filter(|source| source.kind == SourceKind::Ripples)
+                .count()
+                > 1
+        {
+            return Err(ConfigError::Invalid(
+                "at most one ripples source is supported".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn signal_run_options(&self) -> SignalRunOptions {
@@ -215,6 +248,8 @@ impl AppConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("invalid config: {0}")]
+    Invalid(String),
     #[error("failed to read config {path}: {source}")]
     Read {
         path: PathBuf,
@@ -228,6 +263,39 @@ pub enum ConfigError {
 mod tests {
     use super::*;
     use crate::signals::SignalKind;
+
+    #[test]
+    fn ripples_config_and_legacy_version_defaults() {
+        let config: AppConfig = toml::from_str(include_str!("../examples/ripples.toml")).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.schema_version, 1);
+        assert_eq!(config.signal_config().kind, SignalKind::Ripples);
+        assert_eq!(config.brightness, 180);
+        assert!(config.continuous);
+        let legacy: AppConfig = toml::from_str("effect = 'comet'").unwrap();
+        legacy.validate().unwrap();
+        assert_eq!(legacy.schema_version, 1);
+        assert_eq!(legacy.brightness, 96);
+    }
+
+    #[test]
+    fn reject_unsupported_versions_rates_and_duplicate_analog_sources() {
+        for text in [
+            "schema_version = 2",
+            "fps = 0",
+            "fps = 121",
+            "[[sources]]\ntype = 'ripples'\n[[sources]]\ntype = 'ripples'",
+        ] {
+            let config: AppConfig = toml::from_str(text).unwrap();
+            assert!(config.validate().is_err(), "{text}");
+        }
+        assert!(
+            toml::from_str::<AppConfig>(
+                "[signal]\nkind = 'ripples'\n[signal.ripples]\nunknown_setting = 1"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn config_defaults_to_static_effect_signal() {

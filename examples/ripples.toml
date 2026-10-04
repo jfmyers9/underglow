@@ -1,0 +1,13 @@
+# Shared runtime profile: no native SDK is loaded by --dry-run or --preview.
+schema_version = 1
+palette = "ocean"
+brightness = 180
+fps = 30
+continuous = true
+
+[signal]
+kind = "ripples"
+
+# Optional; otherwise use WOOTING_ANALOG_SDK_PATH or a platform library default.
+# [signal.ripples]
+# analog_sdk_path = "/absolute/path/to/libwooting_analog_sdk_dist.dylib"

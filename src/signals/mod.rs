@@ -11,6 +11,8 @@ pub mod static_effect;
 
 use crate::effects::EffectKind;
 use crate::render::{Frame, RenderContext};
+use crate::sdk::rgb::DeviceInfo;
+use crate::toys::{RippleConfig, RippleSignal};
 pub use app_aura::{AppAuraConfig, AppAuraSignal};
 use clap::ValueEnum;
 pub use command_pulse::{CommandPulseConfig, CommandPulseOutput, CommandPulseSignal};
@@ -24,8 +26,19 @@ pub use sports::{SportsConfig, SportsSignal};
 pub use static_effect::StaticEffectSignal;
 use std::sync::atomic::AtomicBool;
 
+pub type ProgramResult = Result<(), Box<dyn std::error::Error>>;
+
 pub trait SignalProgram {
-    fn tick(&mut self, interrupted: &AtomicBool);
+    /// Acquire mode-specific resources only for a live run, never for previews.
+    fn initialize(&mut self) -> ProgramResult {
+        Ok(())
+    }
+    fn validate_device(&self, _info: &DeviceInfo) -> ProgramResult {
+        Ok(())
+    }
+    fn tick(&mut self, interrupted: &AtomicBool) -> ProgramResult;
+    /// Deterministic preview input; must not open hardware, poll APIs, or spawn commands.
+    fn preview_tick(&mut self, _tick: u32) {}
     fn render(&self, ctx: &RenderContext<'_>) -> Frame;
     fn finished(&self) -> bool;
     fn shutdown(&mut self, interrupted: bool);
@@ -59,6 +72,7 @@ impl SignalSnapshot {
 pub enum SignalKind {
     #[default]
     StaticEffect,
+    Ripples,
     CommandPulse,
     #[serde(rename = "github-ci", alias = "git-hub-ci")]
     #[value(name = "github-ci", alias = "git-hub-ci")]
@@ -76,6 +90,7 @@ pub enum SignalKind {
 pub struct SignalConfig {
     pub kind: SignalKind,
     pub effect: Option<EffectKind>,
+    pub ripples: RippleConfig,
     #[serde(flatten)]
     pub command_pulse: CommandPulseConfig,
     #[serde(flatten)]
@@ -99,6 +114,7 @@ impl Default for SignalConfig {
         Self {
             kind: SignalKind::StaticEffect,
             effect: Some(EffectKind::default()),
+            ripples: RippleConfig::default(),
             command_pulse: CommandPulseConfig::default(),
             github_ci: GitHubCiConfig::default(),
             focus: FocusConfig::default(),
@@ -116,6 +132,7 @@ impl SignalConfig {
         Self {
             kind,
             effect: None,
+            ripples: RippleConfig::default(),
             command_pulse: CommandPulseConfig::default(),
             github_ci: GitHubCiConfig::default(),
             focus: FocusConfig::default(),
@@ -131,6 +148,13 @@ impl SignalConfig {
         Self {
             effect: Some(effect),
             ..Self::base(SignalKind::StaticEffect)
+        }
+    }
+
+    pub fn ripples(ripples: RippleConfig) -> Self {
+        Self {
+            ripples,
+            ..Self::base(SignalKind::Ripples)
         }
     }
 
@@ -196,6 +220,7 @@ pub fn build_signal(
     fallback_effect: EffectKind,
 ) -> Result<Box<dyn SignalProgram>, Box<dyn std::error::Error>> {
     match config.kind {
+        SignalKind::Ripples => Ok(Box::new(RippleSignal::new(config.ripples.clone()))),
         SignalKind::StaticEffect => Ok(Box::new(StaticEffectSignal::new(
             config.effect.unwrap_or(fallback_effect),
         ))),

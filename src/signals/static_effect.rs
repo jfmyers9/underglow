@@ -15,7 +15,9 @@ impl StaticEffectSignal {
 }
 
 impl SignalProgram for StaticEffectSignal {
-    fn tick(&mut self, _interrupted: &AtomicBool) {}
+    fn tick(&mut self, _interrupted: &AtomicBool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Frame {
         self.effect.render(ctx)

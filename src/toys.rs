@@ -1,14 +1,16 @@
-//! Small interactive toys, independent of the status/profile runtime.
+//! Interactive toys sharing the signal runtime and hardware-free previews.
 use crate::layout::{KeyboardLayout, MatrixCoord};
 use crate::preview::{self, PreviewFormat};
 use crate::render::{Frame, PaletteName};
-use crate::runner::sleep_interruptibly;
+use crate::runner::{SignalRunOptions, run_session};
 use crate::sdk::analog::{AnalogKeyPressure, AnalogSdk};
-use crate::sdk::rgb::{DeviceType, Layout, WootingRgb};
+use crate::sdk::rgb::{DeviceInfo, DeviceType, Layout};
+use crate::signals::{ProgramResult, SignalProgram};
 use clap::{Args, Subcommand};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+use std::time::Instant;
 
 #[derive(Debug, Subcommand)]
 pub enum ToyCommand {
@@ -54,36 +56,65 @@ fn run_ripples(
     options: &RippleOptions,
     rgb_path: Option<&Path>,
     interrupted: &AtomicBool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> ProgramResult {
+    let mut signal = RippleSignal::new(RippleConfig {
+        analog_sdk_path: options.analog_sdk_path.clone(),
+    });
+    let run = SignalRunOptions {
+        palette: options.palette,
+        brightness: options.brightness,
+        fps: options.fps,
+        seconds: options.seconds,
+        continuous: options.seconds.is_none(),
+    };
     if options.preview {
-        let info = preview::preview_device();
-        let layout = KeyboardLayout::for_device(&info);
-        let mut ripples = Ripples::default();
-        let frames = (0..options.ticks)
-            .map(|tick| {
-                // Fixed 100ms steps make exported frames deterministic and easy to compare.
-                let keys = if tick < 5 {
-                    vec![AnalogKeyPressure {
-                        key_code: 0x09,
-                        pressure: (tick + 1) as f32 / 5.0,
-                    }]
-                } else {
-                    vec![]
-                };
-                ripples.advance(0.1, &keys);
-                ripples.render(&layout, options.palette, options.brightness)
-            })
-            .collect::<Vec<_>>();
-        preview::print_frames(&info, &layout, &frames, options.format);
-        return Ok(());
+        preview::print_signal_preview(&mut signal, &run, options.ticks, options.format);
+        Ok(())
+    } else {
+        run_session(rgb_path, &run, &mut signal, true, interrupted)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RippleConfig {
+    pub analog_sdk_path: Option<PathBuf>,
+}
+
+/// Construction is side-effect-free. Only initialize opens the analog SDK.
+pub struct RippleSignal {
+    config: RippleConfig,
+    analog: Option<AnalogSdk>,
+    ripples: Ripples,
+    previous: Instant,
+}
+
+impl RippleSignal {
+    pub fn new(config: RippleConfig) -> Self {
+        Self {
+            config,
+            analog: None,
+            ripples: Ripples::default(),
+            previous: Instant::now(),
+        }
+    }
+}
+
+impl SignalProgram for RippleSignal {
+    fn initialize(&mut self) -> ProgramResult {
+        if self.analog.is_some() {
+            return Err("ripples is already initialized".into());
+        }
+        self.analog = Some(AnalogSdk::open(self.config.analog_sdk_path.as_deref())?);
+        self.ripples = Ripples::default();
+        self.previous = Instant::now();
+        eprintln!(
+            "Ripples owns RGB while running. Ctrl-C attempts to restore the current keyboard profile's lighting. Key presses still reach your apps."
+        );
+        Ok(())
     }
 
-    // Fail missing analog setup before opening RGB, so it cannot black out the keyboard.
-    let analog = AnalogSdk::open(options.analog_sdk_path.as_deref())?;
-    let mut keyboard = WootingRgb::open(rgb_path)?;
-    // Keep cleanup outside the fallible loop, including unsupported layouts and read errors.
-    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let info = keyboard.info();
+    fn validate_device(&self, info: &DeviceInfo) -> ProgramResult {
         if info.device_type != DeviceType::Keyboard80
             || info.layout != Layout::Ansi
             || info.max_rows != 6
@@ -91,37 +122,52 @@ fn run_ripples(
         {
             return Err("ripples currently supports the 80HE ANSI layout only".into());
         }
-        let layout = KeyboardLayout::for_device(info);
-        let mut ripples = Ripples::default();
-        let period = Duration::from_secs_f64(1.0 / f64::from(options.fps));
-        let start = Instant::now();
-        let mut previous = start;
-        eprintln!(
-            "Ripples owns RGB while running. Press keys gently/deeply; Ctrl-C returns lighting to the keyboard.\nPause other RGB apps and Wootility live preview/App Linking if they interfere. Key presses still reach your apps."
-        );
-        while !interrupted.load(Ordering::SeqCst)
-            && options
-                .seconds
-                .is_none_or(|seconds| start.elapsed() < Duration::from_secs(seconds))
-        {
-            let frame_start = Instant::now();
-            let keys = analog.read()?;
-            ripples.advance(frame_start.duration_since(previous).as_secs_f32(), &keys);
-            previous = frame_start;
-            keyboard.set_frame(&ripples.render(&layout, options.palette, options.brightness))?;
-            keyboard.update()?;
-            if let Some(remaining) = period.checked_sub(frame_start.elapsed()) {
-                sleep_interruptibly(remaining, interrupted);
-            }
-        }
         Ok(())
-    })();
-    if let Err(error) = keyboard.close() {
-        eprintln!(
-            "warning: lighting restoration was not acknowledged: {error}; stop other RGB writers or reconnect the keyboard if needed"
-        );
     }
-    result
+
+    fn tick(&mut self, _interrupted: &AtomicBool) -> ProgramResult {
+        let analog = self
+            .analog
+            .as_ref()
+            .ok_or("ripples has not been initialized")?;
+        let now = Instant::now();
+        let keys = analog.read()?;
+        self.ripples
+            .advance(now.duration_since(self.previous).as_secs_f32(), &keys);
+        self.previous = now;
+        Ok(())
+    }
+
+    fn preview_tick(&mut self, tick: u32) {
+        // Same synthetic travel sequence for both CLI entry points and profiles.
+        // Fixed 100ms steps do not depend on wall-clock time or live input.
+        let keys = if tick < 5 {
+            vec![AnalogKeyPressure {
+                key_code: 0x09,
+                pressure: (tick + 1) as f32 / 5.0,
+            }]
+        } else {
+            vec![]
+        };
+        self.ripples.advance(0.1, &keys);
+    }
+
+    fn render(&self, ctx: &crate::render::RenderContext<'_>) -> Frame {
+        self.ripples.render(ctx.layout, ctx.palette, ctx.brightness)
+    }
+
+    fn finished(&self) -> bool {
+        false
+    }
+
+    fn shutdown(&mut self, _interrupted: bool) {
+        if let Some(mut analog) = self.analog.take()
+            && let Err(error) = analog.close()
+        {
+            eprintln!("warning: {error}");
+        }
+        self.ripples = Ripples::default();
+    }
 }
 
 const LIFETIME: f32 = 2.5;

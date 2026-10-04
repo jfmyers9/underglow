@@ -48,6 +48,7 @@ pub fn print_signal_preview(
     let layout = KeyboardLayout::for_device(&info);
     let frames = (0..ticks.max(1))
         .map(|tick| {
+            signal.preview_tick(tick);
             signal.render(&RenderContext {
                 info: &info,
                 layout: &layout,

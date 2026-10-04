@@ -1,5 +1,5 @@
 use crate::layout::Zone;
-use crate::render::{pulse_wave, Color, Frame, RenderContext};
+use crate::render::{Color, Frame, RenderContext, pulse_wave};
 use crate::signals::SignalProgram;
 use serde::Deserialize;
 use std::sync::atomic::AtomicBool;
@@ -47,7 +47,9 @@ impl AppAuraSignal {
 }
 
 impl SignalProgram for AppAuraSignal {
-    fn tick(&mut self, _interrupted: &AtomicBool) {}
+    fn tick(&mut self, _interrupted: &AtomicBool) -> crate::signals::ProgramResult {
+        Ok(())
+    }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Frame {
         let mut frame = Frame::black();
