@@ -17,7 +17,8 @@ Closing the window leaves the engine running. Pause returns lighting control;
 the **WS** menu quits the controller. Login startup is always opt-in.
 
 - **Settings → Enable login** registers next-login startup without starting now.
-  **Start service** starts now; **Disable login** stops and unregisters it.
+  **Advanced engine controls → Start managed service** starts now;
+  **Disable login** stops and unregisters it.
 - Before replacing the app, click **Stop engines for update**, wait for success,
   and quit the controller. Replace in the same location, then relaunch. Settings
   and login preference survive. Restarting may restore enabled lighting; pause

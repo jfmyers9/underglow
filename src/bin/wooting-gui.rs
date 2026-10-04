@@ -669,6 +669,15 @@ fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egu
 }
 
 impl Controller {
+    fn discard_settings(&mut self) {
+        if let Some(status) = &self.status {
+            self.brightness = status.brightness;
+            self.palette = status.palette.clone();
+            self.fps = status.fps;
+            self.settings_dirty = false;
+        }
+    }
+
     fn apply_settings(&mut self) {
         self.dispatch(Action::Control(vec![
             "settings".into(),
@@ -685,40 +694,24 @@ impl Controller {
         let mut open = self.settings_open;
         egui::Window::new("Settings").open(&mut open).default_width(480.0)
             .resizable(true).vscroll(true).show(context, |ui| {
-            ui.label(egui::RichText::new("Engine & performance").strong());
-            ui.label(egui::RichText::new(&self.message).small().color(MUTED));
-            if let Some(status) = &self.status {
-                ui.small(format!("{}{} · recovery attempt {}", if self.connected { "" } else { "Last seen: " }, status.state, status.retry_attempt));
-            }
+            ui.label(egui::RichText::new("App settings").strong());
+            ui.small("Effects, brightness, palette and frame rate are on the lighting page.");
             ui.add_enabled_ui(!self.pending, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Refresh status").clicked() { self.control(&["status"]); }
-                    if ui.add_enabled(self.connected, egui::Button::new("Pause / return lighting")).clicked() { self.control(&["pause"]); }
-                });
-                ui.add_enabled_ui(self.connected, |ui| {
-                    self.settings_dirty |= ui.add(egui::Slider::new(&mut self.fps, 1..=120).text("Frame rate")).changed();
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled(self.settings_dirty, egui::Button::new("Apply settings")).clicked() { self.apply_settings(); }
-                        if ui.button("Reload settings").clicked() { self.settings_dirty = false; self.control(&["status"]); }
-                    });
-                });
                 ui.separator();
-                ui.label(egui::RichText::new("Startup & services").strong());
+                ui.label(egui::RichText::new("Startup").strong());
                 ui.small("Closing this window leaves the engine running. Login startup is always opt-in.");
                 #[cfg(target_os = "macos")]
                 if self.menu_bar.is_some() { ui.small("Use the WS menu-bar item to reopen or quit the controller."); }
-                ui.small("Enable login registers startup. Start service launches now. Disable login also stops the managed service.");
+                ui.small("Enable login starts the background engine at your next login, not now. Disable login also stops the managed engine.");
                 if self.custom_state { ui.small("Service controls are unavailable with a custom state directory."); }
                 ui.add_enabled_ui(!self.custom_state, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        for (label, verb) in [("Check service", "status"), ("Enable login", "enable"), ("Disable login", "disable"), ("Start service", "start"), ("Stop service", "stop")] {
+                        for (label, verb) in [("Check startup status", "status"), ("Enable login", "enable"), ("Disable login", "disable")] {
                             if ui.button(label).clicked() { self.dispatch(Action::Service(verb.into())); }
                         }
                     });
                 });
                 ui.small(&self.service);
-                if ui.add_enabled(self.connected, egui::Button::new("Stop standalone engine")).clicked() { self.control(&["stop"]); }
-                ui.small("For a managed engine, use Stop service instead.");
                 if self.bundled_app {
                     ui.separator();
                     ui.label(egui::RichText::new("Updates & removal").strong());
@@ -746,9 +739,27 @@ impl Controller {
                 });
             });
             ui.separator();
-            ui.collapsing("Diagnostics", |ui| {
+            ui.collapsing("Advanced engine controls", |ui| {
+                ui.small("The engine runs your lighting in the background. For everyday use, pause or resume on the lighting page.");
                 ui.label(&self.message);
-                ui.add(egui::TextEdit::multiline(&mut self.diagnostics).code_editor().interactive(false).desired_rows(10).desired_width(f32::INFINITY));
+                if let Some(status) = &self.status {
+                    ui.small(format!("{}{} · recovery attempt {}", if self.connected { "" } else { "Last seen: " }, status.state, status.retry_attempt));
+                }
+                ui.add_enabled_ui(!self.pending, |ui| {
+                    if ui.button("Refresh status").clicked() { self.control(&["status"]); }
+                    ui.add_enabled_ui(!self.custom_state, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (label, verb) in [("Start managed service", "start"), ("Stop managed service", "stop")] {
+                                if ui.button(label).clicked() { self.dispatch(Action::Service(verb.into())); }
+                            }
+                        });
+                    });
+                    if ui.add_enabled(self.connected, egui::Button::new("Stop standalone engine")).clicked() { self.control(&["stop"]); }
+                });
+                ui.small("For a login-managed engine, use Stop managed service; stopping it directly may cause it to restart. Stopping a service keeps login enabled.");
+                ui.collapsing("Diagnostics", |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut self.diagnostics).code_editor().interactive(false).desired_rows(10).desired_width(f32::INFINITY));
+                });
             });
         });
         self.settings_open = open;
@@ -794,31 +805,7 @@ impl Controller {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 card().show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(effect_description(&self.preset).0).size(18.0).strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new("ILLUSTRATIVE PREVIEW").size(10.0).color(MUTED));
-                        });
-                    });
-                    gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness);
-                    ui.label(egui::RichText::new("Simulated lighting · not live key input or a device connection indicator").small().color(MUTED));
-                });
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new("Choose an effect").size(18.0).strong());
-                let columns = if ui.available_width() >= 760.0 { 3 } else { 2 };
-                let width = (ui.available_width() - 12.0 * (columns - 1) as f32) / columns as f32;
-                ui.add_enabled_ui(self.connected && !self.pending, |ui| {
-                    for row in PRESETS.chunks(columns) {
-                        ui.horizontal(|ui| {
-                            for mode in row {
-                                if effect_card(ui, mode, self.preset == *mode, width).clicked() { self.control(&["select", "--preset", mode]); }
-                            }
-                        });
-                    }
-                });
-                ui.add_space(8.0);
-                card().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Make it yours").size(18.0).strong());
+                        ui.label(egui::RichText::new("Lighting controls").size(18.0).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if self.settings_dirty {
                                 if ui.add_enabled(self.connected && !self.pending, egui::Button::new("Apply changes")).clicked() { self.apply_settings(); }
@@ -834,13 +821,50 @@ impl Controller {
                             ui.label(format!("{}%", (u32::from(self.brightness) * 100 + 127) / 255));
                         });
                         ui.horizontal_wrapped(|ui| {
+                            ui.label("Palette");
                             for (palette, label) in PALETTES.iter().zip(["Amber", "Neon", "Ocean", "Ember", "Terminal"]) {
                                 if ui.selectable_label(self.palette == *palette, label).clicked() {
                                     self.palette = (*palette).into(); self.settings_dirty = true;
                                 }
                             }
                         });
+                        ui.horizontal(|ui| {
+                            ui.label("Frame rate");
+                            ui.spacing_mut().slider_width = (ui.available_width() - 110.0).max(120.0);
+                            self.settings_dirty |= ui.add(egui::Slider::new(&mut self.fps, 1..=120).suffix(" FPS")).changed();
+                        });
+                        ui.small("More FPS can mean smoother or faster motion, with higher CPU usage.");
+                        if self.settings_dirty {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(egui::RichText::new("Unapplied changes").color(ACCENT));
+                                if ui.button("Discard changes").clicked() { self.discard_settings(); }
+                            });
+                        }
                     });
+                });
+                ui.add_space(8.0);
+                card().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(effect_description(&self.preset).0).size(18.0).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new("ILLUSTRATIVE PREVIEW").size(10.0).color(MUTED));
+                        });
+                    });
+                    gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness);
+                    ui.label(egui::RichText::new("Simulation · not live input, device status or actual frame rate").small().color(MUTED));
+                });
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Choose an effect").size(18.0).strong());
+                let columns = if ui.available_width() >= 760.0 { 3 } else { 2 };
+                let width = (ui.available_width() - 12.0 * (columns - 1) as f32) / columns as f32;
+                ui.add_enabled_ui(self.connected && !self.pending, |ui| {
+                    for row in PRESETS.chunks(columns) {
+                        ui.horizontal(|ui| {
+                            for mode in row {
+                                if effect_card(ui, mode, self.preset == *mode, width).clicked() { self.control(&["select", "--preset", mode]); }
+                            }
+                        });
+                    }
                 });
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("Pause returns control to your keyboard. Closing this window keeps your lighting running.").small().color(MUTED));
@@ -893,6 +917,21 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn painted_text(shape: &egui::Shape, text: &mut String) {
+        match shape {
+            egui::Shape::Text(shape) => {
+                text.push_str(&shape.galley.job.text);
+                text.push('\n');
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    painted_text(shape, text);
+                }
+            }
+            _ => {}
+        }
+    }
     #[test]
     fn primary_control_handles_offline_paused_and_enabled_states() {
         assert_eq!(primary_label(false, false), "Start engine");
@@ -901,11 +940,10 @@ mod tests {
         assert_eq!(primary_label(true, true), "Pause lighting");
     }
 
-    #[test]
-    fn renders_compact_and_desktop_without_dispatching_commands() {
+    fn controller_fixture() -> (Controller, Receiver<Action>) {
         let (requests, incoming) = mpsc::channel();
         let (_outgoing, replies) = mpsc::channel();
-        let mut app = Controller {
+        let app = Controller {
             #[cfg(target_os = "macos")]
             menu_bar: None,
             requests,
@@ -928,6 +966,12 @@ mod tests {
             last_poll: Instant::now(),
             settings_open: false,
         };
+        (app, incoming)
+    }
+
+    #[test]
+    fn renders_compact_and_desktop_without_dispatching_commands() {
+        let (mut app, incoming) = controller_fixture();
         for size in [egui::vec2(620.0, 640.0), egui::vec2(940.0, 850.0)] {
             for settings_open in [false, true] {
                 let context = egui::Context::default();
@@ -942,8 +986,86 @@ mod tests {
                 );
                 assert!(!output.shapes.is_empty());
                 assert!(incoming.try_recv().is_err());
+                if !settings_open {
+                    let mut text = String::new();
+                    for shape in &output.shapes {
+                        painted_text(&shape.shape, &mut text);
+                    }
+                    for label in ["Lighting controls", "Brightness", "Palette", "Frame rate"] {
+                        assert!(text.contains(label), "{label} missing at {size:?}");
+                    }
+                    assert!(!text.contains("Start managed service"));
+                }
             }
         }
+
+        // Settings never duplicates visual sliders or exposes advanced actions by default.
+        let context = egui::Context::default();
+        app.settings_open = true;
+        for _ in 0..2 {
+            let _ = context.run(egui::RawInput::default(), |ctx| app.show_settings(ctx));
+        }
+        let output = context.run(egui::RawInput::default(), |ctx| app.show_settings(ctx));
+        let mut text = String::new();
+        for shape in &output.shapes {
+            painted_text(&shape.shape, &mut text);
+        }
+        assert!(text.contains("App settings"));
+        assert!(text.contains("Advanced engine controls"));
+        for label in [
+            "Frame rate",
+            "Apply changes",
+            "Start managed service",
+            "Stop standalone engine",
+        ] {
+            assert!(
+                !text.contains(label),
+                "{label} leaked into basic app settings"
+            );
+        }
+        assert!(incoming.try_recv().is_err());
+    }
+
+    #[test]
+    fn visual_edits_apply_together_and_discard_without_changing_engine() {
+        let (mut app, incoming) = controller_fixture();
+        // A single explicit apply sends all three visual settings together.
+        app.brightness = 200;
+        app.palette = "ember".into();
+        app.fps = 60;
+        app.settings_dirty = true;
+        app.apply_settings();
+        let Action::Control(args) = incoming.try_recv().unwrap() else {
+            panic!("expected visual settings");
+        };
+        assert_eq!(
+            args,
+            [
+                "settings",
+                "--brightness",
+                "200",
+                "--palette",
+                "ember",
+                "--fps",
+                "60"
+            ]
+            .map(OsString::from)
+        );
+        assert!(
+            app.settings_dirty,
+            "wait for confirmation before clearing edits"
+        );
+        app.pending = false;
+        app.status = Some(serde_json::from_str(STATUS).unwrap());
+        app.discard_settings();
+        assert!(!app.settings_dirty);
+        assert_eq!(app.brightness, 96);
+        assert_eq!(app.palette, "wooting");
+        assert_eq!(app.fps, 30);
+        assert!(
+            incoming.try_recv().is_err(),
+            "discard must not change the engine"
+        );
     }
     const STATUS: &str = r#"{"schema_version":1,"state":"retrying","enabled":true,"mode":"ripples","brightness":96,"palette":"wooting","fps":30,"last_error":"unplugged","retry_attempt":2}"#;
 
