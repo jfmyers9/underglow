@@ -83,7 +83,7 @@ shortcut. Packaging never mounts, installs, launches effects, or enables service
 After completing notice/provenance review, replace `--local-test` with
 `--verified-inputs`. This now requires a hash-bound `notices/audit.json`, not just
 a nonempty notice mapping. See the [audit result and reproduction steps](license-audit.md);
-an upstream rights question currently remains unresolved. For Developer ID
+the upstream bindings caveat is documented as non-blocking, not legally resolved. For Developer ID
 delivery, additionally supply:
 
 ```sh

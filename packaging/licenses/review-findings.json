@@ -1,16 +1,15 @@
 {
   "schema_version": 1,
-  "unresolved": [
+  "unresolved": [],
+  "review_notes": [
     {
       "id": "objc2-apple-sdk-derived-bindings",
-      "finding": "Upstream expressly records uncertainty about redistribution of Apple SDK-derived bindings. MIT/trio-license notice collection is complete; the third-party-rights determination remains pending. This is not a finding that distribution is prohibited.",
+      "finding": "Upstream records uncertainty about Apple SDK-derived bindings. Preserve its open-source license declarations and this caveat; the available evidence does not establish that distributing this application is prohibited.",
       "evidence": "https://github.com/madsmtm/objc2/blob/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
       "quote": "From reading the license, it is unclear whether distributing derived works such as these crates are allowed?",
-      "affected": "objc2 family in the application GUI/tray dependency graph; preserved upstream LICENSE.md files document the caveat",
-      "resolution_needed": "Documented clarification applicable to this use or qualified legal review; neither copying MIT text nor purchasing Developer ID resolves this automatically."
-    }
-  ],
-  "review_notes": [
+      "affected": "objc2 family pulled in by the macOS GUI/tray stack and, independently, ctrlc -> dispatch2 in the engine",
+      "disposition": "Documented non-blocking caveat for the current ad-hoc prerelease, accepted by the project owner as an engineering release decision. This is not a finding that Apple has granted additional rights or a guarantee of legal clearance. Revisit if concrete contrary evidence or changed upstream terms appear."
+    },
     "Scope is the current arm64/macOS release inputs. A changed crate, source, toolchain, SDK, native library or architecture requires recollection and review.",
     "17 application crate records rely on actual upstream SPDX declarations plus original source packages and separately labeled canonical terms. No missing copyright attribution was invented.",
     "Native licenses selected: MPL-2.0 for both Wooting SDKs, BSD-3-Clause alternative for hidapi, LGPL-2.1-or-later for libusb. Full native corresponding-source archives accompany notices.",

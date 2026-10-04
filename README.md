@@ -32,7 +32,7 @@ Use Pause to restore/release lighting, or Stop engine to shut it down.
 - [Native GUI and service controls](docs/gui.md)
 - [macOS/Linux packaging and installation](docs/install.md)
 - [Self-contained macOS app and disk image](docs/macos-release.md)
-- [Dependency license audit and unresolved release finding](docs/license-audit.md)
+- [Dependency license audit and documented caveats](docs/license-audit.md)
 - [Opt-in build/CI/timer notifications over a base effect](docs/notifications.md)
 
 No service or login startup is enabled automatically. Foreground commands refuse

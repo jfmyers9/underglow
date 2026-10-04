@@ -19,7 +19,7 @@ dependencies, **not** a claim that every recorded crate is linked into the app.
 Native correspondence is normal upstream-release/build evidence, not a claim
 of byte-reproducible builds. This is an engineering audit, not a legal opinion.
 
-### One unresolved upstream rights question
+### Documented, non-blocking upstream caveat
 
 The `objc2` family’s upstream [LICENSE.md at the pinned revision](https://github.com/madsmtm/objc2/blob/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md)
 declares the normal open-source licenses, but also says:
@@ -36,14 +36,18 @@ Apple Software rights in §§2.6–2.7. Those clauses do not expressly resolve t
 generated-bindings question. The current public document is not proof of which
 agreement was accepted for the local Apple command-line tools.
 
-**This is not a finding that redistribution is prohibited.** It is a question
-this audit cannot resolve from the available evidence. Documented clarification
-applicable to this use or qualified legal review is needed before representing
-it as cleared. Developer ID membership and adding MIT text do not resolve it.
+**This is not evidence that distributing this application is prohibited.** The
+project owner has accepted keeping this as a documented, non-blocking caveat for
+the current ad-hoc prerelease. It is not a claim that the underlying legal
+question has been resolved or that Apple has granted additional rights. Revisit
+the decision if concrete contrary evidence or changed upstream terms appear.
 
-`packaging/licenses/review-findings.json` preserves this unresolved finding.
-The assembled `audit.json` is therefore **incomplete**, and
-`package-macos.sh --verified-inputs` rejects it. Nothing has been published.
+`packaging/licenses/review-findings.json` retains the evidence and disposition in
+review notes. With no blocking findings, the regenerated `audit.json` is
+**reviewed**, not legally certified. Exact input, notice, source, architecture,
+and license checks remain enforced by `package-macos.sh --verified-inputs`.
+Future genuinely unresolved findings still fail that gate. Nothing is published
+by these tools.
 
 ## How missing notice text was handled
 
@@ -59,6 +63,9 @@ complete checksum-verified source package and its actual author/license metadata
 are retained, alongside separately labeled canonical terms. **No copyright
 holder or year was invented.** This is distinct from a verbatim upstream notice;
 the package manifests document that choice. It does not waive upstream caveats.
+The retained source packages are optional evidence for these permissive crates,
+not a blanket MIT requirement to redistribute source. They are separate from
+the corresponding native source supplied for MPL/LGPL obligations.
 
 Nested font, ring/BoringSSL/fiat, and embedded hidapi notices are retained. Native
 source archives travel with the notice bundle rather than relying solely on
@@ -131,8 +138,9 @@ copies original notices/source, includes James Myers’s MIT license, and emits
 hash-bound `audit.json`/`native-licenses.json`. It preserves unresolved findings;
 it never turns “collector complete” into automatic release clearance.
 
-Once a finding is actually resolved, record the supporting evidence and review
-disposition, then regenerate the bundle. A verified package requires exact
+Record resolutions or explicitly accepted non-blocking caveats with supporting
+evidence and a review disposition, then regenerate the bundle. Acceptance is
+not a claim that additional legal permission was obtained. A verified package requires exact
 matches for the full notice tree, target architecture, application license, and
 every original native input. Editing a notice or rebuilding a binary invalidates
 that attestation. Reviewed ad-hoc candidates are labeled **ad-hoc-unnotarized**;

@@ -69,6 +69,20 @@ class AssemblyTests(unittest.TestCase):
             assemble.assemble(self.collections, self.binaries, self.findings, self.output)
         self.assertFalse(self.output.exists())
 
+    def test_nonblocking_caveat_preserved_in_reviewed_audit(self):
+        caveat = {'id': 'upstream-rights-question',
+                  'disposition': 'documented non-blocking caveat, not legal clearance'}
+        self.findings['unresolved'] = []
+        self.findings['review_notes'] = [caveat]
+        audit = assemble.assemble(self.collections, self.binaries, self.findings, self.output)
+        self.assertEqual(audit['status'], 'reviewed')
+        self.assertEqual(audit['unresolved'], [])
+        self.assertEqual(audit['review_notes'], [caveat])
+        saved = json.loads((self.output / 'review-findings.json').read_text())
+        self.assertEqual(saved['review_notes'], [caveat])
+        self.assertEqual(audit['files']['review-findings.json'],
+                         assemble.digest(self.output / 'review-findings.json'))
+
     def test_changed_lock_policy_and_binary_rejected(self):
         for path, error in [(self.root/'Cargo.lock', 'Cargo.lock'),
                             (self.root/'packaging/licenses/rust-overrides.json', 'policy'),
