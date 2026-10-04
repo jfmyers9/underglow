@@ -41,8 +41,11 @@ blocked. Linux needs permission to access the keyboard's HID interfaces (udev).
 export WOOTING_ANALOG_SDK_PATH="/absolute/path/to/release/libwooting_analog_sdk_dist.dylib"
 cargo run -- toy ripples --palette ocean
 # Or use --analog-sdk-path; optionally stop automatically:
-cargo run -- toy ripples --seconds 20 --brightness 96 --fps 30
+cargo run -- toy ripples --seconds 20 --brightness 180 --fps 30
 ```
+
+Ripples defaults to brightness **180/255**. Use `--brightness` to tune it; this
+is a fixed cap, not a reading of or synchronization with Wootility's brightness.
 
 **First-version limits:** one connected analog keyboard, **80HE ANSI**. The typing
 block (letters, digits, punctuation, Tab, Caps Lock, Enter, Backspace, Shift and
@@ -93,6 +96,12 @@ Wooting Signals is **not** a Wootility replacement. Configure firmware, key maps
 ### 1. Build the RGB SDK
 
 From the repository root, build the official [`WootingKb/wooting-rgb-sdk`](https://github.com/WootingKb/wooting-rgb-sdk). Wooting Signals loads this library at runtime.
+
+Use the pinned submodule revision (`451f40d` or later), not the v1.8.0 tag.
+It includes the upstream fix for variable-length multi-report responses. Without
+that fix, an 80HE on newer firmware can enumerate but report `layout: Unknown`
+and time out on RGB commands. After updating the submodule, rebuild the native
+library; updating the Rust binary alone does not update the SDK.
 
 macOS:
 

@@ -23,7 +23,8 @@ pub struct RippleOptions {
     analog_sdk_path: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = PaletteName::Ocean)]
     palette: PaletteName,
-    #[arg(long, default_value_t = 96)]
+    /// Maximum RGB channel value (0–255); independent of Wootility brightness.
+    #[arg(long, default_value_t = 180)]
     brightness: u8,
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=120))]
     fps: u32,
@@ -256,6 +257,27 @@ fn hid_coord(code: u16) -> Option<MatrixCoord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn brighter_default_preserves_explicit_brightness() {
+        for (extra, expected) in [(vec![], 180), (vec!["--brightness", "96"], 96)] {
+            let cli = crate::Cli::try_parse_from(
+                ["wooting-signals", "toy", "ripples"]
+                    .into_iter()
+                    .chain(extra),
+            )
+            .unwrap();
+            let crate::Command::Toy {
+                command: ToyCommand::Ripples(options),
+            } = cli.command
+            else {
+                panic!("expected ripples");
+            };
+            assert_eq!(options.brightness, expected);
+        }
+    }
+
     fn key(pressure: f32) -> AnalogKeyPressure {
         AnalogKeyPressure {
             key_code: 0x09,
