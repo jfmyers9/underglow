@@ -1,8 +1,11 @@
 //! Optional native controller. All engine/service work happens in subprocesses, never SDK calls.
 use clap::Parser;
 use eframe::egui;
+#[path = "gui/brand.rs"]
+mod brand;
 #[path = "gui/preview.rs"]
 mod gui_preview;
+use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
 use serde::Deserialize;
 use std::{
     ffi::OsString,
@@ -629,13 +632,6 @@ impl Controller {
     }
 }
 
-const BG: egui::Color32 = egui::Color32::from_rgb(13, 18, 25);
-const SURFACE: egui::Color32 = egui::Color32::from_rgb(21, 28, 37);
-const BORDER: egui::Color32 = egui::Color32::from_rgb(42, 53, 66);
-const INK: egui::Color32 = egui::Color32::from_rgb(234, 241, 247);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(143, 160, 179);
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(128, 232, 200);
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RippleColors {
     enabled: bool,
@@ -674,34 +670,6 @@ fn color_hex(color: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
 }
 
-fn configure_style(context: &egui::Context) {
-    let mut style = (*context.style()).clone();
-    style.visuals = egui::Visuals::dark();
-    style.visuals.panel_fill = BG;
-    style.visuals.window_fill = SURFACE;
-    style.visuals.override_text_color = Some(INK);
-    style.visuals.selection.bg_fill = ACCENT.gamma_multiply(0.25);
-    style.visuals.selection.stroke.color = ACCENT;
-    style.visuals.widgets.inactive.bg_fill = SURFACE;
-    style.visuals.widgets.inactive.weak_bg_fill = SURFACE;
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER);
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(35, 48, 60);
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(44, 67, 70);
-    style.visuals.slider_trailing_fill = true;
-    style.spacing.item_spacing = egui::vec2(12.0, 12.0);
-    style.spacing.button_padding = egui::vec2(16.0, 10.0);
-    style
-        .text_styles
-        .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
-    context.set_style(style);
-}
-
 fn effect_description(mode: &str) -> (&str, &str) {
     match mode {
         "ripples" => ("Ripples", "Light that follows your touch"),
@@ -724,20 +692,12 @@ fn primary_label(connected: bool, enabled: bool) -> &'static str {
     }
 }
 
-fn card() -> egui::Frame {
-    egui::Frame::new()
-        .fill(SURFACE)
-        .stroke(egui::Stroke::new(1.0, BORDER))
-        .corner_radius(16)
-        .inner_margin(20)
-}
-
 fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 76.0), egui::Sense::click());
     let fill = if selected {
-        egui::Color32::from_rgb(25, 49, 48)
+        egui::Color32::from_rgb(27, 37, 53)
     } else if response.hovered() {
-        egui::Color32::from_rgb(30, 40, 53)
+        brand::RAISED
     } else {
         SURFACE
     };
@@ -746,6 +706,8 @@ fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egu
     } else {
         BORDER
     };
+    ui.painter()
+        .rect_filled(rect.translate(egui::vec2(0.0, 3.0)), 12, BG);
     ui.painter().rect(
         rect,
         12,
@@ -753,6 +715,21 @@ fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egu
         egui::Stroke::new(1.0, outline),
         egui::StrokeKind::Inside,
     );
+    ui.painter().line_segment(
+        [
+            rect.left_top() + egui::vec2(14.0, 2.0),
+            rect.right_top() + egui::vec2(-14.0, 2.0),
+        ],
+        egui::Stroke::new(1.0, brand::GLINT.gamma_multiply(0.5)),
+    );
+    if selected {
+        let seam = egui::Rect::from_min_max(
+            rect.left_bottom() + egui::vec2(14.0, -5.0),
+            rect.right_bottom() + egui::vec2(-14.0, -3.0),
+        );
+        brand::spectrum(ui.painter(), seam.expand2(egui::vec2(0.0, 2.0)), 0.08);
+        brand::spectrum(ui.painter(), seam, 0.85);
+    }
     let (title, detail) = effect_description(mode);
     let text_color = if ui.is_enabled() { INK } else { MUTED };
     ui.painter().text(
@@ -774,7 +751,7 @@ fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egu
             .circle_filled(rect.right_top() + egui::vec2(-18.0, 22.0), 3.5, ACCENT);
     }
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), title)
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, title)
     });
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -848,7 +825,9 @@ impl Controller {
         let mut open = self.settings_open;
         egui::Window::new("Settings").open(&mut open).default_width(480.0)
             .resizable(true).vscroll(true).show(context, |ui| {
-            ui.label(egui::RichText::new("App settings").strong());
+            brand::wordmark(ui, true);
+            brand::divider(ui);
+            ui.label(egui::RichText::new("App settings").size(20.0).strong());
             ui.small("Effects, brightness, palette and frame rate are on the lighting page.");
             ui.add_enabled_ui(!self.pending, |ui| {
                 ui.separator();
@@ -884,7 +863,7 @@ impl Controller {
                 }
                 ui.separator();
                 ui.collapsing("Import a trusted profile", |ui| {
-                    ui.colored_label(egui::Color32::from_rgb(245, 192, 127), "Profiles can execute commands as your user.");
+                    ui.colored_label(brand::WARNING, "Profiles can execute commands as your user.");
                     if ui.add(egui::TextEdit::singleline(&mut self.config_path).hint_text("/path/to/profile.toml").desired_width(f32::INFINITY)).changed() { self.trust_config = false; }
                     ui.checkbox(&mut self.trust_config, "I trust this file and its commands");
                     if ui.add_enabled(self.connected && self.trust_config && !self.config_path.trim().is_empty(), egui::Button::new("Use profile")).clicked() {
@@ -924,13 +903,13 @@ impl Controller {
     fn show_lighting(&mut self, context: &egui::Context) {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(28)).show(context, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("U /").size(23.0).strong().color(ACCENT));
-                    ui.label(egui::RichText::new("UNDERGLOW").size(12.0).strong().color(MUTED));
+                    brand::wordmark(ui, false);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Settings").clicked() { self.settings_open = !self.settings_open; }
                     });
                 });
-                ui.add_space(16.0);
+                brand::divider(ui);
+                ui.add_space(8.0);
                 let enabled = self.connected && self.status.as_ref().is_some_and(|s| s.enabled);
                 let state = if self.dev_simulation { "Development simulation · hardware disabled" } else if !self.connected { "Engine offline" } else {
                     match self.status.as_ref().map(|s| s.state.as_str()) {
@@ -941,7 +920,7 @@ impl Controller {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new("Keyboard lighting").size(30.0).strong());
-                        ui.label(egui::RichText::new(state).color(if enabled { ACCENT } else { MUTED }));
+                        ui.label(egui::RichText::new(state).color(brand::state_color(self.connected, self.dev_simulation, self.status.as_ref().map(|s| s.state.as_str()))));
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let label = if self.dev_simulation { "Hardware disabled" } else if self.dev_supervised && !self.connected { "Waiting for engine" } else { primary_label(self.connected, enabled) };
@@ -956,7 +935,7 @@ impl Controller {
                 });
                 ui.add_space(12.0);
                 if let Some(error) = self.status.as_ref().and_then(|s| s.last_error.as_ref()) {
-                    ui.colored_label(egui::Color32::from_rgb(245, 192, 127), if self.connected { error.clone() } else { format!("Last seen: {error}") });
+                    ui.colored_label(brand::WARNING, if self.connected { error.clone() } else { format!("Last seen: {error}") });
                 }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 card().show(ui, |ui| {
@@ -1107,8 +1086,7 @@ fn application_icon(bundled_app: bool) -> egui::IconData {
         // replaces the Dock icon with its own default, even inside a .app.
         egui::IconData::default()
     } else {
-        eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon/underglow-256.png"))
-            .expect("checked-in application icon must be a valid PNG")
+        brand::icon_data()
     }
 }
 
@@ -1420,7 +1398,14 @@ mod tests {
                     for shape in &output.shapes {
                         painted_text(&shape.shape, &mut text);
                     }
-                    for label in ["Lighting controls", "Brightness", "Palette", "Frame rate"] {
+                    for label in [
+                        "UNDERGLOW",
+                        "Lighting + signals",
+                        "Lighting controls",
+                        "Brightness",
+                        "Palette",
+                        "Frame rate",
+                    ] {
                         assert!(text.contains(label), "{label} missing at {size:?}");
                     }
                     assert!(!text.contains("Start managed service"));
@@ -1440,6 +1425,7 @@ mod tests {
             painted_text(&shape.shape, &mut text);
         }
         assert!(text.contains("App settings"));
+        assert!(text.contains("UNDERGLOW"));
         assert!(text.contains("Advanced engine controls"));
         for label in [
             "Frame rate",
@@ -1453,6 +1439,46 @@ mod tests {
             );
         }
         assert!(incoming.try_recv().is_err());
+    }
+
+    #[test]
+    fn compact_brand_header_keeps_status_and_primary_action_inside_window() {
+        for simulation in [false, true] {
+            let (mut app, incoming) = controller_fixture();
+            app.dev_simulation = simulation;
+            let context = egui::Context::default();
+            configure_style(&context);
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(620.0, 640.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.show_lighting(ctx),
+            );
+            for shape in output.shapes {
+                if let egui::Shape::Text(text) = shape.shape
+                    && [
+                        "UNDERGLOW",
+                        "Settings",
+                        "Resume lighting",
+                        "Hardware disabled",
+                        "Development simulation · hardware disabled",
+                        "Keyboard lighting",
+                    ]
+                    .contains(&text.galley.job.text.as_str())
+                {
+                    assert!(
+                        text.pos.x >= 0.0 && text.pos.x + text.galley.size().x <= 620.0,
+                        "{} exceeds compact header bounds",
+                        text.galley.job.text
+                    );
+                }
+            }
+            assert!(incoming.try_recv().is_err());
+        }
     }
 
     #[test]

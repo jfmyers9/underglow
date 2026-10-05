@@ -32,6 +32,15 @@ registers login startup automatically.
 
 ## Controls
 
+The controller shares the app icon's visual identity: graphite surfaces,
+keycap-like cards, a keycap wordmark, cyan controls, and subtle static RGB seams.
+Settings uses the same theme. RGB decoration is not an activity indicator and
+does not change your lighting palette or settings. Engine state always has a
+text label: green for active, amber for reconnecting, pink-red for errors, and
+muted for paused/offline. Preview chassis stay neutral; key illumination still
+follows the selected effect and draft colors. Keyboard legends stay readable as
+the light changes. Native macOS menus retain the platform's styling.
+
 - Opening the GUI only polls status. If unavailable, **Start engine** explicitly
   starts a standalone engine. Fresh state starts paused; existing persisted
   enabled state remains the engine's responsibility. The GUI does not force resume.

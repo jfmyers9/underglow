@@ -1,5 +1,6 @@
 //! Hardware-free previews. Ripples use the real shared renderer with synthetic input.
 
+use super::brand;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use std::time::Duration;
 use underglow::ripple::{RippleSimulation, hid_coord, palette_gradient, wooting_80he_geometry};
@@ -93,7 +94,12 @@ impl KeyboardPreview {
         let unit = width / 18.5;
         let (space, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), unit * 6.4), Sense::hover());
-        let origin = Pos2::new(space.center().x - width / 2.0, space.top());
+        let board = Rect::from_min_size(
+            Pos2::new(space.center().x - width / 2.0, space.top()),
+            Vec2::new(width, unit * 6.4),
+        );
+        brand::keyboard_shell(ui.painter(), board, unit * 0.12);
+        let origin = board.min + Vec2::splat(unit * 0.25);
         let now = ui.input(|i| i.time);
         let mut pressures = Vec::new();
         if self.demo && now.rem_euclid(4.0) < 0.65 {
@@ -138,11 +144,15 @@ impl KeyboardPreview {
         );
         for ((rect, hid), rgb) in keys.iter().zip(frame) {
             let color = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+            ui.painter()
+                .rect_filled(rect.expand(unit * 0.055), 5, color.gamma_multiply(0.15));
+            ui.painter()
+                .rect_filled(rect.translate(Vec2::new(0.0, unit * 0.06)), 4, brand::BG);
             ui.painter().rect(
                 *rect,
                 4.0,
                 color,
-                Stroke::new(1.0, Color32::from_gray(65)),
+                Stroke::new(1.0, brand::BORDER),
                 StrokeKind::Inside,
             );
             let label = match hid {
@@ -203,25 +213,8 @@ pub fn keyboard(
     let time = keyboard_preview.effect_time(ui.input(|i| i.time), timing);
     let accent = effect_color(mode, palette, 0.25);
 
-    // Layered chassis and a narrow underside highlight give the board depth
-    // without overwhelming the key illumination with a neon frame.
-    painter.rect_filled(
-        board.translate(Vec2::new(0.0, unit * 0.17)),
-        14.0,
-        Color32::from_black_alpha(70),
-    );
-    painter.rect(
-        board,
-        14.0,
-        Color32::from_rgb(16, 22, 27),
-        Stroke::new(1.0, Color32::from_rgb(48, 59, 64)),
-        StrokeKind::Inside,
-    );
-    painter.rect_filled(
-        board.shrink(unit * 0.22),
-        9.0,
-        Color32::from_rgb(10, 15, 19),
-    );
+    // Neutral graphite chrome never suggests an effect/palette color of its own.
+    brand::keyboard_shell(painter, board, unit * 0.22);
     let base = origin + Vec2::splat(unit * 0.55);
 
     let key = |x: f32, y: f32, w: f32, label: &str| {
@@ -243,35 +236,25 @@ pub fn keyboard(
                 );
             }
         }
-        painter.rect_filled(
-            rect.translate(Vec2::new(0.0, unit * 0.065)),
-            4.0,
-            Color32::from_rgb(4, 8, 11),
-        );
+        painter.rect_filled(rect.translate(Vec2::new(0.0, unit * 0.065)), 4.0, brand::BG);
         painter.rect(
             rect,
             4.0,
-            mix(Color32::from_rgb(25, 33, 39), color, strength * 0.28),
-            Stroke::new(
-                0.8,
-                mix(Color32::from_rgb(45, 56, 63), color, strength * 0.78),
-            ),
+            mix(brand::RAISED, color, strength * 0.28),
+            Stroke::new(0.8, mix(brand::BORDER, color, strength * 0.78)),
             StrokeKind::Inside,
         );
         let cap = rect.shrink(unit * 0.09);
         painter.line_segment(
             [cap.left_top(), cap.right_top()],
-            Stroke::new(
-                0.6,
-                mix(Color32::from_rgb(55, 65, 72), color, strength * 0.5),
-            ),
+            Stroke::new(0.6, mix(brand::GLINT, color, strength * 0.5)),
         );
         painter.text(
             rect.center() - Vec2::new(0.0, unit * 0.035),
             Align2::CENTER_CENTER,
             label,
             FontId::monospace((unit * 0.23).clamp(7.0, 12.0)),
-            mix(Color32::from_rgb(133, 148, 157), color, strength * 0.85),
+            brand::INK,
         );
     };
 
