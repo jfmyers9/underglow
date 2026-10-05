@@ -1,6 +1,7 @@
 //! Built-in visualization metadata shared by CLI presets and the controller.
 //! Register a visualization here once; its implementation belongs in its own module.
 use crate::effects::EffectKind;
+use crate::reactive::ReactiveKind;
 use crate::render::PaletteName;
 
 pub const DEFAULT_PRESET: &str = "ripples";
@@ -10,6 +11,7 @@ pub enum RendererKind {
     Static(EffectKind),
     Ripples,
     Focus,
+    Reactive(ReactiveKind),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +65,7 @@ impl Visualization {
             RendererKind::Static(_) => "EFFECT SIMULATION",
             RendererKind::Ripples => "RIPPLE SIMULATION",
             RendererKind::Focus => "FOCUS SIMULATION",
+            RendererKind::Reactive(_) => "REACTIVE SIMULATION",
         }
     }
 
@@ -77,6 +80,9 @@ impl Visualization {
             RendererKind::Focus => {
                 "80HE LED matrix · shared Focus renderer with synthetic phase and progress · not the live timer"
             }
+            RendererKind::Reactive(_) => {
+                "80HE ANSI · shared renderer with synthetic input · live activity stays in memory, never logged"
+            }
         }
     }
 
@@ -88,6 +94,7 @@ impl Visualization {
             }
             RendererKind::Ripples => "kind = 'ripples'\n".into(),
             RendererKind::Focus => "kind = 'focus-cockpit'\n".into(),
+            RendererKind::Reactive(kind) => format!("kind = '{kind}'\n"),
         };
         format!(
             "schema_version = 1\ncontinuous = true\npalette = '{}'\nbrightness = {}\nfps = {}\nspeed = {}\n[signal]\n{signal}",
@@ -173,6 +180,114 @@ static VISUALIZATIONS: &[Visualization] = &[
         selectable: true,
     },
     Visualization {
+        id: "aurora",
+        title: "Aurora",
+        description: "Slow curtains of drifting color",
+        renderer: RendererKind::Static(EffectKind::Aurora),
+        palette: PaletteControl::Selectable,
+        supports_speed: true,
+        supports_two_tone: false,
+        fixed_color_note: None,
+        defaults: VisualDefaults::with_palette(PaletteName::Ocean),
+        selectable: true,
+    },
+    Visualization {
+        id: "embers",
+        title: "Embers",
+        description: "Scattered lights that glow and fade",
+        renderer: RendererKind::Static(EffectKind::Embers),
+        palette: PaletteControl::Selectable,
+        supports_speed: true,
+        supports_two_tone: false,
+        fixed_color_note: None,
+        defaults: VisualDefaults::with_palette(PaletteName::Heat),
+        selectable: true,
+    },
+    Visualization {
+        id: "tide",
+        title: "Tide",
+        description: "A soft wave washes across your keys",
+        renderer: RendererKind::Static(EffectKind::Tide),
+        palette: PaletteControl::Selectable,
+        supports_speed: true,
+        supports_two_tone: false,
+        fixed_color_note: None,
+        defaults: VisualDefaults::with_palette(PaletteName::Ocean),
+        selectable: true,
+    },
+    Visualization {
+        id: "orbit",
+        title: "Orbit",
+        description: "A luminous arc circles the keyboard",
+        renderer: RendererKind::Static(EffectKind::Orbit),
+        palette: PaletteControl::Selectable,
+        supports_speed: true,
+        supports_two_tone: false,
+        fixed_color_note: None,
+        defaults: VisualDefaults::with_palette(PaletteName::Cyberpunk),
+        selectable: true,
+    },
+    Visualization {
+        id: "prism",
+        title: "Prism",
+        description: "Intersecting bands of shifting color",
+        renderer: RendererKind::Static(EffectKind::Prism),
+        palette: PaletteControl::Selectable,
+        supports_speed: true,
+        supports_two_tone: false,
+        fixed_color_note: None,
+        defaults: VisualDefaults::with_palette(PaletteName::Cyberpunk),
+        selectable: true,
+    },
+    Visualization {
+        id: "radar",
+        title: "Radar",
+        description: "A rotating sweep with a fading trail",
+        renderer: RendererKind::Static(EffectKind::Radar),
+        palette: PaletteControl::Selectable,
+        supports_speed: true,
+        supports_two_tone: false,
+        fixed_color_note: None,
+        defaults: VisualDefaults::with_palette(PaletteName::Terminal),
+        selectable: true,
+    },
+    Visualization {
+        id: "constellation",
+        title: "Constellation",
+        description: "Your keystrokes become connected stars",
+        renderer: RendererKind::Reactive(ReactiveKind::Constellation),
+        palette: PaletteControl::Selectable,
+        supports_speed: false,
+        supports_two_tone: false,
+        fixed_color_note: None,
+        defaults: VisualDefaults::with_palette(PaletteName::Ocean),
+        selectable: true,
+    },
+    Visualization {
+        id: "heatmap",
+        title: "Heatmap",
+        description: "Frequently used keys warm up, then cool",
+        renderer: RendererKind::Reactive(ReactiveKind::Heatmap),
+        palette: PaletteControl::Selectable,
+        supports_speed: false,
+        supports_two_tone: false,
+        fixed_color_note: None,
+        defaults: VisualDefaults::with_palette(PaletteName::Heat),
+        selectable: true,
+    },
+    Visualization {
+        id: "afterimage",
+        title: "Afterimage",
+        description: "Each touch leaves a lingering glow",
+        renderer: RendererKind::Reactive(ReactiveKind::Afterimage),
+        palette: PaletteControl::Selectable,
+        supports_speed: false,
+        supports_two_tone: false,
+        fixed_color_note: None,
+        defaults: VisualDefaults::with_palette(PaletteName::Cyberpunk),
+        selectable: true,
+    },
+    Visualization {
         id: "row-test",
         title: "Row test",
         description: "Diagnostic row colors",
@@ -220,7 +335,16 @@ mod tests {
                 "rainbow",
                 "breath",
                 "matrix",
-                "focus-cockpit"
+                "focus-cockpit",
+                "aurora",
+                "embers",
+                "tide",
+                "orbit",
+                "prism",
+                "radar",
+                "constellation",
+                "heatmap",
+                "afterimage",
             ]
         );
         assert_eq!(
@@ -244,6 +368,20 @@ mod tests {
     }
 
     #[test]
+    fn every_reactive_mode_has_one_matching_catalog_entry() {
+        for &kind in ReactiveKind::value_variants() {
+            let entries = all()
+                .iter()
+                .filter(|v| v.renderer == RendererKind::Reactive(kind))
+                .collect::<Vec<_>>();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].id, kind.to_string());
+            assert!(entries[0].selectable);
+            assert!(!entries[0].supports_speed && !entries[0].supports_two_tone);
+        }
+    }
+
+    #[test]
     fn capabilities_and_fresh_defaults_match_existing_modes() {
         for v in all() {
             assert!(!v.title.is_empty() && !v.description.is_empty());
@@ -252,15 +390,18 @@ mod tests {
             assert_eq!(v.defaults.speed, 100);
             assert_eq!(
                 v.supports_speed,
-                matches!(v.id, "comet" | "rainbow" | "matrix" | "breath")
+                matches!(v.renderer, RendererKind::Static(effect) if effect != EffectKind::RowTest)
             );
             assert_eq!(
                 v.palette_available(false),
-                matches!(v.id, "comet" | "breath" | "ripples")
+                !matches!(v.id, "rainbow" | "matrix" | "focus-cockpit" | "row-test")
             );
             assert_eq!(
                 v.palette_available(true),
-                matches!(v.id, "comet" | "breath")
+                !matches!(
+                    v.id,
+                    "rainbow" | "matrix" | "focus-cockpit" | "row-test" | "ripples"
+                )
             );
             assert_eq!(v.supports_two_tone, v.id == "ripples");
             let config: toml::Value = toml::from_str(&v.preset_config()).unwrap();

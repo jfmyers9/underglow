@@ -38,6 +38,7 @@ pub struct SourceConfig {
     pub kind: SourceKind,
     pub effect: Option<EffectKind>,
     pub ripples: crate::toys::RippleConfig,
+    pub reactive: crate::signals::ReactiveConfig,
     #[serde(flatten)]
     pub command_pulse: CommandPulseConfig,
     #[serde(flatten)]
@@ -62,6 +63,9 @@ pub enum SourceKind {
     #[default]
     StaticEffect,
     Ripples,
+    Constellation,
+    Heatmap,
+    Afterimage,
     CommandPulse,
     #[serde(rename = "github-ci", alias = "git-hub-ci")]
     GithubCi,
@@ -113,6 +117,18 @@ pub struct SelectedScene<'a> {
 impl SourceConfig {
     pub fn signal_config(&self, fallback_effect: EffectKind) -> Option<SignalConfig> {
         match self.kind {
+            SourceKind::Constellation => Some(SignalConfig::reactive(
+                underglow::reactive::ReactiveKind::Constellation,
+                self.reactive.clone(),
+            )),
+            SourceKind::Heatmap => Some(SignalConfig::reactive(
+                underglow::reactive::ReactiveKind::Heatmap,
+                self.reactive.clone(),
+            )),
+            SourceKind::Afterimage => Some(SignalConfig::reactive(
+                underglow::reactive::ReactiveKind::Afterimage,
+                self.reactive.clone(),
+            )),
             SourceKind::Ripples => Some(SignalConfig::ripples(self.ripples.clone())),
             SourceKind::StaticEffect => Some(SignalConfig::static_effect(
                 self.effect.unwrap_or(fallback_effect),
@@ -200,12 +216,20 @@ impl AppConfig {
             && self
                 .sources
                 .iter()
-                .filter(|source| source.kind == SourceKind::Ripples)
+                .filter(|source| {
+                    matches!(
+                        source.kind,
+                        SourceKind::Ripples
+                            | SourceKind::Constellation
+                            | SourceKind::Heatmap
+                            | SourceKind::Afterimage
+                    )
+                })
                 .count()
                 > 1
         {
             return Err(ConfigError::Invalid(
-                "at most one ripples source is supported".into(),
+                "at most one analog-input source (ripples, constellation, heatmap, afterimage) is supported".into(),
             ));
         }
         Ok(())
@@ -385,6 +409,72 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn reactive_example_profiles_are_valid_and_preview_safe() {
+        for (name, text) in [
+            (
+                "constellation",
+                include_str!("../examples/constellation.toml"),
+            ),
+            ("heatmap", include_str!("../examples/heatmap.toml")),
+            ("afterimage", include_str!("../examples/afterimage.toml")),
+        ] {
+            let config: AppConfig = toml::from_str(text).unwrap();
+            config.validate().unwrap();
+            assert_eq!(
+                config
+                    .signal_config()
+                    .kind
+                    .reactive_kind()
+                    .unwrap()
+                    .to_string(),
+                name
+            );
+            assert!(!config.runs_commands());
+            assert_eq!(config.brightness, 255);
+            assert!(config.signal_config().reactive.analog_sdk_path.is_none());
+        }
+    }
+
+    #[test]
+    fn reactive_sources_share_the_single_analog_owner_limit() {
+        let modes = ["ripples", "constellation", "heatmap", "afterimage"];
+        for first in modes {
+            for second in modes {
+                let text = format!("[[sources]]\ntype='{first}'\n[[sources]]\ntype='{second}'\n");
+                let config: AppConfig = toml::from_str(&text).unwrap();
+                assert!(
+                    config
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("at most one analog-input")
+                );
+                // An explicit signal still overrides unused legacy source declarations.
+                let config: AppConfig =
+                    toml::from_str(&format!("{text}\n[signal]\nkind='static-effect'\n")).unwrap();
+                config.validate().unwrap();
+            }
+        }
+        for kind in ["constellation", "heatmap", "afterimage"] {
+            let config: AppConfig = toml::from_str(&format!("[[sources]]\ntype='{kind}'\n[sources.reactive]\nanalog_sdk_path='/synthetic-analog'\n")).unwrap();
+            config.validate().unwrap();
+            let signal = config.signal_config();
+            assert_eq!(signal.kind.reactive_kind().unwrap().to_string(), kind);
+            assert_eq!(
+                signal.reactive.analog_sdk_path,
+                Some(PathBuf::from("/synthetic-analog"))
+            );
+            assert!(!config.runs_commands());
+            assert!(
+                toml::from_str::<AppConfig>(&format!(
+                    "[signal]\nkind='{kind}'\n[signal.reactive]\nrecord_keys=true\n"
+                ))
+                .is_err()
+            );
+        }
     }
 
     #[test]

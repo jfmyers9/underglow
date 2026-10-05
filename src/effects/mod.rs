@@ -1,10 +1,16 @@
 //! Hardware-independent decorative effects with shared elapsed-time interpolation.
 
+mod aurora;
 mod breath;
 mod comet;
+mod embers;
 mod matrix;
+mod orbit;
+mod prism;
+mod radar;
 mod rainbow;
 mod row_test;
+mod tide;
 
 #[cfg(test)]
 mod test_support;
@@ -24,6 +30,12 @@ pub enum EffectKind {
     Comet,
     Matrix,
     Breath,
+    Aurora,
+    Embers,
+    Tide,
+    Orbit,
+    Prism,
+    Radar,
 }
 
 impl fmt::Display for EffectKind {
@@ -46,6 +58,12 @@ impl EffectKind {
             Self::Comet => comet::render(ctx),
             Self::Matrix => matrix::render(ctx),
             Self::Breath => breath::render(ctx),
+            Self::Aurora => aurora::render(ctx),
+            Self::Embers => embers::render(ctx),
+            Self::Tide => tide::render(ctx),
+            Self::Orbit => orbit::render(ctx),
+            Self::Prism => prism::render(ctx),
+            Self::Radar => radar::render(ctx),
         }
     }
 }
@@ -99,12 +117,10 @@ mod tests {
     fn effect_pace_is_elapsed_time_not_render_tick() {
         let info = info(6, 17);
         let layout = KeyboardLayout::for_device(&info);
-        for effect in [
-            EffectKind::Rainbow,
-            EffectKind::Comet,
-            EffectKind::Matrix,
-            EffectKind::Breath,
-        ] {
+        for &effect in EffectKind::value_variants()
+            .iter()
+            .filter(|effect| **effect != EffectKind::RowTest)
+        {
             let mut context = RenderContext {
                 info: &info,
                 layout: &layout,

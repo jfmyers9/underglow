@@ -8,6 +8,7 @@ use underglow::catalog::{self, RendererKind};
 use underglow::device::DeviceInfo;
 use underglow::focus::{FocusPhase, FocusState, render_focus};
 use underglow::layout::{KeyboardLayout, MatrixCoord};
+use underglow::reactive::{ReactiveKind, ReactiveSimulation};
 use underglow::render::{Frame, PaletteName, RenderContext};
 use underglow::ripple::{RippleSimulation, hid_coord, palette_gradient, wooting_80he_geometry};
 
@@ -40,6 +41,12 @@ pub struct KeyboardPreview {
     last_tick: Option<f64>,
     demo: bool,
     pressure: f32,
+    reactive: Option<(ReactiveKind, ReactiveSimulation)>,
+    reactive_last_tick: Option<f64>,
+    reactive_sample: Option<ReactiveSimulation>,
+    reactive_frame_tick: Option<f64>,
+    reactive_demo: bool,
+    reactive_pressure: f32,
 }
 
 impl Default for KeyboardPreview {
@@ -52,11 +59,46 @@ impl Default for KeyboardPreview {
             last_tick: None,
             demo: true,
             pressure: 0.8,
+            reactive: None,
+            reactive_last_tick: None,
+            reactive_sample: None,
+            reactive_frame_tick: None,
+            reactive_demo: true,
+            reactive_pressure: 0.8,
         }
     }
 }
 
 impl KeyboardPreview {
+    fn select_reactive(&mut self, kind: Option<ReactiveKind>) {
+        if self.reactive.as_ref().map(|(kind, _)| *kind) != kind {
+            // Changing modes must not retain activity from the previous simulation.
+            self.reactive = kind.map(|kind| (kind, ReactiveSimulation::new(kind)));
+            self.reactive_last_tick = None;
+            self.reactive_sample = None;
+            self.reactive_frame_tick = None;
+        }
+    }
+
+    fn advance_reactive(&mut self, now: f64, fps: u32, keys: Vec<(u16, f32)>) {
+        let elapsed = self
+            .reactive_last_tick
+            .map_or(0.0, |last| (now - last).max(0.0));
+        if let Some((_, simulation)) = &mut self.reactive {
+            // Input must not be discarded between rendered frames: a short tap
+            // at low FPS still contributes to the next sampled image.
+            simulation.advance(elapsed as f32, keys);
+            self.reactive_last_tick = Some(now);
+            if self
+                .reactive_frame_tick
+                .is_none_or(|last| now - last + 1e-9 >= 1.0 / f64::from(fps.clamp(1, 120)))
+            {
+                self.reactive_sample = Some(simulation.clone());
+                self.reactive_frame_tick = Some(now);
+            }
+        }
+    }
+
     fn effect_time(&mut self, now: f64, timing: PreviewTiming) -> f64 {
         let seconds = self
             .animation
@@ -193,6 +235,11 @@ pub fn keyboard(
     timing: PreviewTiming,
     keyboard_preview: &mut KeyboardPreview,
 ) {
+    let reactive_kind = catalog::find(mode).and_then(|v| match v.renderer {
+        RendererKind::Reactive(kind) => Some(kind),
+        _ => None,
+    });
+    keyboard_preview.select_reactive(reactive_kind);
     let Some(visualization) = catalog::find(mode) else {
         ui.label("Preview unavailable for this custom or unsupported mode.");
         ui.small("No command, provider, or hardware is started by this preview.");
@@ -205,13 +252,31 @@ pub fn keyboard(
     if matches!(visualization.renderer, RendererKind::Focus) {
         ui.small("Synthetic focus phase at 55% progress · not the live timer");
     }
+    if reactive_kind.is_some() {
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut keyboard_preview.reactive_demo, "Auto demo");
+            ui.add(
+                egui::Slider::new(&mut keyboard_preview.reactive_pressure, 0.0..=1.0)
+                    .text("Pressure"),
+            );
+            if ui.button("Clear activity").clicked() {
+                if let Some((_, simulation)) = &mut keyboard_preview.reactive {
+                    simulation.clear();
+                }
+                keyboard_preview.reactive_demo = false;
+                keyboard_preview.reactive_last_tick = None;
+                keyboard_preview.reactive_sample = None;
+                keyboard_preview.reactive_frame_tick = None;
+            }
+        });
+        ui.small(
+            "Synthetic input · click/hold typing keys or Space · no real keyboard input is read",
+        );
+    }
     let info = preview_device();
     let layout = KeyboardLayout::for_device(&info);
-    let time = keyboard_preview.effect_time(ui.input(|i| i.time), timing);
-    let Some(frame) = preview_frame(mode, palette, brightness, time, &info, &layout) else {
-        ui.label("Preview unavailable for this palette or renderer.");
-        return;
-    };
+    let now = ui.input(|i| i.time);
+    let time = keyboard_preview.effect_time(now, timing);
     let width = ui.available_width().min(600.0);
     let unit = width / 18.5;
     let (space, _) =
@@ -223,9 +288,59 @@ pub fn keyboard(
         Pos2::new(space.center().x - width / 2.0, space.top()),
         Vec2::new(width, unit * 6.4),
     );
+    let origin = board.min + Vec2::splat(unit * 0.25);
+    if reactive_kind.is_some() {
+        let mut keys = Vec::new();
+        // Rotate held keys instead of sampling narrow pulses, which can alias
+        // into permanent darkness at low frame rates or shifted start times.
+        if keyboard_preview.reactive_demo {
+            let code = [0x09, 0x0d, 0x14][now.rem_euclid(3.0).floor() as usize];
+            keys.push((code, keyboard_preview.reactive_pressure));
+        }
+        for key in layout.keys() {
+            let Some(code) = (1..256).find(|&code| {
+                hid_coord(code).is_some_and(|coord| {
+                    coord.row == key.coord.row && coord.column == key.coord.column
+                })
+            }) else {
+                continue;
+            };
+            let rect = Rect::from_min_size(
+                origin + Vec2::new(key.x * unit, key.y * unit),
+                Vec2::splat(unit * 0.88),
+            );
+            let response = ui.interact(
+                rect,
+                ui.id()
+                    .with(("reactive-key", key.coord.row, key.coord.column)),
+                Sense::click_and_drag(),
+            );
+            if response.is_pointer_button_down_on() || response.clicked() {
+                keys.push((code, keyboard_preview.reactive_pressure));
+            }
+        }
+        keyboard_preview.advance_reactive(now, timing.fps, keys);
+    }
+    let frame = if let Some(simulation) = &keyboard_preview.reactive_sample {
+        PaletteName::from_str(palette, false).ok().map(|palette| {
+            simulation.render(&RenderContext {
+                info: &info,
+                layout: &layout,
+                brightness,
+                palette,
+                tick: 0,
+                animation_seconds: 0.0,
+            })
+        })
+    } else {
+        preview_frame(mode, palette, brightness, time, &info, &layout)
+    };
+    let Some(frame) = frame else {
+        ui.label("Preview unavailable for this palette or renderer.");
+        return;
+    };
     let painter = ui.painter();
     brand::keyboard_shell(painter, board, unit * 0.12);
-    let origin = board.min + Vec2::splat(unit * 0.25);
     for key in layout.keys() {
         let rect = Rect::from_min_size(
             origin + Vec2::new(key.x * unit, key.y * unit),
@@ -298,7 +413,7 @@ fn preview_frame(
             false,
         )),
         // Stateful ripples use KeyboardPreview's real simulation and synthetic input.
-        RendererKind::Ripples => None,
+        RendererKind::Ripples | RendererKind::Reactive(_) => None,
     }
 }
 
@@ -343,6 +458,244 @@ fn key_label(coord: MatrixCoord) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reactive_preview_matches_simulation_sampling_and_discards_old_activity() {
+        let info = preview_device();
+        let layout = KeyboardLayout::for_device(&info);
+        for &kind in ReactiveKind::value_variants() {
+            let mut preview = KeyboardPreview::default();
+            preview.select_reactive(Some(kind));
+            let mut expected = ReactiveSimulation::new(kind);
+            let keys = vec![(0x09, 0.8), (0x0d, 0.7)];
+            preview.advance_reactive(0.0, 30, keys.clone());
+            expected.advance(0.0, keys);
+            preview.advance_reactive(0.01, 30, vec![]); // Between sampled frames.
+            expected.advance(0.01, []);
+            assert_eq!(preview.reactive_frame_tick, Some(0.0));
+            preview.advance_reactive(0.1, 30, vec![]);
+            expected.advance(0.09, []);
+            for &palette in PaletteName::value_variants() {
+                for brightness in [0, 73, 255] {
+                    let ctx = RenderContext {
+                        info: &info,
+                        layout: &layout,
+                        palette,
+                        brightness,
+                        tick: 0,
+                        animation_seconds: 0.0,
+                    };
+                    let actual = preview.reactive.as_ref().unwrap().1.render(&ctx);
+                    assert_eq!(actual, expected.render(&ctx));
+                    preview.select_reactive(Some(kind));
+                    assert_eq!(
+                        actual,
+                        preview.reactive.as_ref().unwrap().1.render(&ctx),
+                        "ordinary redraw preserves state"
+                    );
+                }
+            }
+            preview.select_reactive(None);
+            assert!(preview.reactive.is_none() && preview.reactive_last_tick.is_none());
+            preview.select_reactive(Some(kind));
+            assert_eq!(
+                preview.reactive.as_ref().unwrap().1.render(&RenderContext {
+                    info: &info,
+                    layout: &layout,
+                    palette: PaletteName::Heat,
+                    brightness: 255,
+                    tick: 0,
+                    animation_seconds: 0.0
+                }),
+                Frame::black()
+            );
+        }
+    }
+
+    #[test]
+    fn reactive_short_taps_survive_between_low_fps_frames() {
+        let info = preview_device();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: 255,
+            palette: PaletteName::Heat,
+            tick: 0,
+            animation_seconds: 0.0,
+        };
+        for &kind in ReactiveKind::value_variants() {
+            let mut preview = KeyboardPreview::default();
+            preview.select_reactive(Some(kind));
+            preview.advance_reactive(0.0, 1, vec![]);
+            preview.advance_reactive(0.1, 1, vec![(0x09, 1.0)]);
+            preview.advance_reactive(0.2, 1, vec![]);
+            assert_eq!(
+                preview.reactive_sample.as_ref().unwrap().render(&ctx),
+                Frame::black()
+            );
+            preview.advance_reactive(1.0, 1, vec![]);
+            assert_ne!(
+                preview.reactive_sample.as_ref().unwrap().render(&ctx),
+                Frame::black(),
+                "short {kind} input must survive to the sampled frame"
+            );
+        }
+    }
+
+    #[test]
+    fn reactive_fast_click_is_captured_without_a_held_pointer_frame() {
+        let info = preview_device();
+        let layout = KeyboardLayout::for_device(&info);
+        let context = egui::Context::default();
+        let mut preview = KeyboardPreview {
+            reactive_demo: false,
+            ..Default::default()
+        };
+        let mut paint = |now, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(620.0, 700.0))),
+                    time: Some(now),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        keyboard(
+                            ui,
+                            "heatmap",
+                            "heat",
+                            255,
+                            (None, None),
+                            PreviewTiming { fps: 1, speed: 100 },
+                            &mut preview,
+                        );
+                    });
+                },
+            )
+        };
+        let output = paint(0.0, vec![]);
+        let caps = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.stroke.color == brand::BORDER
+                        && (rect.rect.width() - 600.0 / 18.5 * 0.88).abs() < 0.01 =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let key = layout
+            .keys()
+            .iter()
+            .position(|key| key.coord == MatrixCoord { row: 3, column: 4 })
+            .unwrap();
+        let pos = caps[key].center();
+        paint(
+            0.1,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        paint(1.0, vec![]);
+        let frame = preview
+            .reactive_sample
+            .as_ref()
+            .unwrap()
+            .render(&RenderContext {
+                info: &info,
+                layout: &layout,
+                palette: PaletteName::Heat,
+                brightness: 255,
+                tick: 0,
+                animation_seconds: 0.0,
+            });
+        assert_ne!(frame.get(3, 4), underglow::render::Color::BLACK);
+    }
+
+    #[test]
+    fn reactive_keys_paint_shared_frames_and_offer_only_synthetic_input() {
+        let info = preview_device();
+        let layout = KeyboardLayout::for_device(&info);
+        for &kind in ReactiveKind::value_variants() {
+            for width in [400.0, 960.0] {
+                let mut preview = KeyboardPreview::default();
+                let mut unit = 0.0;
+                let output = egui::Context::default().run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 700.0))),
+                        time: Some(0.5),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            unit = ui.available_width().min(600.0) / 18.5;
+                            keyboard(
+                                ui,
+                                &kind.to_string(),
+                                "heat",
+                                81,
+                                (None, None),
+                                PreviewTiming { fps: 1, speed: 400 },
+                                &mut preview,
+                            );
+                        });
+                    },
+                );
+                let mut expected = ReactiveSimulation::new(kind);
+                expected.advance(0.0, [(0x09, 0.8)]);
+                let frame = expected.render(&RenderContext {
+                    info: &info,
+                    layout: &layout,
+                    palette: PaletteName::Heat,
+                    brightness: 81,
+                    tick: 0,
+                    animation_seconds: 0.0,
+                });
+                assert_ne!(frame, Frame::black());
+                let caps = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.stroke.color == brand::BORDER
+                                && (rect.rect.width() - unit * 0.88).abs() < 0.01 =>
+                        {
+                            Some(rect)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(caps.len(), layout.keys().len());
+                for (cap, key) in caps.iter().zip(layout.keys()) {
+                    assert_eq!(cap.fill, frame_color(&frame, key.coord));
+                }
+                for text in ["Auto demo", "Clear activity"] {
+                    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(label) if label.galley.job.text == text)));
+                }
+                assert!(
+                    preview.last_tick.is_none(),
+                    "reactive previews must not run ripple input"
+                );
+            }
+        }
+    }
 
     #[test]
     fn catalog_frames_match_runtime_across_settings_and_times() {

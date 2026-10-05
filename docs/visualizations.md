@@ -13,6 +13,8 @@ it does not implement a second animation or choose a lighting palette itself.
 | `src/catalog.rs` | Preset IDs/order, names, descriptions, renderer kind, defaults, controls, preview labels |
 | `src/{device,layout,render,scenes}.rs` | Pure metadata, geometry, frame/palette types, drawing helpers |
 | `src/{ripple,focus}.rs` | Stateful ripple simulation and pure Focus state rendering |
+| `src/reactive/<effect>.rs` | Constellation, Heatmap, Afterimage rendering and decay |
+| `src/reactive/mod.rs` | Fixed-size key state, input normalization, press-edge detection |
 | `src/signals/`, `src/runner.rs`, `src/sdk/` | Live inputs, lifecycle, single hardware owner, device writes |
 | `src/bin/gui/preview.rs` | Synthetic inputs/time and presentation of shared renderer output |
 
@@ -64,6 +66,14 @@ Put their simulation/rendering in the pure library (Ripples and Focus are
 examples), then deliberately add a synthetic preview path. Never initialize the
 live adapter to obtain a preview. Existing provider scheduling, cancellation,
 command trust checks, and hardware ownership remain separate and unchanged.
+
+The three analog reactive modes share `src/signals/reactive.rs` and
+`ReactiveSimulation::{advance,render,clear}`. Their decay uses elapsed input time,
+never decorative speed. GUI input advances independently of the displayed FPS,
+which samples a bounded copy of simulation state so short clicks are not lost.
+Live SDK reads remain sampled at engine FPS. Only one analog source, including
+Ripples, is permitted in a profile. Mode-specific configuration lives in
+`[signal.reactive]` or `[sources.reactive]`; no input activity is serialized.
 
 ## Verification
 

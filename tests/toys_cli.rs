@@ -541,6 +541,18 @@ fn configured_modes_share_cleanup_and_rgb_modes_do_not_require_analog() {
         ("ripples", "read"),
         ("ripples", "write"),
         ("ripples", "layout"),
+        ("constellation", ""),
+        ("constellation", "read"),
+        ("constellation", "write"),
+        ("constellation", "layout"),
+        ("heatmap", ""),
+        ("heatmap", "read"),
+        ("heatmap", "write"),
+        ("heatmap", "layout"),
+        ("afterimage", ""),
+        ("afterimage", "read"),
+        ("afterimage", "write"),
+        ("afterimage", "layout"),
         ("static-effect", ""),
     ] {
         let _ = fs::remove_file(&mock.log);
@@ -557,7 +569,7 @@ fn configured_modes_share_cleanup_and_rgb_modes_do_not_require_analog() {
         );
         let calls = mock.calls();
         assert_eq!(calls.matches("close\n").count(), 1);
-        if kind == "ripples" {
+        if kind != "static-effect" {
             assert_eq!(calls.matches("uninit\n").count(), 1);
             assert!(calls.find("close\n").unwrap() < calls.find("uninit\n").unwrap());
         } else {
@@ -1232,4 +1244,161 @@ fn development_start_is_paused_and_simulation_fails_closed() {
         assert_eq!(mock.control(&["stop"])["ok"], true);
         assert!(engine.0.wait().unwrap().success());
     }
+}
+
+#[test]
+fn new_reactive_previews_are_deterministic_and_never_open_sdks() {
+    let mock = Mock::new();
+    for kind in ["constellation", "heatmap", "afterimage"] {
+        for source in [false, true] {
+            let config = if source {
+                format!(
+                    "palette='heat'\n[[sources]]\nid='keys'\ntype='{kind}'\n[scenes.unused]\neffect='aurora'\n"
+                )
+            } else {
+                format!("palette='heat'\n[signal]\nkind='{kind}'\n")
+            };
+            let run = || {
+                mock.config_command(&config)
+                    .args([
+                        "--preview",
+                        "--preview-ticks",
+                        "40",
+                        "--preview-format",
+                        "json",
+                    ])
+                    .env("WOOTING_DEV_SIMULATION", "1")
+                    .output()
+                    .unwrap()
+            };
+            let first = run();
+            assert!(
+                first.status.success(),
+                "{kind}: {}",
+                String::from_utf8_lossy(&first.stderr)
+            );
+            assert_eq!(first.stdout, run().stdout);
+            let json: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+            assert!(
+                json["frames"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|frame| frame["lit_keys"].as_u64().unwrap() > 0)
+            );
+            assert!(
+                mock.calls().is_empty(),
+                "preview must never initialize even synthetic SDKs"
+            );
+        }
+        let rejected = mock
+            .config_command(&format!("[signal]\nkind='{kind}'\n"))
+            .env("WOOTING_DEV_SIMULATION", "1")
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("Hardware is disabled"));
+        assert!(mock.calls().is_empty());
+        let invalid = mock
+            .config_command(&format!(
+                "[[sources]]\ntype='ripples'\n[[sources]]\ntype='{kind}'\n"
+            ))
+            .output()
+            .unwrap();
+        assert!(!invalid.status.success());
+        assert!(
+            mock.calls().is_empty(),
+            "mixed analog sources must fail before SDK access"
+        );
+    }
+}
+
+#[test]
+fn all_new_presets_persist_paused_and_reactive_switches_release_input() {
+    let mock = Mock::new();
+    let mut engine = mock.engine();
+    for (mode, decorative) in [
+        ("aurora", true),
+        ("embers", true),
+        ("tide", true),
+        ("orbit", true),
+        ("prism", true),
+        ("radar", true),
+        ("constellation", false),
+        ("heatmap", false),
+        ("afterimage", false),
+    ] {
+        let selected = mock.control(&["select", "--preset", mode]);
+        assert_eq!(selected["ok"], true, "{selected}");
+        assert_eq!(selected["status"]["mode"], mode);
+        assert_eq!(selected["status"]["brightness"], 255);
+        let mut settings = vec![
+            "settings",
+            "--brightness",
+            "73",
+            "--fps",
+            "9",
+            "--palette",
+            "ocean",
+        ];
+        if decorative {
+            settings.extend(["--speed", "125"]);
+        }
+        assert_eq!(mock.control(&settings)["ok"], true);
+        assert_eq!(mock.control(&["stop"])["ok"], true);
+        assert!(engine.0.wait().unwrap().success());
+        engine = mock.engine();
+        let status = mock.wait_state("paused")["status"].clone();
+        assert_eq!(status["mode"], mode);
+        assert_eq!(status["brightness"], 73);
+        assert_eq!(status["fps"], 9);
+        assert_eq!(status["palette"], "ocean");
+        assert_eq!(status["speed"], if decorative { 125 } else { 100 });
+        assert!(
+            mock.calls().is_empty(),
+            "selection/settings/restart while paused must never open SDKs"
+        );
+    }
+    for mode in ["constellation", "heatmap", "afterimage"] {
+        assert_eq!(mock.control(&["select", "--preset", mode])["ok"], true);
+        assert_eq!(mock.control(&["resume"])["ok"], true);
+        mock.wait_state("active");
+        let counts = || {
+            let calls = mock.calls();
+            (
+                calls.lines().filter(|c| *c == "init").count(),
+                calls.lines().filter(|c| *c == "uninit").count(),
+            )
+        };
+        let before = counts();
+        assert_eq!(
+            mock.control(&[
+                "settings",
+                "--brightness",
+                "88",
+                "--fps",
+                "12",
+                "--palette",
+                "heat"
+            ])["ok"],
+            true
+        );
+        assert_eq!(counts(), before, "live visuals must not reopen input");
+        let switched = mock.control(&["select", "--preset", "aurora"]);
+        assert_eq!(
+            switched["ok"],
+            true,
+            "switching from {mode}: {switched}; calls: {}",
+            mock.calls()
+        );
+        mock.wait_state("active");
+        assert_eq!(
+            counts(),
+            (before.0, before.1 + 1),
+            "switching to decorative mode must close analog input"
+        );
+        assert_eq!(mock.control(&["pause"])["ok"], true);
+    }
+    assert_eq!(mock.control(&["stop"])["ok"], true);
+    assert!(engine.0.wait().unwrap().success());
 }

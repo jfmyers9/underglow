@@ -201,10 +201,10 @@ enum SignalCommand {
         /// Static-effect animation speed in percent; independent of FPS.
         #[arg(long, default_value_t = underglow::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
         speed: u32,
-        /// Seconds to run static-effect or ripples.
+        /// Seconds to run static or key-reactive effects.
         #[arg(long, default_value_t = 10)]
         seconds: u64,
-        /// Analog SDK distributable for ripples; otherwise use WOOTING_ANALOG_SDK_PATH.
+        /// Analog SDK for key-reactive effects; otherwise use WOOTING_ANALOG_SDK_PATH.
         #[arg(long)]
         analog_sdk_path: Option<PathBuf>,
         /// Working directory for command-pulse.
@@ -460,6 +460,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } => {
                 let env = parse_env_vars(env)?;
                 let (config, options) = match signal {
+                    SignalKind::Constellation | SignalKind::Heatmap | SignalKind::Afterimage => (
+                        signals::SignalConfig::reactive(
+                            signal.reactive_kind().expect("reactive mode"),
+                            signals::ReactiveConfig { analog_sdk_path },
+                        ),
+                        SignalRunOptions {
+                            palette,
+                            brightness,
+                            fps,
+                            speed,
+                            seconds: Some(seconds),
+                            continuous: false,
+                        },
+                    ),
                     SignalKind::Ripples => (
                         signals::SignalConfig::ripples(toys::RippleConfig {
                             analog_sdk_path,
@@ -800,6 +814,13 @@ fn print_config(config: &AppConfig) {
         }
     }
     match signal.kind {
+        SignalKind::Constellation | SignalKind::Heatmap | SignalKind::Afterimage => {
+            println!(
+                "  analog_sdk_path: {}",
+                path_display(signal.reactive.analog_sdk_path.as_ref())
+            );
+            println!("  activity: in-memory only; cleared when the session closes");
+        }
         SignalKind::Ripples => {
             println!(
                 "  analog_sdk_path: {}",

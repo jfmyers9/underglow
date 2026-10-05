@@ -5,6 +5,7 @@ pub mod fixture;
 pub mod focus;
 pub mod github;
 pub mod market;
+pub mod reactive;
 pub mod soundwave;
 pub mod sports;
 pub mod static_effect;
@@ -20,11 +21,13 @@ pub use fixture::{FixtureConfig, FixtureSignal};
 pub use focus::{FocusConfig, FocusSignal};
 pub use github::{GitHubCiConfig, GitHubCiSignal};
 pub use market::{MarketConfig, MarketSignal};
+pub use reactive::{ReactiveConfig, ReactiveSignal};
 use serde::Deserialize;
 pub use soundwave::{SoundwaveConfig, SoundwaveSignal};
 pub use sports::{SportsConfig, SportsSignal};
 pub use static_effect::StaticEffectSignal;
 use std::sync::atomic::AtomicBool;
+use underglow::reactive::ReactiveKind;
 
 pub type ProgramResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -80,6 +83,9 @@ pub enum SignalKind {
     #[default]
     StaticEffect,
     Ripples,
+    Constellation,
+    Heatmap,
+    Afterimage,
     CommandPulse,
     #[serde(rename = "github-ci", alias = "git-hub-ci")]
     #[value(name = "github-ci", alias = "git-hub-ci")]
@@ -92,12 +98,24 @@ pub enum SignalKind {
     FixtureReplay,
 }
 
+impl SignalKind {
+    pub fn reactive_kind(self) -> Option<ReactiveKind> {
+        match self {
+            Self::Constellation => Some(ReactiveKind::Constellation),
+            Self::Heatmap => Some(ReactiveKind::Heatmap),
+            Self::Afterimage => Some(ReactiveKind::Afterimage),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct SignalConfig {
     pub kind: SignalKind,
     pub effect: Option<EffectKind>,
     pub ripples: RippleConfig,
+    pub reactive: ReactiveConfig,
     #[serde(flatten)]
     pub command_pulse: CommandPulseConfig,
     #[serde(flatten)]
@@ -122,6 +140,7 @@ impl Default for SignalConfig {
             kind: SignalKind::StaticEffect,
             effect: Some(EffectKind::default()),
             ripples: RippleConfig::default(),
+            reactive: ReactiveConfig::default(),
             command_pulse: CommandPulseConfig::default(),
             github_ci: GitHubCiConfig::default(),
             focus: FocusConfig::default(),
@@ -140,6 +159,7 @@ impl SignalConfig {
             kind,
             effect: None,
             ripples: RippleConfig::default(),
+            reactive: ReactiveConfig::default(),
             command_pulse: CommandPulseConfig::default(),
             github_ci: GitHubCiConfig::default(),
             focus: FocusConfig::default(),
@@ -162,6 +182,18 @@ impl SignalConfig {
         Self {
             ripples,
             ..Self::base(SignalKind::Ripples)
+        }
+    }
+
+    pub fn reactive(kind: ReactiveKind, reactive: ReactiveConfig) -> Self {
+        let kind = match kind {
+            ReactiveKind::Constellation => SignalKind::Constellation,
+            ReactiveKind::Heatmap => SignalKind::Heatmap,
+            ReactiveKind::Afterimage => SignalKind::Afterimage,
+        };
+        Self {
+            reactive,
+            ..Self::base(kind)
         }
     }
 
@@ -227,6 +259,12 @@ pub fn build_signal(
     fallback_effect: EffectKind,
 ) -> Result<Box<dyn SignalProgram>, Box<dyn std::error::Error>> {
     match config.kind {
+        SignalKind::Constellation | SignalKind::Heatmap | SignalKind::Afterimage => {
+            Ok(Box::new(ReactiveSignal::new(
+                config.kind.reactive_kind().expect("reactive mode"),
+                config.reactive.clone(),
+            )))
+        }
         SignalKind::Ripples => Ok(Box::new(RippleSignal::new(config.ripples.clone()))),
         SignalKind::StaticEffect => Ok(Box::new(StaticEffectSignal::new(
             config.effect.unwrap_or(fallback_effect),

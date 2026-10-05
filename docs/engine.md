@@ -19,22 +19,31 @@ underglow control resume
 underglow control stop
 ```
 
-Available built-ins: ripples, comet, rainbow, breath, matrix, focus-cockpit.
-Comet, rainbow, breath and matrix use elapsed-time animation. Root TOML `speed`
+Available built-ins: ripples, comet, rainbow, breath, matrix, focus-cockpit,
+aurora, embers, tide, orbit, prism, radar, constellation, heatmap, afterimage.
+Comet, rainbow, breath, matrix and the six new decorative effects use elapsed-time animation. Root TOML `speed`
 and CLI `--speed` are percentages (10–400, default 100); `fps` only controls their
 render frequency. At 100%, Matrix moves 7.5 rows/second, Comet 12 keys/second,
 rainbow cycles in 30 seconds and breath in 6 seconds. Frames interpolate between
 logical animation steps. Live FPS/speed updates do not reset animation phase,
 reopen the SDK, or replay commands. Speed persists with the other visual settings.
 It also applies to static effects in profiles/scenes; it does not alter ripple
-physics, provider polling, notification lifetimes, or Focus timers. Other status
+physics, reactive fading/cooling, provider polling, notification lifetimes, or Focus timers. Other status
 pulse animations still use their existing timing.
 
 Older configs without `speed` use 100%. Explicit FPS values are preserved, but
-no longer act as speed controls for these four effects. To slow one down, lower
+no longer act as speed controls for decorative effects. To slow one down, lower
 Speed rather than FPS; 50% takes twice as long. Foreground `effect`, `rainbow`,
 `signal run`, and `preview effect` accept `--speed`; `preview effect --fps`
 samples deterministic frames at `tick / fps` seconds without opening an SDK.
+
+Constellation, Heatmap, and Afterimage use the same single-keyboard 80HE ANSI
+typing-key mapping as Ripples. Their input SDK can be overridden with
+`analog_sdk_path` under `[signal.reactive]` or `[sources.reactive]`. Only one
+analog-input source may exist in a multi-source profile, including mixed modes.
+Changing brightness/palette/FPS does not reopen input; pause or mode replacement
+clears activity. No activity state is persisted. Hardware-free example profiles
+live at `examples/{constellation,heatmap,afterimage}.toml`; use `run --preview`.
 
 For the ripple mode, the optional RGB hex colors keep idle keys lit and blend
 pressure-driven waves toward the ripple color. Global brightness scales both.

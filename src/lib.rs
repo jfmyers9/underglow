@@ -5,6 +5,7 @@ pub mod device;
 pub mod effects;
 pub mod focus;
 pub mod layout;
+pub mod reactive;
 pub mod render;
 pub mod ripple;
 pub mod scenes;

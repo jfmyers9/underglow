@@ -21,7 +21,7 @@ pub enum AnalogError {
     )]
     Call { operation: &'static str, code: i32 },
     #[error(
-        "ripples currently requires exactly one connected analog keyboard, a Wooting 80HE (found {0})"
+        "key-reactive effects require exactly one connected analog keyboard, a Wooting 80HE (found {0})"
     )]
     Device(String),
     #[error("Analog SDK returned an invalid buffer")]

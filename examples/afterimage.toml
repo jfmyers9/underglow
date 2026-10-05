@@ -1,0 +1,14 @@
+# Offline preview: underglow run --config examples/afterimage.toml --preview
+# Live input: one 80HE ANSI, mapped typing keys only. Activity is never saved.
+schema_version = 1
+palette = "cyberpunk"
+brightness = 255
+fps = 30
+continuous = true
+
+[signal]
+kind = "afterimage"
+
+[signal.reactive]
+# Optional; otherwise use WOOTING_ANALOG_SDK_PATH or normal SDK discovery.
+# analog_sdk_path = "/absolute/path/to/libwooting_analog_sdk_dist.dylib"

@@ -45,7 +45,8 @@ the light changes. Native macOS menus retain the platform's styling.
   starts a standalone engine. Fresh state starts paused; existing persisted
   enabled state remains the engine's responsibility. The GUI does not force resume.
 - Click an effect card: Ripples, Comet, Spectrum (rainbow), Breathe (breath),
-  Matrix, or Focus (focus-cockpit). Selection preserves the enabled/paused state;
+  Matrix, Focus (focus-cockpit), or any of the nine choices below.
+  Selection preserves the enabled/paused state;
   the highlighted card follows the engine's confirmed response.
 - The **ripple simulation** uses the same renderer, color math, and 80HE matrix
   geometry as the engine. Use **Auto demo**, set synthetic **Pressure**, or
@@ -57,9 +58,9 @@ the light changes. Native macOS menus retain the platform's styling.
 - The main page groups **Brightness** (shown as a percentage), **Palette**, **Speed**, and
   **Frame rate** (1–120 FPS) under **Lighting controls**, before the preview and
   effect cards so frame rate stays visible in compact layouts. Spectrum, Comet,
-  Matrix, and Breathe use elapsed time: FPS controls sampling smoothness and CPU
+  Matrix, Breathe, and the six new decorative effects use elapsed time: FPS controls sampling smoothness and CPU
   usage, not animation pace. **Speed** (10–400%) adjusts their pace independently;
-  100% is the calm default. It is hidden for Ripples and Focus, and for older
+  100% is the calm default. It is hidden for all key-reactive effects and Focus, and for older
   engines that do not report speed support. Ripple physics and Focus timers are
   unchanged. Use **Apply changes** on
   the main page to save these adjustments. Background polling does not overwrite
@@ -70,7 +71,7 @@ the light changes. Native macOS menus retain the platform's styling.
   Spectrum completes a hue cycle in 30 seconds, and Breathe cycles in 6 seconds.
   Higher render FPS interpolates between animation steps. Speed edits preserve
   the current phase rather than restarting the effect; previews use draft speed.
-- **Palette** appears only for Comet, Breathe, and palette-based Ripples.
+- **Palette** appears for Comet, Breathe, all nine new effects, and palette-based Ripples.
   Spectrum uses a fixed rainbow; Matrix uses Terminal green; Focus uses fixed
   phase colors. Their previews ignore the selected palette too. Focus previews
   use the shared Focus renderer with a synthetic blue focus phase at 55%
@@ -157,3 +158,34 @@ helper timeouts, and state-override precedence/service isolation. They do not
 open a native window or menu-bar item, start the real engine/service,
 or access a keyboard. Visual/native-window behavior and cross-platform packaging
 still require manual verification on the target desktop.
+
+## New effect choices
+
+All start at full brightness. Palette names below are fresh-preset defaults;
+you can change the palette for every new effect.
+
+| Effect | Appearance | Default palette | Timing at 100% Speed |
+| --- | --- | --- | --- |
+| Aurora | Broad, slowly folding curtains | Ocean | 24-second drift |
+| Embers | Scattered points glow and fade | Ember (`heat`) | Independent 6–12-second cycles |
+| Tide | Soft band washes across and retreats | Ocean | 12-second roundtrip |
+| Orbit | Hollow luminous arc circles the center | Neon (`cyberpunk`) | 8-second revolution |
+| Prism | Two intersecting diagonal band patterns | Neon (`cyberpunk`) | 12-second combined cycle |
+| Radar | Radial sweep with fading angular trail | Terminal | 6-second revolution |
+| Constellation | Pressed keys become stars with fading links | Ocean | Pressure-driven; 2.4-second fade half-life |
+| Heatmap | Repeated presses warm keys; idle activity cools | Ember (`heat`) | 20-second cooling half-life |
+| Afterimage | Stationary soft glow lingers around each touch | Neon (`cyberpunk`) | Pressure-driven; 1.4-second fade half-life |
+
+The last three use real elapsed time, not the Speed control. A held Heatmap key
+counts once, not once per frame; release and press again to add warmth. Links in
+Constellation connect current fading stars, not a stored sequence of keystrokes.
+All activity is bounded, in memory only, and cleared on session close (including
+pause, mode replacement, and recovery). Settings persist; activity does not.
+
+Their live input currently supports one **80HE ANSI** keyboard, using the same
+typing-block and Space mapping as Ripples. Function/navigation/custom keys are
+not mapped; other layouts are rejected rather than guessed. The GUI uses only
+synthetic input: toggle **Auto demo**, click/hold mapped typing keys, adjust
+**Pressure** (key travel), or use **Clear activity**. Clearing also stops the
+auto demo. Switching modes discards the old simulation. Preview activity is
+never sent to the engine and never reads physical keystrokes.

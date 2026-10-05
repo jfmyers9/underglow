@@ -36,7 +36,7 @@ launch `target/debug/underglow-gui`. Closing its window leaves the engine runnin
 Use Pause to restore/release lighting, or Stop engine to shut it down.
 
 For the faster development loop, run **`make dev`**: incremental rebuilds,
-automatic GUI/engine restarts, isolated settings, and hardware-free ripple
+automatic GUI/engine restarts, isolated settings, and hardware-free effect
 simulation. See [development workflow](docs/dev.md) for explicit hardware testing.
 
 - [Engine, persistence, local control, and recovery](docs/engine.md)
@@ -89,10 +89,25 @@ cargo run -- toy ripples --seconds 20 --brightness 180 --fps 30
 All effects default to **100% brightness (255/255)**. Use `--brightness` to tune it; this
 is a fixed cap, not a reading of or synchronization with Wootility's brightness.
 
-Comet, Spectrum/rainbow, Matrix, and Breathe have a separate **Speed** control
+Comet, Spectrum/rainbow, Matrix, Breathe, Aurora, Embers, Tide, Orbit, Prism, and
+Radar have a separate **Speed** control
 (10–400%, default 100%). FPS changes smoothness rather than pace. Matrix defaults
 to 7.5 rows/second at any FPS; ripple physics is unchanged. See [GUI controls](docs/gui.md)
 and [engine settings](docs/engine.md) for timing defaults and CLI/TOML options.
+
+New reactive choices are **Constellation** (fading connected stars), **Heatmap**
+(repeated presses warm keys, then cool), and **Afterimage** (stationary lingering
+glow). They share the live-input limits below. Activity stays in bounded memory
+only, never as text or a keystroke log, and clears on pause, mode change, or exit.
+Heatmap counts sampled press edges, not OS key-repeat events; FPS affects input
+sampling, not its cooling rate. Each mode has a hardware-free GUI demo.
+
+```sh
+cargo run -- preview effect aurora --palette ocean --ticks 20
+cargo run -- run --config examples/heatmap.toml --preview --preview-ticks 40
+```
+
+See [effect choices](docs/gui.md#new-effect-choices) for all nine additions.
 
 **First-version limits:** one connected analog keyboard, **80HE ANSI**. The typing
 block (letters, digits, punctuation, Tab, Caps Lock, Enter, Backspace, Shift and
