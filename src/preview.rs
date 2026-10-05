@@ -2,10 +2,10 @@ use crate::effects::EffectKind;
 use crate::layout::KeyboardLayout;
 use crate::render::{Color, Frame, PaletteName, RenderContext};
 use crate::runner::SignalRunOptions;
-use crate::sdk::rgb::{DeviceInfo, DeviceType, Layout};
 use crate::signals::SignalProgram;
 use clap::ValueEnum;
 use serde_json::json;
+use underglow::device::DeviceInfo;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum, Default)]
 pub enum PreviewFormat {
@@ -72,18 +72,7 @@ pub fn print_signal_preview(
 }
 
 pub fn preview_device() -> DeviceInfo {
-    DeviceInfo {
-        connected: true,
-        model: "preview-80he".to_string(),
-        max_rows: 6,
-        max_columns: 17,
-        led_index_max: 0,
-        device_type: DeviceType::Keyboard80,
-        layout: Layout::Ansi,
-        v2_interface: true,
-        uses_small_packets: false,
-        uses_multi_report: false,
-    }
+    DeviceInfo::synthetic_80he()
 }
 
 pub(crate) fn print_frames(

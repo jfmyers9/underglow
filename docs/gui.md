@@ -50,8 +50,10 @@ the light changes. Native macOS menus retain the platform's styling.
 - The **ripple simulation** uses the same renderer, color math, and 80HE matrix
   geometry as the engine. Use **Auto demo**, set synthetic **Pressure**, or
   click/hold mapped keys. It uses draft brightness, colors, and FPS; it is not
-  live keyboard input or device feedback. Other effects retain illustrative
-  previews. Simulation runs while lighting is paused and never opens an SDK.
+  live keyboard input or device feedback. Decorative previews now call the same
+  frame renderer as the engine and CLI, sampled on the canonical 80HE LED matrix.
+  This replaces the old illustrative keyboard/animation implementation.
+  Simulation runs while lighting is paused and never opens an SDK.
 - The main page groups **Brightness** (shown as a percentage), **Palette**, **Speed**, and
   **Frame rate** (1–120 FPS) under **Lighting controls**, before the preview and
   effect cards so frame rate stays visible in compact layouts. Spectrum, Comet,
@@ -71,8 +73,9 @@ the light changes. Native macOS menus retain the platform's styling.
 - **Palette** appears only for Comet, Breathe, and palette-based Ripples.
   Spectrum uses a fixed rainbow; Matrix uses Terminal green; Focus uses fixed
   phase colors. Their previews ignore the selected palette too. Focus previews
-  illustrate the blue focus phase, not the live timer. Other non-ripple motion
-  remains illustrative, even though palette-based colors use the shared palette definitions.
+  use the shared Focus renderer with a synthetic blue focus phase at 55%
+  progress, not the live timer. Unknown/custom modes explicitly show that a
+  preview is unavailable rather than substituting another effect.
 - For **Ripples**, enable **Two-tone ripple** and choose **Base color** and
   **Ripple color**, then **Apply changes**. Idle keys keep the base color and
   pressure-driven waves blend toward the ripple color before fading back.

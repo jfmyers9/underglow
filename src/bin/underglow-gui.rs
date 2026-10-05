@@ -16,16 +16,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use underglow::catalog;
 
 const PALETTES: &[&str] = &["wooting", "cyberpunk", "ocean", "heat", "terminal"];
-const PRESETS: &[&str] = &[
-    "ripples",
-    "comet",
-    "rainbow",
-    "breath",
-    "matrix",
-    "focus-cockpit",
-];
 
 #[derive(Parser)]
 #[command(about = "Native controller for the sibling underglow engine")]
@@ -486,6 +479,7 @@ struct Controller {
 impl Controller {
     fn new(context: &egui::Context, backend: Backend) -> Self {
         configure_style(context);
+        let default = catalog::default_preset();
         let (requests, incoming) = mpsc::channel::<Action>();
         let (outgoing, replies) = mpsc::channel();
         let repaint = context.clone();
@@ -521,11 +515,11 @@ impl Controller {
             service: "Not checked".into(),
             custom_state,
             bundled_app,
-            preset: "ripples".into(),
-            brightness: underglow::DEFAULT_BRIGHTNESS,
-            palette: "wooting".into(),
-            fps: 30,
-            speed: underglow::animation::DEFAULT_SPEED,
+            preset: default.id.into(),
+            brightness: default.defaults.brightness,
+            palette: default.defaults.palette.to_string(),
+            fps: default.defaults.fps,
+            speed: default.defaults.speed,
             ripple_colors: RippleColors::default(),
             ripple_colors_dirty: false,
             settings_dirty: false,
@@ -671,15 +665,9 @@ fn color_hex(color: [u8; 3]) -> String {
 }
 
 fn effect_description(mode: &str) -> (&str, &str) {
-    match mode {
-        "ripples" => ("Ripples", "Light that follows your touch"),
-        "comet" => ("Comet", "A quiet trail across your keys"),
-        "rainbow" => ("Spectrum", "A continuous flow of color"),
-        "breath" => ("Breathe", "Slow down. Fade in, fade out."),
-        "matrix" => ("Matrix", "A little digital rainfall"),
-        "focus-cockpit" => ("Focus", "Keep time, without the noise"),
-        _ => ("Custom profile", "Your saved configuration"),
-    }
+    catalog::find(mode)
+        .map(|v| (v.title, v.description))
+        .unwrap_or(("Custom profile", "Your saved configuration"))
 }
 
 fn primary_label(connected: bool, enabled: bool) -> &'static str {
@@ -795,7 +783,7 @@ impl Controller {
             "--fps".into(),
             self.fps.to_string().into(),
         ];
-        if self.preset == "ripples" && self.ripple_colors_dirty {
+        if self.two_tone_available() && self.ripple_colors_dirty {
             if self.ripple_colors.enabled {
                 args.extend([
                     "--ripple-base-color".into(),
@@ -819,6 +807,14 @@ impl Controller {
                 .status
                 .as_ref()
                 .is_none_or(|status| status.speed.is_some())
+    }
+
+    fn two_tone_available(&self) -> bool {
+        catalog::find(&self.preset).is_some_and(|v| v.supports_two_tone)
+    }
+
+    fn palette_available(&self) -> bool {
+        catalog::find(&self.preset).is_some_and(|v| v.palette_available(self.ripple_colors.enabled))
     }
 
     fn show_settings(&mut self, context: &egui::Context) {
@@ -953,7 +949,7 @@ impl Controller {
                             self.settings_dirty |= ui.add(egui::Slider::new(&mut self.brightness, 0..=255).show_value(false)).changed();
                             ui.label(format!("{}%", (u32::from(self.brightness) * 100 + 127) / 255));
                         });
-                        if self.preset == "ripples" {
+                        if self.two_tone_available() {
                             let mut changed = ui.checkbox(&mut self.ripple_colors.enabled, "Two-tone ripple").changed();
                             if self.ripple_colors.enabled {
                                 ui.horizontal_wrapped(|ui| {
@@ -969,7 +965,7 @@ impl Controller {
                             self.settings_dirty |= changed;
                             self.ripple_colors_dirty |= changed;
                         }
-                        if matches!(self.preset.as_str(), "comet" | "breath") || (self.preset == "ripples" && !self.ripple_colors.enabled) {
+                        if self.palette_available() {
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Palette");
                             for (palette, label) in PALETTES.iter().zip(["Wooting", "Neon", "Ocean", "Ember", "Terminal"]) {
@@ -1006,22 +1002,24 @@ impl Controller {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(effect_description(&self.preset).0).size(18.0).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(if self.preset == "ripples" { "RIPPLE SIMULATION" } else { "ILLUSTRATIVE PREVIEW" }).size(10.0).color(MUTED));
+                            ui.label(egui::RichText::new(catalog::find(&self.preset).map_or("PREVIEW UNAVAILABLE", |v| v.preview_label())).size(10.0).color(MUTED));
                         });
                     });
                     let ripple_colors = self.ripple_preview_colors();
                     gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness, ripple_colors, gui_preview::PreviewTiming { fps: self.fps, speed: self.speed }, &mut self.keyboard_preview);
-                    ui.label(egui::RichText::new(if self.preset == "ripples" { "80HE LED matrix · actual ripple math and draft settings · synthetic input, not device feedback" } else { "Simulation · not live input, device status or actual frame rate" }).small().color(MUTED));
+                    ui.label(egui::RichText::new(catalog::find(&self.preset).map_or("This custom mode has no registered hardware-free preview.", |v| v.preview_description())).small().color(MUTED));
                 });
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new("Choose an effect").size(18.0).strong());
                 let columns = if ui.available_width() >= 760.0 { 3 } else { 2 };
                 let width = (ui.available_width() - 12.0 * (columns - 1) as f32) / columns as f32;
+                let presets = catalog::presets().collect::<Vec<_>>();
                 ui.add_enabled_ui(self.connected && !self.pending, |ui| {
-                    for row in PRESETS.chunks(columns) {
+                    for row in presets.chunks(columns) {
                         ui.horizontal(|ui| {
-                            for mode in row {
-                                if effect_card(ui, mode, self.preset == *mode, width).clicked() { self.control(&["select", "--preset", mode]); }
+                            for visualization in row {
+                                let mode = visualization.id;
+                                if effect_card(ui, mode, self.preset == mode, width).clicked() { self.control(&["select", "--preset", mode]); }
                             }
                         });
                     }
@@ -1333,10 +1331,11 @@ mod tests {
 
     #[test]
     fn palette_control_is_only_shown_for_supported_modes() {
-        for mode in PRESETS {
+        for visualization in catalog::all() {
+            let mode = visualization.id;
             for two_tone in [false, true] {
                 let (mut app, _incoming) = controller_fixture();
-                app.preset = (*mode).into();
+                app.preset = mode.into();
                 app.ripple_colors.enabled = two_tone;
                 let context = egui::Context::default();
                 configure_style(&context);
@@ -1353,8 +1352,7 @@ mod tests {
                 let has_text = |expected: &str| {
                     output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == expected))
                 };
-                let supported =
-                    matches!(*mode, "comet" | "breath") || (*mode == "ripples" && !two_tone);
+                let supported = visualization.palette_available(two_tone);
                 assert_eq!(
                     has_text("Palette"),
                     supported,

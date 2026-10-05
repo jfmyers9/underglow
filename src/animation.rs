@@ -4,7 +4,7 @@ use std::time::Duration;
 pub const DEFAULT_SPEED: u32 = 100;
 
 pub fn supports_speed(mode: &str) -> bool {
-    matches!(mode, "comet" | "rainbow" | "matrix" | "breath")
+    crate::catalog::find(mode).is_some_and(|visualization| visualization.supports_speed)
 }
 
 #[derive(Clone, Debug)]

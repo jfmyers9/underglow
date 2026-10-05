@@ -1,18 +1,16 @@
 mod config;
 mod doctor;
-mod effects;
 mod engine;
-mod layout;
 mod notifications;
 mod ownership;
 mod preview;
 mod profile;
-mod render;
 mod runner;
-mod scenes;
 mod sdk;
 mod signals;
 mod toys;
+
+use underglow::{effects, layout, render, scenes};
 
 use clap::{Parser, Subcommand};
 use config::AppConfig;

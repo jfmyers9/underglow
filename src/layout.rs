@@ -1,4 +1,4 @@
-use crate::sdk::rgb::{DeviceInfo, DeviceType};
+use crate::device::{DeviceInfo, DeviceType};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MatrixCoord {
@@ -121,7 +121,7 @@ impl KeyboardLayout {
     }
 
     fn wooting_80he() -> Self {
-        let keys = underglow::ripple::wooting_80he_geometry()
+        let keys = crate::ripple::wooting_80he_geometry()
             .into_iter()
             .map(|key| KeyPosition {
                 coord: MatrixCoord {

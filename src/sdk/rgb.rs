@@ -3,40 +3,7 @@ use crate::render::{Color, Frame, MAX_COLUMNS, MAX_ROWS};
 use std::ffi::CStr;
 use std::path::Path;
 
-#[derive(Clone, Debug)]
-pub struct DeviceInfo {
-    pub connected: bool,
-    pub model: String,
-    pub max_rows: u8,
-    pub max_columns: u8,
-    pub led_index_max: u8,
-    pub device_type: DeviceType,
-    pub layout: Layout,
-    pub v2_interface: bool,
-    pub uses_small_packets: bool,
-    pub uses_multi_report: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DeviceType {
-    KeyboardTkl,
-    KeyboardFullSize,
-    Keyboard60,
-    Keypad3Key,
-    Keyboard80,
-    Unknown(i32),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Layout {
-    Unknown,
-    Ansi,
-    Iso,
-    Jis,
-    AnsiSplit,
-    IsoSplit,
-    Other(i32),
-}
+pub use underglow::device::{DeviceInfo, DeviceType, Layout};
 
 #[derive(Debug, thiserror::Error)]
 pub enum WootingError {
@@ -74,7 +41,7 @@ impl WootingRgb {
 
         sdk.array_auto_update(false);
 
-        let info = match DeviceInfo::from_sdk(&sdk) {
+        let info = match device_info_from_sdk(&sdk) {
             Ok(info) => info,
             Err(error) => {
                 // The SDK has already initialized RGB. Self does not exist yet,
@@ -159,57 +126,86 @@ impl Drop for WootingRgb {
     }
 }
 
-impl DeviceInfo {
-    fn from_sdk(sdk: &RgbSdk) -> Result<Self, WootingError> {
-        let raw = sdk.device_info().ok_or(WootingError::MissingDeviceInfo)?;
-        let model = if raw.model.is_null() {
-            "N/A".to_string()
-        } else {
-            // SAFETY: The SDK exposes a null-terminated static model string in
-            // WOOTING_USB_META. Null was checked above.
-            unsafe { CStr::from_ptr(raw.model) }
-                .to_string_lossy()
-                .into_owned()
-        };
+fn device_info_from_sdk(sdk: &RgbSdk) -> Result<DeviceInfo, WootingError> {
+    let raw = sdk.device_info().ok_or(WootingError::MissingDeviceInfo)?;
+    let model = if raw.model.is_null() {
+        "N/A".to_string()
+    } else {
+        // SAFETY: The SDK exposes a null-terminated static model string in
+        // WOOTING_USB_META. Null was checked above.
+        unsafe { CStr::from_ptr(raw.model) }
+            .to_string_lossy()
+            .into_owned()
+    };
 
-        Ok(Self {
-            connected: raw.connected,
-            model,
-            max_rows: raw.max_rows.min(MAX_ROWS as u8),
-            max_columns: raw.max_columns.min(MAX_COLUMNS as u8),
-            led_index_max: raw.led_index_max,
-            device_type: DeviceType::from_raw(raw.device_type),
-            layout: Layout::from_raw(sdk.device_layout()),
-            v2_interface: raw.v2_interface,
-            uses_small_packets: raw.uses_small_packets,
-            uses_multi_report: raw.uses_multi_report,
-        })
+    Ok(DeviceInfo {
+        connected: raw.connected,
+        model,
+        max_rows: raw.max_rows.min(MAX_ROWS as u8),
+        max_columns: raw.max_columns.min(MAX_COLUMNS as u8),
+        led_index_max: raw.led_index_max,
+        device_type: device_type_from_raw(raw.device_type),
+        layout: layout_from_raw(sdk.device_layout()),
+        v2_interface: raw.v2_interface,
+        uses_small_packets: raw.uses_small_packets,
+        uses_multi_report: raw.uses_multi_report,
+    })
+}
+
+fn device_type_from_raw(value: i32) -> DeviceType {
+    match value {
+        1 => DeviceType::KeyboardTkl,
+        2 => DeviceType::KeyboardFullSize,
+        3 => DeviceType::Keyboard60,
+        4 => DeviceType::Keypad3Key,
+        5 => DeviceType::Keyboard80,
+        other => DeviceType::Unknown(other),
     }
 }
 
-impl DeviceType {
-    fn from_raw(value: i32) -> Self {
-        match value {
-            1 => Self::KeyboardTkl,
-            2 => Self::KeyboardFullSize,
-            3 => Self::Keyboard60,
-            4 => Self::Keypad3Key,
-            5 => Self::Keyboard80,
-            other => Self::Unknown(other),
+fn layout_from_raw(value: i32) -> Layout {
+    match value {
+        -1 => Layout::Unknown,
+        0 => Layout::Ansi,
+        1 => Layout::Iso,
+        2 => Layout::Jis,
+        3 => Layout::AnsiSplit,
+        4 => Layout::IsoSplit,
+        other => Layout::Other(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdk_device_type_values_preserve_known_and_unknown_metadata() {
+        for (raw, expected) in [
+            (1, DeviceType::KeyboardTkl),
+            (2, DeviceType::KeyboardFullSize),
+            (3, DeviceType::Keyboard60),
+            (4, DeviceType::Keypad3Key),
+            (5, DeviceType::Keyboard80),
+            (-1, DeviceType::Unknown(-1)),
+            (99, DeviceType::Unknown(99)),
+        ] {
+            assert_eq!(device_type_from_raw(raw), expected);
         }
     }
-}
 
-impl Layout {
-    fn from_raw(value: i32) -> Self {
-        match value {
-            -1 => Self::Unknown,
-            0 => Self::Ansi,
-            1 => Self::Iso,
-            2 => Self::Jis,
-            3 => Self::AnsiSplit,
-            4 => Self::IsoSplit,
-            other => Self::Other(other),
+    #[test]
+    fn sdk_layout_values_preserve_known_and_unknown_metadata() {
+        for (raw, expected) in [
+            (-1, Layout::Unknown),
+            (0, Layout::Ansi),
+            (1, Layout::Iso),
+            (2, Layout::Jis),
+            (3, Layout::AnsiSplit),
+            (4, Layout::IsoSplit),
+            (99, Layout::Other(99)),
+        ] {
+            assert_eq!(layout_from_raw(raw), expected);
         }
     }
 }

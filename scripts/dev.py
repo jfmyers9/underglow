@@ -20,7 +20,7 @@ BINARIES = ('underglow', 'underglow-gui', 'underglow-service')
 def snapshot(root):
     paths = [root / name for name in ('Cargo.toml', 'Cargo.lock', 'build.rs',
                                      'rust-toolchain', 'rust-toolchain.toml')]
-    # Preset TOML is compiled into the engine via include_str! too.
+    # Include examples used by configuration tests; engine preset defaults live in src/catalog.rs.
     for directory in ('src', '.cargo', 'examples'):
         paths.extend(p for p in (root / directory).rglob('*') if p.is_file())
     paths.append(root / 'external/wooting-rgb-sdk/src/wooting-rgb-sdk.h')

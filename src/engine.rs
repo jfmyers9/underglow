@@ -44,7 +44,7 @@ enum ControlCommand {
     Select {
         #[arg(long, required_unless_present = "preset", conflicts_with = "preset")]
         config: Option<PathBuf>,
-        #[arg(long, value_parser = ["ripples", "comet", "rainbow", "breath", "matrix", "focus-cockpit"])]
+        #[arg(long, value_parser = preset_values())]
         preset: Option<String>,
     },
     Settings {
@@ -210,16 +210,14 @@ fn validate(text: &str) -> Result<AppConfig, Error> {
     let _ = crate::build_config_signal(&config)?;
     Ok(config)
 }
-fn preset(name: &str) -> String {
-    if name == "ripples" {
-        return include_str!("../examples/ripples.toml").to_string();
-    }
-    if name == "focus-cockpit" {
-        return "schema_version = 1\ncontinuous = true\n[signal]\nkind = 'focus-cockpit'\n".into();
-    }
-    format!(
-        "schema_version = 1\ncontinuous = true\n[signal]\nkind = 'static-effect'\neffect = '{name}'\n"
-    )
+fn preset_values() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(underglow::catalog::presets().map(|v| v.id))
+}
+
+fn preset(name: &str) -> Result<String, Error> {
+    underglow::catalog::find(name)
+        .map(|visualization| visualization.preset_config())
+        .ok_or_else(|| format!("unknown visualization preset: {name}").into())
 }
 fn save(dir: &Path, state: &Saved) -> ProgramResult {
     // Create a new private file, sync contents, atomically rename, then sync the directory.
@@ -541,7 +539,7 @@ pub fn run(
                 .as_deref()
                 .map(read_limited)
                 .transpose()?
-                .unwrap_or_else(|| preset("ripples")),
+                .unwrap_or_else(|| underglow::catalog::default_preset().preset_config()),
         }
     };
     if saved.schema_version != 1 {
@@ -648,7 +646,7 @@ pub fn control(options: ControlOptions) -> ProgramResult {
             } => {
                 let config = match config {
                     Some(path) => read_limited(&path)?,
-                    None => preset(choice.as_deref().ok_or("config or preset required")?),
+                    None => preset(choice.as_deref().ok_or("config or preset required")?)?,
                 };
                 validate(&config)?;
                 Action::Select { config }
@@ -716,18 +714,77 @@ mod tests {
 
     #[test]
     fn every_builtin_preset_starts_at_full_brightness() {
+        for visualization in underglow::catalog::all() {
+            let name = visualization.id;
+            let config = validate(&preset(name).unwrap()).unwrap();
+            assert_eq!(
+                config.brightness, visualization.defaults.brightness,
+                "{name}"
+            );
+            assert_eq!(config.speed, visualization.defaults.speed, "{name}");
+            assert_eq!(config.fps, visualization.defaults.fps, "{name}");
+            assert_eq!(config.palette, visualization.defaults.palette, "{name}");
+        }
+        assert!(preset("unknown").is_err());
+    }
+
+    #[test]
+    fn catalog_presets_preserve_legacy_effective_configuration() {
         for name in [
             "ripples",
-            "focus-cockpit",
-            "row-test",
-            "rainbow",
             "comet",
-            "matrix",
+            "rainbow",
             "breath",
+            "matrix",
+            "focus-cockpit",
         ] {
-            assert_eq!(validate(&preset(name)).unwrap().brightness, 255, "{name}");
-            assert_eq!(validate(&preset(name)).unwrap().speed, 100, "{name}");
+            let old = match name {
+                "ripples" => "schema_version=1\npalette='ocean'\nbrightness=255\nfps=30\ncontinuous=true\n[signal]\nkind='ripples'\n".into(),
+                "focus-cockpit" => "schema_version=1\ncontinuous=true\n[signal]\nkind='focus-cockpit'\n".into(),
+                effect => format!("schema_version=1\ncontinuous=true\n[signal]\nkind='static-effect'\neffect='{effect}'\n"),
+            };
+            let old = validate(&old).unwrap();
+            let new = validate(&preset(name).unwrap()).unwrap();
+            assert_eq!((new.brightness, new.fps, new.speed), (255, 30, 100));
+            assert_eq!(new.palette, old.palette, "{name}");
+            assert_eq!(new.effect, old.effect, "{name}");
+            assert_eq!(new.continuous, old.continuous, "{name}");
+            assert_eq!(new.seconds, old.seconds, "{name}");
+            assert_eq!(new.signal_config().kind, old.signal_config().kind, "{name}");
+            assert_eq!(
+                new.signal_config().effect,
+                old.signal_config().effect,
+                "{name}"
+            );
+            assert_eq!(
+                new.signal_config().ripples,
+                old.signal_config().ripples,
+                "{name}"
+            );
         }
+    }
+
+    #[test]
+    fn catalog_is_the_cli_preset_allowlist() {
+        for visualization in underglow::catalog::all() {
+            let parsed = crate::Cli::try_parse_from([
+                "underglow",
+                "control",
+                "select",
+                "--preset",
+                visualization.id,
+            ]);
+            assert_eq!(
+                parsed.is_ok(),
+                visualization.selectable,
+                "{}",
+                visualization.id
+            );
+        }
+        assert!(
+            crate::Cli::try_parse_from(["underglow", "control", "select", "--preset", "unknown",])
+                .is_err()
+        );
     }
 
     #[test]
@@ -802,7 +859,7 @@ mod tests {
     fn speed_updates_are_persistent_validated_and_atomic() {
         let dir = std::env::temp_dir().join(format!("wooting-speed-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let mut rt = runtime(preset("matrix"), dir.clone());
+        let mut rt = runtime(preset("matrix").unwrap(), dir.clone());
         let settings = |speed| Action::Settings {
             speed: Some(speed),
             brightness: Some(73),
@@ -864,7 +921,7 @@ mod tests {
             assert_eq!(rt.status().ripple_color, None);
             assert_eq!(rt.status().ripple_base_color, None);
         }
-        let mut rt = runtime(preset("comet"), dir.clone());
+        let mut rt = runtime(preset("comet").unwrap(), dir.clone());
         let before = rt.saved.config.clone();
         assert!(rt.action(colors(Some([1; 3]), None, false)).is_err());
         assert_eq!(rt.saved.config, before);

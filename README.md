@@ -501,6 +501,10 @@ hardware certification is implied by the packaging tests.
 
 ## Development
 
+Use the [development loop](docs/dev.md) for hardware-free previews and
+[visualization guide](docs/visualizations.md) to add effects in parallel using
+the shared engine/GUI renderers.
+
 ```sh
 make check
 make test

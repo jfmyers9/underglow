@@ -1,5 +1,5 @@
+use crate::device::DeviceInfo;
 use crate::layout::{KeyboardLayout, MatrixCoord};
-use crate::sdk::rgb::DeviceInfo;
 use clap::ValueEnum;
 use serde::Deserialize;
 use std::fmt;
@@ -117,7 +117,7 @@ impl PaletteName {
             Self::Terminal => "terminal",
         };
         Palette {
-            colors: underglow::ripple::palette_colors(name),
+            colors: crate::ripple::palette_colors(name),
         }
     }
 }
@@ -132,7 +132,7 @@ impl Palette {
     }
 
     pub fn gradient(&self, position: u8) -> Color {
-        let [r, g, b] = underglow::ripple::color_gradient(self.colors, position);
+        let [r, g, b] = crate::ripple::color_gradient(self.colors, position);
         Color::new(r, g, b)
     }
 }

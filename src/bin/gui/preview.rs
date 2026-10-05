@@ -1,8 +1,14 @@
-//! Hardware-free previews. Ripples use the real shared renderer with synthetic input.
+//! Hardware-free previews using runtime renderers and the canonical LED geometry.
 
 use super::brand;
+use clap::ValueEnum;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use std::time::Duration;
+use underglow::catalog::{self, RendererKind};
+use underglow::device::DeviceInfo;
+use underglow::focus::{FocusPhase, FocusState, render_focus};
+use underglow::layout::{KeyboardLayout, MatrixCoord};
+use underglow::render::{Frame, PaletteName, RenderContext};
 use underglow::ripple::{RippleSimulation, hid_coord, palette_gradient, wooting_80he_geometry};
 
 pub type RippleColors = (Option<[u8; 3]>, Option<[u8; 3]>);
@@ -23,14 +29,7 @@ impl Default for PreviewTiming {
 }
 
 pub fn fixed_color_note(mode: &str) -> Option<&'static str> {
-    match mode {
-        "rainbow" => Some("Spectrum uses a fixed rainbow, not a palette."),
-        "matrix" => Some("Matrix uses the fixed Terminal green palette."),
-        "focus-cockpit" => Some(
-            "Focus uses phase colors; the preview illustrates the blue focus phase, not the live timer.",
-        ),
-        _ => None,
-    }
+    catalog::find(mode).and_then(|visualization| visualization.fixed_color_note)
 }
 
 pub struct KeyboardPreview {
@@ -58,7 +57,7 @@ impl Default for KeyboardPreview {
 }
 
 impl KeyboardPreview {
-    fn effect_time(&mut self, now: f64, timing: PreviewTiming) -> f32 {
+    fn effect_time(&mut self, now: f64, timing: PreviewTiming) -> f64 {
         let seconds = self
             .animation
             .set_speed(Duration::from_secs_f64(now.max(0.0)), timing.speed);
@@ -69,7 +68,7 @@ impl KeyboardPreview {
             self.effect_seconds = seconds;
             self.effect_tick = Some(now);
         }
-        self.effect_seconds as f32
+        self.effect_seconds
     }
 
     fn show(
@@ -183,8 +182,8 @@ impl KeyboardPreview {
     }
 }
 
-/// Paint an animated, illustrative 80%-style keyboard at the available width.
-/// `brightness` is 0–255. The caller must label this as a simulated preview.
+/// Paint runtime LED colors on the shared synthetic 80HE layout.
+/// This never queries a device or starts a signal/provider. Focus is synthetic.
 pub fn keyboard(
     ui: &mut egui::Ui,
     mode: &str,
@@ -194,247 +193,353 @@ pub fn keyboard(
     timing: PreviewTiming,
     keyboard_preview: &mut KeyboardPreview,
 ) {
-    if mode == "ripples" {
+    let Some(visualization) = catalog::find(mode) else {
+        ui.label("Preview unavailable for this custom or unsupported mode.");
+        ui.small("No command, provider, or hardware is started by this preview.");
+        return;
+    };
+    if matches!(visualization.renderer, RendererKind::Ripples) {
         keyboard_preview.show(ui, palette, brightness, ripple_colors, timing.fps);
         return;
     }
-    let width = ui.available_width().clamp(400.0, 600.0);
-    let unit = width / 18.7;
-    let (space, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width().max(width), unit * 7.8),
-        Sense::hover(),
-    );
+    if matches!(visualization.renderer, RendererKind::Focus) {
+        ui.small("Synthetic focus phase at 55% progress · not the live timer");
+    }
+    let info = preview_device();
+    let layout = KeyboardLayout::for_device(&info);
+    let time = keyboard_preview.effect_time(ui.input(|i| i.time), timing);
+    let Some(frame) = preview_frame(mode, palette, brightness, time, &info, &layout) else {
+        ui.label("Preview unavailable for this palette or renderer.");
+        return;
+    };
+    let width = ui.available_width().min(600.0);
+    let unit = width / 18.5;
+    let (space, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), unit * 6.4), Sense::hover());
     if !ui.is_rect_visible(space) {
         return;
     }
+    let board = Rect::from_min_size(
+        Pos2::new(space.center().x - width / 2.0, space.top()),
+        Vec2::new(width, unit * 6.4),
+    );
     let painter = ui.painter();
-    let origin = Pos2::new(space.center().x - width / 2.0, space.top() + unit * 0.25);
-    let board = Rect::from_min_size(origin, Vec2::new(width, unit * 7.05));
-    let time = keyboard_preview.effect_time(ui.input(|i| i.time), timing);
-    let accent = effect_color(mode, palette, 0.25);
-
-    // Neutral graphite chrome never suggests an effect/palette color of its own.
-    brand::keyboard_shell(painter, board, unit * 0.22);
-    let base = origin + Vec2::splat(unit * 0.55);
-
-    let key = |x: f32, y: f32, w: f32, label: &str| {
+    brand::keyboard_shell(painter, board, unit * 0.12);
+    let origin = board.min + Vec2::splat(unit * 0.25);
+    for key in layout.keys() {
         let rect = Rect::from_min_size(
-            base + Vec2::new(x * unit, y * unit),
-            Vec2::new(w * unit - unit * 0.12, unit * 0.86),
+            origin + Vec2::new(key.x * unit, key.y * unit),
+            Vec2::splat(unit * 0.88),
         );
-        let (strength, hue) = illumination(mode, x + w * 0.5, y, time);
-        let (color, strength) = (
-            effect_color(mode, palette, hue),
-            strength * f32::from(brightness) / 255.0,
-        );
-        if strength > 0.05 {
-            for (spread, alpha) in [(0.11, 13.0), (0.055, 27.0)] {
-                painter.rect_filled(
-                    rect.expand(unit * spread),
-                    5.0,
-                    color.gamma_multiply(strength * alpha / 255.0),
-                );
-            }
-        }
-        painter.rect_filled(rect.translate(Vec2::new(0.0, unit * 0.065)), 4.0, brand::BG);
+        // Sample by LED coordinate, not display position or an illustrative wave.
+        // The key face is the unmodified runtime RGB; only the outer glow is toned down.
+        let color = frame_color(&frame, key.coord);
+        painter.rect_filled(rect.expand(unit * 0.055), 5, color.gamma_multiply(0.15));
+        painter.rect_filled(rect.translate(Vec2::new(0.0, unit * 0.06)), 4, brand::BG);
         painter.rect(
             rect,
-            4.0,
-            mix(brand::RAISED, color, strength * 0.28),
-            Stroke::new(0.8, mix(brand::BORDER, color, strength * 0.78)),
+            4,
+            color,
+            Stroke::new(1.0, brand::BORDER),
             StrokeKind::Inside,
         );
-        let cap = rect.shrink(unit * 0.09);
-        painter.line_segment(
-            [cap.left_top(), cap.right_top()],
-            Stroke::new(0.6, mix(brand::GLINT, color, strength * 0.5)),
-        );
-        painter.text(
-            rect.center() - Vec2::new(0.0, unit * 0.035),
-            Align2::CENTER_CENTER,
-            label,
-            FontId::monospace((unit * 0.23).clamp(7.0, 12.0)),
-            brand::INK,
-        );
-    };
-
-    key(0.0, 0.0, 1.0, "esc");
-    for (i, label) in [
-        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-    ]
-    .iter()
-    .enumerate()
-    {
-        key(1.6 + i as f32 + (i / 4) as f32 * 0.35, 0.0, 1.0, label);
-    }
-    key(15.35, 0.0, 1.0, "prt");
-    key(16.35, 0.0, 1.0, "del");
-
-    let rows: &[&[(&str, f32)]] = &[
-        &[
-            ("`", 1.0),
-            ("1", 1.0),
-            ("2", 1.0),
-            ("3", 1.0),
-            ("4", 1.0),
-            ("5", 1.0),
-            ("6", 1.0),
-            ("7", 1.0),
-            ("8", 1.0),
-            ("9", 1.0),
-            ("0", 1.0),
-            ("−", 1.0),
-            ("=", 1.0),
-            ("back", 2.0),
-        ],
-        &[
-            ("tab", 1.5),
-            ("Q", 1.0),
-            ("W", 1.0),
-            ("E", 1.0),
-            ("R", 1.0),
-            ("T", 1.0),
-            ("Y", 1.0),
-            ("U", 1.0),
-            ("I", 1.0),
-            ("O", 1.0),
-            ("P", 1.0),
-            ("[", 1.0),
-            ("]", 1.0),
-            ("\\", 1.5),
-        ],
-        &[
-            ("caps", 1.75),
-            ("A", 1.0),
-            ("S", 1.0),
-            ("D", 1.0),
-            ("F", 1.0),
-            ("G", 1.0),
-            ("H", 1.0),
-            ("J", 1.0),
-            ("K", 1.0),
-            ("L", 1.0),
-            (";", 1.0),
-            ("'", 1.0),
-            ("enter", 2.25),
-        ],
-        &[
-            ("shift", 2.25),
-            ("Z", 1.0),
-            ("X", 1.0),
-            ("C", 1.0),
-            ("V", 1.0),
-            ("B", 1.0),
-            ("N", 1.0),
-            ("M", 1.0),
-            (",", 1.0),
-            (".", 1.0),
-            ("/", 1.0),
-            ("shift", 2.75),
-        ],
-        &[
-            ("ctrl", 1.25),
-            ("⌘", 1.25),
-            ("alt", 1.25),
-            ("", 6.25),
-            ("alt", 1.25),
-            ("fn", 1.25),
-            ("ctrl", 1.25),
-        ],
-    ];
-    for (row, keys) in rows.iter().enumerate() {
-        let mut x = 0.0;
-        for &(label, width) in *keys {
-            key(x, row as f32 + 1.3, width, label);
-            x += width;
+        let label = key_label(key.coord);
+        if !label.is_empty() {
+            painter.rect_filled(
+                Rect::from_center_size(rect.center(), Vec2::new(unit * 0.74, unit * 0.5)),
+                2,
+                Color32::from_black_alpha(190),
+            );
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                label,
+                FontId::monospace((unit * 0.23).clamp(7.0, 12.0)),
+                Color32::WHITE,
+            );
         }
     }
-    for (y, left, right) in [(1.3, "ins", "home"), (2.3, "pg↑", "pg↓")] {
-        key(15.35, y, 1.0, left);
-        key(16.35, y, 1.0, right);
-    }
-    key(15.35, 4.3, 1.0, "↑");
-    key(14.35, 5.3, 1.0, "←");
-    key(15.35, 5.3, 1.0, "↓");
-    key(16.35, 5.3, 1.0, "→");
-    // Small status-light recess; purely decorative like the rest of the drawing.
-    let light = base + Vec2::new(16.0 * unit, 3.65 * unit);
-    painter.line_segment(
-        [
-            light - Vec2::new(unit * 0.28, 0.0),
-            light + Vec2::new(unit * 0.28, 0.0),
-        ],
-        Stroke::new(2.0, accent.gamma_multiply(f32::from(brightness) / 255.0)),
-    );
     ui.ctx().request_repaint_after(Duration::from_secs_f64(
         1.0 / f64::from(timing.fps.clamp(1, 120)),
     ));
 }
 
-fn illumination(mode: &str, x: f32, y: f32, time: f32) -> (f32, f32) {
-    let wave = (x * 0.055 + time / 30.0).fract();
-    let strength = match mode {
-        "comet" => {
-            let head = (time * 2.0).rem_euclid(23.0);
-            let behind = head - x - y * 0.5;
-            if (0.0..5.0).contains(&behind) {
-                (1.0 - behind / 5.0).powi(2)
-            } else {
-                0.0
-            }
-        }
-        "rainbow" => 0.8,
-        "breath" => 0.12 + 0.75 * (1.0 - (time.rem_euclid(6.0) / 3.0 - 1.0).abs()),
-        "matrix" => {
-            let head = (time * 7.5 + (x.floor() * 12.9898).sin() * 7.0).rem_euclid(9.0);
-            (1.0 - (head - y).rem_euclid(9.0) / 2.8).max(0.0)
-        }
-        "focus-cockpit" => {
-            if y < 0.5 || x > 15.0 {
-                0.65
-            } else if y > 5.0 {
-                0.4 + 0.12 * time.sin()
-            } else {
-                0.08
-            }
-        }
-        _ => 0.18,
-    };
-    (strength.clamp(0.0, 1.0), wave)
+/// Describes a synthetic device; constructing this value performs no SDK calls.
+fn preview_device() -> DeviceInfo {
+    DeviceInfo::synthetic_80he()
 }
 
-fn mix(a: Color32, b: Color32, amount: f32) -> Color32 {
-    let lerp = |a: u8, b: u8| {
-        (f32::from(a) + (f32::from(b) - f32::from(a)) * amount.clamp(0.0, 1.0)) as u8
+fn preview_frame(
+    mode: &str,
+    palette: &str,
+    brightness: u8,
+    animation_seconds: f64,
+    info: &DeviceInfo,
+    layout: &KeyboardLayout,
+) -> Option<Frame> {
+    let renderer = catalog::find(mode)?.renderer;
+    let ctx = RenderContext {
+        animation_seconds,
+        info,
+        layout,
+        brightness,
+        palette: PaletteName::from_str(palette, false).ok()?,
+        tick: 0,
     };
-    Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
-}
-
-fn effect_color(mode: &str, palette: &str, phase: f32) -> Color32 {
-    // Motion remains illustrative, but color choices must respect the runtime.
-    match mode {
-        "rainbow" => Color32::from(egui::ecolor::Hsva::new(
-            phase.rem_euclid(1.0),
-            1.0,
-            1.0,
-            1.0,
+    match renderer {
+        RendererKind::Static(effect) => Some(effect.render(&ctx)),
+        RendererKind::Focus => Some(render_focus(
+            &ctx,
+            FocusState {
+                phase: FocusPhase::Focus,
+                progress: 0.55,
+                cycle: 1,
+            },
+            false,
         )),
-        "focus-cockpit" => Color32::from_rgb(0, 180, 255),
-        _ => {
-            let palette = if mode == "matrix" {
-                "terminal"
-            } else {
-                palette
-            };
-            let [r, g, b] = palette_gradient(palette, (phase.rem_euclid(1.0) * 255.0) as u8);
-            Color32::from_rgb(r, g, b)
-        }
+        // Stateful ripples use KeyboardPreview's real simulation and synthetic input.
+        RendererKind::Ripples => None,
     }
+}
+
+fn frame_color(frame: &Frame, coord: MatrixCoord) -> Color32 {
+    let color = frame.get_coord(coord);
+    Color32::from_rgb(color.red, color.green, color.blue)
+}
+
+// Legends annotate LED addresses; they do not supply rendering geometry.
+fn key_label(coord: MatrixCoord) -> &'static str {
+    const LABELS: [[&str; 17]; 6] = [
+        [
+            "esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "",
+            "prt", "del", "",
+        ],
+        [
+            "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "−", "=", "back", "ins", "home",
+            "",
+        ],
+        [
+            "tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\", "pg↑", "pg↓",
+            "",
+        ],
+        [
+            "caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "", "enter", "", "", "",
+        ],
+        [
+            "shift", "", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "", "shift", "", "↑", "",
+        ],
+        [
+            "ctrl", "⌘", "alt", "", "", "", "SP", "", "", "", "alt", "fn", "ctrl", "", "←", "↓",
+            "→",
+        ],
+    ];
+    LABELS
+        .get(usize::from(coord.row))
+        .and_then(|row| row.get(usize::from(coord.column)))
+        .copied()
+        .unwrap_or("")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_frames_match_runtime_across_settings_and_times() {
+        let info = preview_device();
+        let layout = KeyboardLayout::for_device(&info);
+        for visualization in catalog::all() {
+            let RendererKind::Static(effect) = visualization.renderer else {
+                continue;
+            };
+            for palette in PaletteName::value_variants() {
+                for brightness in [0, 1, 96, 255] {
+                    for animation_seconds in [0.0, 0.125, 2.5, 17.321, 3600.25] {
+                        let actual = preview_frame(
+                            visualization.id,
+                            &palette.to_string(),
+                            brightness,
+                            animation_seconds,
+                            &info,
+                            &layout,
+                        )
+                        .unwrap();
+                        let expected = effect.render(&RenderContext {
+                            animation_seconds,
+                            info: &info,
+                            layout: &layout,
+                            brightness,
+                            palette: *palette,
+                            tick: 0,
+                        });
+                        assert_eq!(actual, expected, "{}", visualization.id);
+                        if brightness == 0 {
+                            assert_eq!(actual, Frame::black(), "{}", visualization.id);
+                        }
+                        for key in layout.keys() {
+                            let rgb = expected.get_coord(key.coord);
+                            assert_eq!(
+                                frame_color(&actual, key.coord),
+                                Color32::from_rgb(rgb.red, rgb.green, rgb.blue)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preview_geometry_and_addresses_are_the_runtime_layout() {
+        let info = preview_device();
+        assert!(!info.connected);
+        let layout = KeyboardLayout::for_device(&info);
+        assert_eq!(layout.name, "wooting-80he");
+        let geometry = wooting_80he_geometry();
+        assert_eq!(layout.keys().len(), geometry.len());
+        let mut addresses = std::collections::HashSet::new();
+        for (key, expected) in layout.keys().iter().zip(geometry) {
+            assert_eq!((key.x, key.y), (expected.x, expected.y));
+            assert_eq!(
+                (key.coord.row, key.coord.column),
+                (expected.row, expected.column)
+            );
+            assert!(key.coord.row < info.max_rows && key.coord.column < info.max_columns);
+            assert!(addresses.insert((key.coord.row, key.coord.column)));
+        }
+    }
+
+    #[test]
+    fn focus_preview_uses_shared_renderer_with_explicit_synthetic_state() {
+        let info = preview_device();
+        let layout = KeyboardLayout::for_device(&info);
+        for brightness in [0, 96, 255] {
+            let actual =
+                preview_frame("focus-cockpit", "heat", brightness, 10.0, &info, &layout).unwrap();
+            let expected = render_focus(
+                &RenderContext {
+                    animation_seconds: 10.0,
+                    info: &info,
+                    layout: &layout,
+                    brightness,
+                    palette: PaletteName::Heat,
+                    tick: 0,
+                },
+                FocusState {
+                    phase: FocusPhase::Focus,
+                    progress: 0.55,
+                    cycle: 1,
+                },
+                false,
+            );
+            assert_eq!(actual, expected);
+            if brightness == 0 {
+                assert_eq!(actual, Frame::black());
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_modes_and_palettes_do_not_substitute_an_effect() {
+        let info = preview_device();
+        let layout = KeyboardLayout::for_device(&info);
+        for mode in ["unknown", "command-status", "custom-program"] {
+            assert!(preview_frame(mode, "ocean", 255, 2.0, &info, &layout).is_none());
+        }
+        assert!(preview_frame("comet", "unknown", 255, 2.0, &info, &layout).is_none());
+        let mut preview = KeyboardPreview::default();
+        let output = egui::Context::default().run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                keyboard(
+                    ui,
+                    "custom-program",
+                    "ocean",
+                    255,
+                    (None, None),
+                    PreviewTiming::default(),
+                    &mut preview,
+                );
+            });
+        });
+        assert!(output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text.contains("Preview unavailable")
+        )));
+        assert!(preview.effect_tick.is_none());
+        assert!(preview.last_tick.is_none());
+    }
+
+    #[test]
+    fn painted_keys_preserve_runtime_colors_coordinates_and_white_legends() {
+        let info = preview_device();
+        let layout = KeyboardLayout::for_device(&info);
+        for visualization in catalog::all() {
+            if !matches!(
+                visualization.renderer,
+                RendererKind::Static(_) | RendererKind::Focus
+            ) {
+                continue;
+            }
+            for width in [400.0, 960.0] {
+                let mut preview = KeyboardPreview::default();
+                preview.effect_time(0.0, PreviewTiming::default());
+                let mut origin = Pos2::ZERO;
+                let mut unit = 0.0;
+                let output = egui::Context::default().run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 600.0))),
+                        time: Some(2.5),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            unit = ui.available_width().min(600.0) / 18.5;
+                            keyboard(
+                                ui,
+                                visualization.id,
+                                "ocean",
+                                180,
+                                (None, None),
+                                PreviewTiming::default(),
+                                &mut preview,
+                            );
+                        });
+                    },
+                );
+                let frame =
+                    preview_frame(visualization.id, "ocean", 180, 2.5, &info, &layout).unwrap();
+                let caps: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.stroke.color == brand::BORDER
+                                && (rect.rect.width() - unit * 0.88).abs() < 0.01 =>
+                        {
+                            Some(rect)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(caps.len(), layout.keys().len(), "{}", visualization.id);
+                for (index, (cap, key)) in caps.iter().zip(layout.keys()).enumerate() {
+                    if index == 0 {
+                        origin = cap.rect.min;
+                    }
+                    assert!((cap.rect.min.x - origin.x - key.x * unit).abs() < 0.01);
+                    assert!((cap.rect.min.y - origin.y - key.y * unit).abs() < 0.01);
+                    assert_eq!(cap.fill, frame_color(&frame, key.coord));
+                }
+                let f_legend = output.shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "F" => {
+                        Some(text.galley.job.sections[0].format.color)
+                    }
+                    _ => None,
+                });
+                assert_eq!(f_legend, Some(Color32::WHITE));
+            }
+        }
+    }
 
     #[test]
     fn preview_speed_is_independent_of_fps_and_changes_without_resetting() {
@@ -454,8 +559,26 @@ mod tests {
     }
 
     #[test]
+    fn preview_holds_samples_until_the_selected_frame_interval() {
+        let mut preview = KeyboardPreview::default();
+        let timing = PreviewTiming {
+            fps: 10,
+            speed: 100,
+        };
+        assert_eq!(preview.effect_time(0.0, timing), 0.0);
+        assert_eq!(preview.effect_time(0.05, timing), 0.0);
+        assert_eq!(preview.effect_time(0.1, timing), 0.1);
+        assert_eq!(preview.effect_time(0.15, timing), 0.1);
+        assert_eq!(preview.effect_time(0.2, timing), 0.2);
+    }
+
+    #[test]
     fn fixed_color_previews_ignore_palette_but_palette_effects_respond() {
         let render = |mode: &str, palette: &str| {
+            let mut preview = KeyboardPreview::default();
+            // The real breath starts black. Advance past its first sample before
+            // asserting that changing its palette changes visible LED colors.
+            preview.effect_time(0.0, PreviewTiming::default());
             egui::Context::default()
                 .run(
                     egui::RawInput {
@@ -472,7 +595,7 @@ mod tests {
                                 255,
                                 (None, None),
                                 PreviewTiming::default(),
-                                &mut KeyboardPreview::default(),
+                                &mut preview,
                             );
                         });
                     },
@@ -480,27 +603,10 @@ mod tests {
                 .shapes
         };
         for mode in ["rainbow", "matrix", "focus-cockpit"] {
-            assert_eq!(render(mode, "ocean"), render(mode, "heat"), "{mode}");
+            assert!(render(mode, "ocean") == render(mode, "heat"), "{mode}");
         }
         for mode in ["comet", "breath"] {
-            assert_ne!(render(mode, "ocean"), render(mode, "heat"), "{mode}");
-        }
-        assert_eq!(effect_color("rainbow", "ocean", 0.0), Color32::RED);
-        assert_eq!(
-            effect_color("focus-cockpit", "heat", 0.5),
-            Color32::from_rgb(0, 180, 255)
-        );
-        let [r, g, b] = palette_gradient("terminal", 127);
-        assert_eq!(
-            effect_color("matrix", "heat", 0.5),
-            Color32::from_rgb(r, g, b)
-        );
-        for palette in ["wooting", "cyberpunk", "ocean", "heat", "terminal"] {
-            let [r, g, b] = palette_gradient(palette, 127);
-            assert_eq!(
-                effect_color("comet", palette, 0.5),
-                Color32::from_rgb(r, g, b)
-            );
+            assert!(render(mode, "ocean") != render(mode, "heat"), "{mode}");
         }
     }
 
@@ -530,34 +636,6 @@ mod tests {
             );
             assert!(output.shapes.len() > 200);
         }
-    }
-
-    #[test]
-    fn every_effect_stays_in_color_bounds() {
-        for mode in [
-            "comet",
-            "rainbow",
-            "breath",
-            "matrix",
-            "focus-cockpit",
-            "unknown",
-        ] {
-            for t in 0..100 {
-                for x in 0..18 {
-                    let (strength, phase) = illumination(mode, x as f32, 3.0, t as f32 * 0.37);
-                    assert!((0.0..=1.0).contains(&strength));
-                    assert!((0.0..=1.0).contains(&phase));
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn color_mixing_preserves_endpoints() {
-        let a = Color32::from_rgb(15, 30, 45);
-        let b = Color32::from_rgb(230, 180, 120);
-        assert_eq!(mix(a, b, 0.0), a);
-        assert_eq!(mix(a, b, 1.0), b);
     }
 
     #[test]

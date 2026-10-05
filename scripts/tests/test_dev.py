@@ -58,7 +58,7 @@ class WatchTests(unittest.TestCase):
             path.unlink()
             self.assertEqual(dev.changes(after, dev.snapshot(root)), {'src/main.rs'})
 
-    def test_embedded_preset_is_a_build_input(self):
+    def test_example_profile_is_a_watched_input(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'examples').mkdir()

@@ -1,9 +1,10 @@
-use crate::layout::Zone;
-use crate::render::{Color, Frame, RenderContext, pulse_wave};
+use crate::render::{Frame, RenderContext};
 use crate::signals::SignalProgram;
 use serde::Deserialize;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
+use underglow::focus::render_focus;
+pub use underglow::focus::{FocusPhase, FocusState};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -27,22 +28,6 @@ impl Default for FocusConfig {
             dim: false,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FocusPhase {
-    Focus,
-    Break,
-    Overtime,
-    Paused,
-    MeetingSafe,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FocusState {
-    pub phase: FocusPhase,
-    pub progress: f32,
-    pub cycle: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -144,63 +129,6 @@ impl SignalProgram for FocusSignal {
 
     fn shutdown(&mut self, _interrupted: bool) -> crate::signals::ProgramResult {
         Ok(())
-    }
-}
-
-fn render_focus(ctx: &RenderContext<'_>, state: FocusState, dim_mode: bool) -> Frame {
-    let mut frame = Frame::black();
-    let brightness = if dim_mode {
-        ctx.brightness / 3
-    } else {
-        ctx.brightness
-    };
-    let base = phase_color(state.phase, ctx.tick);
-    let dim = base.scale(brightness / 10);
-
-    for key in ctx.layout.keys() {
-        frame.set_coord(key.coord, dim);
-    }
-
-    let zone = match state.phase {
-        FocusPhase::Focus | FocusPhase::Break | FocusPhase::Paused | FocusPhase::MeetingSafe => {
-            Zone::Function
-        }
-        FocusPhase::Overtime => Zone::Alpha,
-    };
-    let mut keys = ctx
-        .layout
-        .keys()
-        .iter()
-        .filter(|key| key.zone == zone)
-        .collect::<Vec<_>>();
-    if keys.is_empty() {
-        keys = ctx.layout.keys().iter().collect();
-    }
-    keys.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
-
-    let active = match state.phase {
-        FocusPhase::Paused | FocusPhase::MeetingSafe => keys.len(),
-        FocusPhase::Overtime => keys.len(),
-        FocusPhase::Focus | FocusPhase::Break => ((keys.len() as f32) * state.progress)
-            .ceil()
-            .clamp(1.0, keys.len() as f32)
-            as usize,
-    };
-    let color = base.scale(brightness);
-    for key in keys.into_iter().take(active) {
-        frame.set_coord(key.coord, color);
-    }
-
-    frame
-}
-
-fn phase_color(phase: FocusPhase, tick: u32) -> Color {
-    match phase {
-        FocusPhase::Focus => Color::new(0, 180, 255),
-        FocusPhase::Break => Color::new(0, 220, 80),
-        FocusPhase::Overtime => Color::new(255, 32, 24).scale(128 + (pulse_wave(tick, 24) / 2)),
-        FocusPhase::Paused => Color::new(160, 80, 255),
-        FocusPhase::MeetingSafe => Color::new(20, 30, 40),
     }
 }
 

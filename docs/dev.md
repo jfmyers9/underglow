@@ -15,8 +15,10 @@ settings and the per-checkout lock namespace are preserved; do not kill unrelate
 processes or delete their locks.
 
 The default is **simulation**: SDK access is blocked. Use the GUI keyboard preview
-to tune ripples without taking over the physical keyboard. Saved selections,
-brightness, FPS, and colors are private to this checkout and mode.
+to tune effects without taking over the physical keyboard. Saved selections,
+brightness, speed, FPS, and colors are private to this checkout and mode.
+The preview uses the shared renderers with synthetic time/input; see
+[adding visualizations](visualizations.md) for module ownership and registration.
 
 Save Rust/Cargo inputs to rebuild automatically:
 
@@ -32,8 +34,8 @@ Save Rust/Cargo inputs to rebuild automatically:
   stops the supervisor's GUI, engine, and in-progress build, with bounded cleanup.
 
 The watcher hashes file contents and debounces saves. Failed builds retry after a
-further content change, not continuously. It watches `src/**`, `.cargo/**`, `examples/**` (embedded
-presets), Cargo
+further content change, not continuously. It watches `src/**`, `.cargo/**`,
+`examples/**` (example/test profiles), Cargo
 manifest/lockfile, Rust toolchain files, `build.rs`, and the SDK header referenced
 by that build script. External dependencies/toolchain/environment changes require
 restarting `make dev`. Builds target the host's normal `target/debug` output; do

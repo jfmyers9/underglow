@@ -205,8 +205,8 @@ pub fn coord(row: u8, column: u8) -> MatrixCoord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device::{DeviceInfo, DeviceType, Layout};
     use crate::render::RenderContext;
-    use crate::sdk::rgb::{DeviceInfo, DeviceType, Layout};
 
     fn info() -> DeviceInfo {
         DeviceInfo {
