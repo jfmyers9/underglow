@@ -1,4 +1,5 @@
 //! Hardware-independent effect rendering.
+pub mod animation;
 pub mod ripple;
 
 /// Full brightness (100%); CLI/config values use RGB channels, not percentages.

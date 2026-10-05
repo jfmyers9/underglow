@@ -241,6 +241,7 @@ fn render_scene(
     let brightness = scene.brightness.unwrap_or(ctx.brightness);
     let palette = scene.palette.unwrap_or(ctx.palette);
     let scene_ctx = RenderContext {
+        animation_seconds: ctx.animation_seconds,
         info: ctx.info,
         layout: ctx.layout,
         brightness,
@@ -358,6 +359,7 @@ zones = ["function"]
 
         runtime.tick(&interrupted).unwrap();
         let frame = runtime.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,

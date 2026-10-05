@@ -42,6 +42,8 @@ struct Status {
     palette: String,
     fps: u32,
     #[serde(default)]
+    speed: Option<u32>,
+    #[serde(default)]
     ripple_base_color: Option<[u8; 3]>,
     #[serde(default)]
     ripple_color: Option<[u8; 3]>,
@@ -465,6 +467,7 @@ struct Controller {
     brightness: u8,
     palette: String,
     fps: u32,
+    speed: u32,
     ripple_colors: RippleColors,
     ripple_colors_dirty: bool,
     settings_dirty: bool,
@@ -474,7 +477,7 @@ struct Controller {
     settings_open: bool,
     dev_supervised: bool,
     dev_simulation: bool,
-    ripple_preview: gui_preview::RipplePreview,
+    keyboard_preview: gui_preview::KeyboardPreview,
 }
 
 impl Controller {
@@ -519,6 +522,7 @@ impl Controller {
             brightness: wooting_signals::DEFAULT_BRIGHTNESS,
             palette: "wooting".into(),
             fps: 30,
+            speed: wooting_signals::animation::DEFAULT_SPEED,
             ripple_colors: RippleColors::default(),
             ripple_colors_dirty: false,
             settings_dirty: false,
@@ -528,7 +532,7 @@ impl Controller {
             settings_open: false,
             dev_supervised: std::env::var_os("WOOTING_DEV_SUPERVISED").is_some(),
             dev_simulation: std::env::var_os("WOOTING_DEV_SIMULATION").is_some(),
-            ripple_preview: gui_preview::RipplePreview::default(),
+            keyboard_preview: gui_preview::KeyboardPreview::default(),
         }
     }
 
@@ -602,6 +606,9 @@ impl Controller {
                                 self.brightness = status.brightness;
                                 self.palette = status.palette.clone();
                                 self.fps = status.fps;
+                                self.speed = status
+                                    .speed
+                                    .unwrap_or(wooting_signals::animation::DEFAULT_SPEED);
                                 self.ripple_colors = RippleColors::from_status(&status);
                             }
                             self.status = Some(status);
@@ -795,6 +802,9 @@ impl Controller {
             self.brightness = status.brightness;
             self.palette = status.palette.clone();
             self.fps = status.fps;
+            self.speed = status
+                .speed
+                .unwrap_or(wooting_signals::animation::DEFAULT_SPEED);
             self.ripple_colors = RippleColors::from_status(status);
             self.settings_dirty = false;
             self.ripple_colors_dirty = false;
@@ -823,7 +833,18 @@ impl Controller {
                 args.push("--ripple-palette".into());
             }
         }
+        if self.speed_available() {
+            args.extend(["--speed".into(), self.speed.to_string().into()]);
+        }
         self.dispatch(Action::Control(args));
+    }
+
+    fn speed_available(&self) -> bool {
+        wooting_signals::animation::supports_speed(&self.preset)
+            && self
+                .status
+                .as_ref()
+                .is_none_or(|status| status.speed.is_some())
     }
 
     fn show_settings(&mut self, context: &egui::Context) {
@@ -984,12 +1005,20 @@ impl Controller {
                         } else if let Some(note) = gui_preview::fixed_color_note(&self.preset) {
                             ui.small(note);
                         }
+                        if self.speed_available() {
+                            ui.horizontal(|ui| {
+                                ui.label("Speed");
+                                ui.spacing_mut().slider_width = (ui.available_width() - 110.0).max(120.0);
+                                self.settings_dirty |= ui.add(egui::Slider::new(&mut self.speed, 10..=400).suffix("%")).changed();
+                            });
+                            ui.small("100% = calm default pace. Speed is independent of FPS.");
+                        }
                         ui.horizontal(|ui| {
                             ui.label("Frame rate");
                             ui.spacing_mut().slider_width = (ui.available_width() - 110.0).max(120.0);
                             self.settings_dirty |= ui.add(egui::Slider::new(&mut self.fps, 1..=120).suffix(" FPS")).changed();
                         });
-                        ui.small("More FPS can mean smoother or faster motion, with higher CPU usage.");
+                        ui.small("Frame rate controls how often lighting is rendered. More FPS uses more CPU.");
                         ui.horizontal(|ui| {
                             if ui.add_enabled(self.settings_dirty, egui::Button::new("Discard changes")).clicked() { self.discard_settings(); }
                             ui.label(egui::RichText::new(if self.settings_dirty { "Unapplied changes" } else { "Saved" }).small().color(MUTED));
@@ -1005,7 +1034,7 @@ impl Controller {
                         });
                     });
                     let ripple_colors = self.ripple_preview_colors();
-                    gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness, ripple_colors, self.fps, &mut self.ripple_preview);
+                    gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness, ripple_colors, gui_preview::PreviewTiming { fps: self.fps, speed: self.speed }, &mut self.keyboard_preview);
                     ui.label(egui::RichText::new(if self.preset == "ripples" { "80HE LED matrix · actual ripple math and draft settings · synthetic input, not device feedback" } else { "Simulation · not live input, device status or actual frame rate" }).small().color(MUTED));
                 });
                 ui.add_space(8.0);
@@ -1174,6 +1203,7 @@ mod tests {
             brightness: 128,
             palette: "ocean".into(),
             fps: 30,
+            speed: wooting_signals::animation::DEFAULT_SPEED,
             ripple_colors: RippleColors::default(),
             ripple_colors_dirty: false,
             settings_dirty: false,
@@ -1183,7 +1213,7 @@ mod tests {
             settings_open: false,
             dev_supervised: false,
             dev_simulation: false,
-            ripple_preview: gui_preview::RipplePreview::default(),
+            keyboard_preview: gui_preview::KeyboardPreview::default(),
         };
         (app, incoming)
     }
@@ -1328,6 +1358,10 @@ mod tests {
                     supported,
                     "{mode}, two-tone={two_tone}"
                 );
+                assert_eq!(
+                    has_text("Speed"),
+                    wooting_signals::animation::supports_speed(mode)
+                );
                 if let Some(note) = gui_preview::fixed_color_note(mode) {
                     assert!(has_text(note), "fixed-color behavior must be explained");
                 }
@@ -1400,10 +1434,11 @@ mod tests {
     #[test]
     fn visual_edits_apply_together_and_discard_without_changing_engine() {
         let (mut app, incoming) = controller_fixture();
-        // A single explicit apply sends all three visual settings together.
+        // A single explicit apply sends the visual settings together.
         app.brightness = 200;
         app.palette = "ember".into();
         app.fps = 60;
+        app.speed = 75;
         app.settings_dirty = true;
         app.apply_settings();
         let Action::Control(args) = incoming.try_recv().unwrap() else {
@@ -1418,7 +1453,9 @@ mod tests {
                 "--palette",
                 "ember",
                 "--fps",
-                "60"
+                "60",
+                "--speed",
+                "75"
             ]
             .map(OsString::from)
         );
@@ -1437,6 +1474,44 @@ mod tests {
             incoming.try_recv().is_err(),
             "discard must not change the engine"
         );
+    }
+
+    #[test]
+    fn speed_support_is_detected_and_polling_preserves_drafts() {
+        let (mut app, incoming) = controller_fixture();
+        let mut status: Status = serde_json::from_str(STATUS).unwrap();
+        status.mode = "comet".into();
+        app.status = Some(status);
+        assert!(
+            !app.speed_available(),
+            "old engines must not receive unsupported speed settings"
+        );
+        app.apply_settings();
+        let Action::Control(args) = incoming.try_recv().unwrap() else {
+            panic!("expected settings");
+        };
+        assert!(!args.contains(&OsString::from("--speed")));
+
+        let (outgoing, replies) = mpsc::channel();
+        app.replies = replies;
+        app.speed = 55;
+        app.settings_dirty = true;
+        let mut status: serde_json::Value = serde_json::from_str(STATUS).unwrap();
+        status["mode"] = "comet".into();
+        status["speed"] = 75.into();
+        outgoing
+            .send(Completion {
+                action: Action::Control(vec!["status".into()]),
+                result: Ok(format!(r#"{{"ok":true,"status":{status}}}"#)),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.speed_available());
+        assert_eq!(app.speed, 55);
+        assert_eq!(app.status.as_ref().unwrap().speed, Some(75));
+        app.discard_settings();
+        assert_eq!(app.speed, 75);
+        assert!(incoming.try_recv().is_err(), "discard is local only");
     }
 
     #[test]
@@ -1488,7 +1563,10 @@ mod tests {
         let Action::Control(args) = incoming.try_recv().unwrap() else {
             panic!("expected settings");
         };
-        assert_eq!(args.len(), 7);
+        assert_eq!(
+            &args[7..],
+            [OsString::from("--speed"), OsString::from("100")]
+        );
 
         let mut status: Status = serde_json::from_str(STATUS).unwrap();
         assert!(!RippleColors::from_status(&status).enabled);
@@ -1649,6 +1727,7 @@ mod tests {
             brightness: 7,
             palette: "custom".into(),
             fps: 12,
+            speed: 150,
             ripple_colors: RippleColors::default(),
             ripple_colors_dirty: false,
             settings_dirty: true,
@@ -1658,7 +1737,7 @@ mod tests {
             settings_open: false,
             dev_supervised: false,
             dev_simulation: false,
-            ripple_preview: gui_preview::RipplePreview::default(),
+            keyboard_preview: gui_preview::KeyboardPreview::default(),
         };
         app.ripple_colors = RippleColors {
             enabled: true,
@@ -1678,6 +1757,7 @@ mod tests {
         assert!(app.last_poll.elapsed() < Duration::from_secs(3));
         assert_eq!(app.brightness, 7);
         assert_eq!(app.fps, 12);
+        assert_eq!(app.speed, 150);
         assert_eq!(app.palette, "custom");
         assert_eq!(app.ripple_colors.base, [20, 40, 60]);
         assert!(app.ripple_colors_dirty);
@@ -1701,6 +1781,14 @@ mod tests {
         app.receive();
         assert!(!app.settings_dirty);
         assert_eq!(app.brightness, app.status.as_ref().unwrap().brightness);
+        assert_eq!(
+            app.speed,
+            app.status
+                .as_ref()
+                .unwrap()
+                .speed
+                .unwrap_or(wooting_signals::animation::DEFAULT_SPEED)
+        );
         assert!(!app.ripple_colors.enabled);
         assert!(!app.ripple_colors_dirty);
         outgoing

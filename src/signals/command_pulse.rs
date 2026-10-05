@@ -573,6 +573,7 @@ failure = [4, 5, 6]
         let layout = KeyboardLayout::for_device(&info);
         let signal = CommandPulseSignal::new(config("true")).unwrap();
         let frame = signal.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,

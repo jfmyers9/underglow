@@ -294,6 +294,7 @@ mod tests {
         let signal = FocusSignal::new(config());
 
         let frame = signal.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,
@@ -309,6 +310,7 @@ mod tests {
         let info = info();
         let layout = KeyboardLayout::for_device(&info);
         let context = RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,

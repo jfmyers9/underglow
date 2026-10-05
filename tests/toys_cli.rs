@@ -484,6 +484,56 @@ fn configured_ripples_preview_matches_toy_and_dry_run_opens_no_sdks() {
 }
 
 #[test]
+fn effect_preview_speed_and_fps_sample_the_same_wall_clock_frames() {
+    let render = |effect: &str, fps: u32, speed: u32, ticks: u32| {
+        let output = Command::new(BINARY)
+            .env("WOOTING_DEV_SIMULATION", "1")
+            .args([
+                "preview",
+                "effect",
+                effect,
+                "--format",
+                "json",
+                "--fps",
+                &fps.to_string(),
+                "--speed",
+                &speed.to_string(),
+                "--ticks",
+                &ticks.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let data: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        data["frames"].as_array().unwrap().last().unwrap()["rows"].clone()
+    };
+    for effect in ["comet", "matrix", "rainbow", "breath"] {
+        let expected = render(effect, 10, 100, 11); // One second at the default speed.
+        for fps in [5, 30, 60] {
+            assert_eq!(
+                render(effect, fps, 100, fps + 1),
+                expected,
+                "{effect} at {fps} FPS"
+            );
+        }
+        assert_eq!(
+            render(effect, 30, 50, 61),
+            expected,
+            "half speed takes twice as long"
+        );
+        assert_ne!(
+            render(effect, 30, 50, 31),
+            expected,
+            "speed must affect output"
+        );
+    }
+}
+
+#[test]
 fn configured_modes_share_cleanup_and_rgb_modes_do_not_require_analog() {
     let mock = Mock::new();
     for (kind, failure) in [
@@ -683,6 +733,19 @@ fn engine_paused_persistence_switching_and_single_writer() {
     assert!(!mock.calls().contains("close\n"));
     assert_eq!(mock.control(&["select", "--preset", "comet"])["ok"], true);
     assert_eq!(mock.calls().matches("uninit\n").count(), 1);
+    let opened = mock.calls().matches("init\n").count();
+    let closed = mock.calls().matches("close\n").count();
+    let changed = mock.control(&["settings", "--speed", "75", "--fps", "60"]);
+    assert_eq!(changed["ok"], true);
+    assert_eq!(changed["status"]["speed"], 75);
+    assert_eq!(changed["status"]["fps"], 60);
+    assert_eq!(changed["status"]["state"], "active");
+    assert_eq!(
+        mock.calls().matches("init\n").count(),
+        opened,
+        "speed changes must not reopen SDKs"
+    );
+    assert_eq!(mock.calls().matches("close\n").count(), closed);
     assert_eq!(mock.control(&["pause"])["ok"], true);
     assert!(
         mock.doctor().output().unwrap().status.success(),
@@ -693,7 +756,10 @@ fn engine_paused_persistence_switching_and_single_writer() {
     assert!(engine.0.wait().unwrap().success());
     let calls = mock.calls();
     let mut restarted = mock.engine();
-    assert_eq!(mock.wait_state("paused")["status"]["mode"], "comet");
+    let status = mock.wait_state("paused");
+    assert_eq!(status["status"]["mode"], "comet");
+    assert_eq!(status["status"]["speed"], 75);
+    assert_eq!(status["status"]["fps"], 60);
     assert_eq!(
         mock.calls(),
         calls,

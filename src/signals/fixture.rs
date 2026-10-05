@@ -222,6 +222,7 @@ hold_seconds = 1
         let layout = KeyboardLayout::for_device(&info);
         let signal = FixtureSignal::new(FixtureConfig::default());
         let frame = signal.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,

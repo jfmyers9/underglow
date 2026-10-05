@@ -20,6 +20,8 @@ pub fn print_effect_preview(
     palette: PaletteName,
     brightness: u8,
     ticks: u32,
+    fps: u32,
+    speed: u32,
     format: PreviewFormat,
 ) {
     let info = preview_device();
@@ -27,6 +29,8 @@ pub fn print_effect_preview(
     let frames = (0..ticks.max(1))
         .map(|tick| {
             effect.render(&RenderContext {
+                animation_seconds: f64::from(tick) / f64::from(fps.max(1)) * f64::from(speed)
+                    / 100.0,
                 info: &info,
                 layout: &layout,
                 brightness,
@@ -50,6 +54,9 @@ pub fn print_signal_preview(
         .map(|tick| {
             signal.preview_tick(tick);
             signal.render(&RenderContext {
+                animation_seconds: f64::from(tick) / f64::from(options.fps.max(1))
+                    * f64::from(options.speed)
+                    / 100.0,
                 info: &info,
                 layout: &layout,
                 brightness: options.brightness,
@@ -207,6 +214,7 @@ mod tests {
         let info = preview_device();
         let layout = KeyboardLayout::for_device(&info);
         let frame = EffectKind::Comet.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,

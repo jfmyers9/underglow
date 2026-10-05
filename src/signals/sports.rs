@@ -342,6 +342,7 @@ mod tests {
         let layout = KeyboardLayout::for_device(&info);
         let signal = SportsSignal::new(SportsConfig::default());
         let frame = signal.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,

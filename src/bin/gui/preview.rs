@@ -8,6 +8,21 @@ use wooting_signals::ripple::{
 
 pub type RippleColors = (Option<[u8; 3]>, Option<[u8; 3]>);
 
+#[derive(Clone, Copy)]
+pub struct PreviewTiming {
+    pub fps: u32,
+    pub speed: u32,
+}
+
+impl Default for PreviewTiming {
+    fn default() -> Self {
+        Self {
+            fps: 30,
+            speed: wooting_signals::animation::DEFAULT_SPEED,
+        }
+    }
+}
+
 pub fn fixed_color_note(mode: &str) -> Option<&'static str> {
     match mode {
         "rainbow" => Some("Spectrum uses a fixed rainbow, not a palette."),
@@ -19,16 +34,22 @@ pub fn fixed_color_note(mode: &str) -> Option<&'static str> {
     }
 }
 
-pub struct RipplePreview {
+pub struct KeyboardPreview {
+    animation: wooting_signals::animation::AnimationClock,
+    effect_tick: Option<f64>,
+    effect_seconds: f64,
     simulation: RippleSimulation,
     last_tick: Option<f64>,
     demo: bool,
     pressure: f32,
 }
 
-impl Default for RipplePreview {
+impl Default for KeyboardPreview {
     fn default() -> Self {
         Self {
+            animation: Default::default(),
+            effect_tick: None,
+            effect_seconds: 0.0,
             simulation: RippleSimulation::default(),
             last_tick: None,
             demo: true,
@@ -37,7 +58,21 @@ impl Default for RipplePreview {
     }
 }
 
-impl RipplePreview {
+impl KeyboardPreview {
+    fn effect_time(&mut self, now: f64, timing: PreviewTiming) -> f32 {
+        let seconds = self
+            .animation
+            .set_speed(Duration::from_secs_f64(now.max(0.0)), timing.speed);
+        if self
+            .effect_tick
+            .is_none_or(|last| now - last + 1e-9 >= 1.0 / f64::from(timing.fps.clamp(1, 120)))
+        {
+            self.effect_seconds = seconds;
+            self.effect_tick = Some(now);
+        }
+        self.effect_seconds as f32
+    }
+
     fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -148,11 +183,11 @@ pub fn keyboard(
     palette: &str,
     brightness: u8,
     ripple_colors: RippleColors,
-    fps: u32,
-    ripple_preview: &mut RipplePreview,
+    timing: PreviewTiming,
+    keyboard_preview: &mut KeyboardPreview,
 ) {
     if mode == "ripples" {
-        ripple_preview.show(ui, palette, brightness, ripple_colors, fps);
+        keyboard_preview.show(ui, palette, brightness, ripple_colors, timing.fps);
         return;
     }
     let width = ui.available_width().clamp(400.0, 600.0);
@@ -167,7 +202,7 @@ pub fn keyboard(
     let painter = ui.painter();
     let origin = Pos2::new(space.center().x - width / 2.0, space.top() + unit * 0.25);
     let board = Rect::from_min_size(origin, Vec2::new(width, unit * 7.05));
-    let time = ui.input(|i| i.time) as f32;
+    let time = keyboard_preview.effect_time(ui.input(|i| i.time), timing);
     let accent = effect_color(mode, palette, 0.25);
 
     // Layered chassis and a narrow underside highlight give the board depth
@@ -350,14 +385,16 @@ pub fn keyboard(
         ],
         Stroke::new(2.0, accent.gamma_multiply(f32::from(brightness) / 255.0)),
     );
-    ui.ctx().request_repaint_after(Duration::from_millis(33));
+    ui.ctx().request_repaint_after(Duration::from_secs_f64(
+        1.0 / f64::from(timing.fps.clamp(1, 120)),
+    ));
 }
 
 fn illumination(mode: &str, x: f32, y: f32, time: f32) -> (f32, f32) {
-    let wave = (x * 0.055 + time * 0.1).fract();
+    let wave = (x * 0.055 + time / 30.0).fract();
     let strength = match mode {
         "comet" => {
-            let head = (time * 4.0).rem_euclid(23.0);
+            let head = (time * 2.0).rem_euclid(23.0);
             let behind = head - x - y * 0.5;
             if (0.0..5.0).contains(&behind) {
                 (1.0 - behind / 5.0).powi(2)
@@ -365,10 +402,10 @@ fn illumination(mode: &str, x: f32, y: f32, time: f32) -> (f32, f32) {
                 0.0
             }
         }
-        "rainbow" => 0.58 + 0.22 * (x * 0.3 - time).sin(),
-        "breath" => 0.12 + 0.75 * ((time * 1.5).sin() * 0.5 + 0.5).powi(2),
+        "rainbow" => 0.8,
+        "breath" => 0.12 + 0.75 * (1.0 - (time.rem_euclid(6.0) / 3.0 - 1.0).abs()),
         "matrix" => {
-            let head = (time * 2.5 + (x.floor() * 12.9898).sin() * 7.0).rem_euclid(9.0);
+            let head = (time * 7.5 + (x.floor() * 12.9898).sin() * 7.0).rem_euclid(9.0);
             (1.0 - (head - y).rem_euclid(9.0) / 2.8).max(0.0)
         }
         "focus-cockpit" => {
@@ -419,6 +456,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preview_speed_is_independent_of_fps_and_changes_without_resetting() {
+        for fps in [5, 10, 30, 60, 120] {
+            let mut preview = KeyboardPreview::default();
+            let mut timing = PreviewTiming { fps, speed: 100 };
+            for tick in 0..=fps * 2 {
+                preview.effect_time(f64::from(tick) / f64::from(fps), timing);
+            }
+            assert_eq!(preview.effect_time(2.0, timing), 2.0);
+            timing.speed = 50;
+            assert_eq!(preview.effect_time(2.0, timing), 2.0);
+            assert_eq!(preview.effect_time(4.0, timing), 3.0);
+            timing.fps = 120;
+            assert_eq!(preview.effect_time(6.0, timing), 4.0);
+        }
+    }
+
+    #[test]
     fn fixed_color_previews_ignore_palette_but_palette_effects_respond() {
         let render = |mode: &str, palette: &str| {
             egui::Context::default()
@@ -436,8 +490,8 @@ mod tests {
                                 palette,
                                 255,
                                 (None, None),
-                                30,
-                                &mut RipplePreview::default(),
+                                PreviewTiming::default(),
+                                &mut KeyboardPreview::default(),
                             );
                         });
                     },
@@ -487,8 +541,8 @@ mod tests {
                             "ocean",
                             180,
                             (Some([0, 32, 64]), Some([120, 255, 255])),
-                            30,
-                            &mut RipplePreview::default(),
+                            PreviewTiming::default(),
+                            &mut KeyboardPreview::default(),
                         );
                     });
                 },
@@ -529,9 +583,9 @@ mod tests {
     fn two_tone_preview_keeps_base_between_waves() {
         let base = [10, 40, 90];
         let wave = [200, 120, 40];
-        let mut preview = RipplePreview::default();
+        let mut preview = KeyboardPreview::default();
         let geometry = wooting_80he_geometry();
-        let render = |preview: &RipplePreview| {
+        let render = |preview: &KeyboardPreview| {
             preview.simulation.render(
                 &geometry,
                 |p| palette_gradient("ocean", p),
@@ -555,7 +609,7 @@ mod tests {
     #[test]
     fn ripple_legends_keep_their_color_as_waves_pass() {
         let context = egui::Context::default();
-        let mut preview = RipplePreview::default();
+        let mut preview = KeyboardPreview::default();
         for time in [1.0, 4.0, 4.3] {
             let output = context.run(
                 egui::RawInput {
@@ -571,7 +625,7 @@ mod tests {
                             "ocean",
                             255,
                             (Some([0; 3]), Some([255; 3])),
-                            30,
+                            PreviewTiming::default(),
                             &mut preview,
                         );
                     });

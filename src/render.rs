@@ -123,6 +123,9 @@ impl PaletteName {
 }
 
 impl Palette {
+    pub fn color_count(&self) -> usize {
+        self.colors.len()
+    }
     pub fn sample(&self, tick: u32) -> Color {
         let [r, g, b] = self.colors[usize::try_from(tick).unwrap_or(0) % self.colors.len()];
         Color::new(r, g, b)
@@ -136,6 +139,8 @@ impl Palette {
 
 #[derive(Clone, Debug)]
 pub struct RenderContext<'a> {
+    /// Speed-adjusted elapsed seconds for decorative effects; never a frame count.
+    pub animation_seconds: f64,
     pub info: &'a DeviceInfo,
     pub layout: &'a KeyboardLayout,
     pub brightness: u8,

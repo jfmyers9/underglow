@@ -97,6 +97,9 @@ enum Command {
         /// Animation frames per second.
         #[arg(long, default_value_t = 30)]
         fps: u32,
+        /// Static-effect animation speed in percent; independent of FPS.
+        #[arg(long, default_value_t = wooting_signals::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
+        speed: u32,
     },
     /// Run any named RGB demo effect.
     Effect {
@@ -115,6 +118,9 @@ enum Command {
         /// Animation frames per second.
         #[arg(long, default_value_t = 30)]
         fps: u32,
+        /// Static-effect animation speed in percent; independent of FPS.
+        #[arg(long, default_value_t = wooting_signals::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
+        speed: u32,
     },
     /// Run a signal directly.
     #[command(alias = "extension")]
@@ -163,6 +169,12 @@ enum PreviewCommand {
         /// Number of ticks to render.
         #[arg(long, default_value_t = 3)]
         ticks: u32,
+        /// Sample frames at this rate without changing animation speed.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=120))]
+        fps: u32,
+        /// Animation speed in percent, independent of sampling FPS.
+        #[arg(long, default_value_t = wooting_signals::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
+        speed: u32,
         /// Preview output format.
         #[arg(long, value_enum, default_value_t = PreviewFormat::Ansi)]
         format: PreviewFormat,
@@ -188,6 +200,9 @@ enum SignalCommand {
         /// Animation frames per second.
         #[arg(long, default_value_t = 30)]
         fps: u32,
+        /// Static-effect animation speed in percent; independent of FPS.
+        #[arg(long, default_value_t = wooting_signals::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
+        speed: u32,
         /// Seconds to run static-effect or ripples.
         #[arg(long, default_value_t = 10)]
         seconds: u64,
@@ -356,12 +371,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             brightness,
             seconds,
             fps,
+            speed,
         } => {
             let options = RunOptions {
                 effect: EffectKind::Rainbow,
                 brightness,
                 seconds: Some(seconds),
                 fps,
+                speed,
                 ..RunOptions::default()
             };
             run_keyboard(cli.sdk_path, &options, &interrupted)?;
@@ -372,6 +389,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             brightness,
             seconds,
             fps,
+            speed,
         } => {
             let options = RunOptions {
                 effect,
@@ -379,6 +397,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 brightness,
                 seconds: Some(seconds),
                 fps,
+                speed,
                 continuous: false,
             };
             run_keyboard(cli.sdk_path, &options, &interrupted)?;
@@ -389,9 +408,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 palette,
                 brightness,
                 ticks,
+                fps,
+                speed,
                 format,
             } => {
-                preview::print_effect_preview(effect, palette, brightness, ticks, format);
+                preview::print_effect_preview(
+                    effect, palette, brightness, ticks, fps, speed, format,
+                );
             }
         },
         Command::Signal { command } => match command {
@@ -401,6 +424,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 palette,
                 brightness,
                 fps,
+                speed,
                 seconds,
                 cwd,
                 env,
@@ -447,6 +471,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: Some(seconds),
                             continuous: false,
                         },
@@ -457,6 +482,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: Some(seconds),
                             continuous: false,
                         },
@@ -478,6 +504,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: None,
                             continuous: true,
                         },
@@ -496,6 +523,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: None,
                             continuous: true,
                         },
@@ -513,6 +541,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: None,
                             continuous: true,
                         },
@@ -530,6 +559,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: None,
                             continuous: true,
                         },
@@ -546,6 +576,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: None,
                             continuous: true,
                         },
@@ -560,6 +591,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: None,
                             continuous: true,
                         },
@@ -575,6 +607,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: None,
                             continuous: true,
                         },
@@ -585,6 +618,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             palette,
                             brightness,
                             fps,
+                            speed,
                             seconds: None,
                             continuous: true,
                         },
@@ -704,6 +738,7 @@ fn print_config(config: &AppConfig) {
     println!("  palette: {}", config.palette);
     println!("  brightness: {}", config.brightness);
     println!("  fps: {}", config.fps);
+    println!("  speed: {}%", config.speed);
     println!("  seconds: {:?}", config.seconds);
     println!("  continuous: {}", config.continuous);
     println!("  warn_on_close_error: {}", config.warn_on_close_error);
@@ -918,6 +953,47 @@ fn install_ctrlc_handler() -> Result<Arc<AtomicBool>, ctrlc::Error> {
 #[cfg(test)]
 mod brightness_tests {
     use super::*;
+
+    #[test]
+    fn speed_flags_default_and_validate_independently_of_fps() {
+        for command in [
+            vec!["rainbow"],
+            vec!["effect", "matrix"],
+            vec!["preview", "effect", "matrix"],
+            vec!["signal", "run", "static-effect"],
+        ] {
+            for (extra, expected) in [(vec![], 100), (vec!["--speed", "75", "--fps", "60"], 75)] {
+                let cli = Cli::try_parse_from(
+                    std::iter::once("ws")
+                        .chain(command.iter().copied())
+                        .chain(extra),
+                )
+                .unwrap();
+                let speed = match cli.command {
+                    Command::Rainbow { speed, .. }
+                    | Command::Effect { speed, .. }
+                    | Command::Preview {
+                        command: PreviewCommand::Effect { speed, .. },
+                    }
+                    | Command::Signal {
+                        command: SignalCommand::Run { speed, .. },
+                    } => speed,
+                    _ => panic!("unexpected command"),
+                };
+                assert_eq!(speed, expected);
+            }
+            for invalid in ["0", "9", "401", "-1", "1.5"] {
+                assert!(
+                    Cli::try_parse_from(
+                        std::iter::once("ws")
+                            .chain(command.iter().copied())
+                            .chain(["--speed", invalid])
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
 
     #[test]
     fn cli_brightness_defaults_to_full_and_preserves_overrides() {

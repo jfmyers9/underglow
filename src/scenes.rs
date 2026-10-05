@@ -289,6 +289,7 @@ mod tests {
         let layout = KeyboardLayout::for_device(&info);
         let frame = render_status_wash(
             &RenderContext {
+                animation_seconds: 0.0,
                 info: &info,
                 layout: &layout,
                 brightness: 96,

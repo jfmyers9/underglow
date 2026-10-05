@@ -54,6 +54,9 @@ enum ControlCommand {
         palette: Option<PaletteName>,
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=120))]
         fps: Option<u32>,
+        /// Static-effect speed in percent, independent of rendering FPS.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(10..=400))]
+        speed: Option<u32>,
         /// Background RGB color, six hexadecimal digits (optional #).
         #[arg(long, value_parser = parse_hex_color, conflicts_with = "ripple_palette")]
         ripple_base_color: Option<[u8; 3]>,
@@ -85,6 +88,8 @@ enum Action {
         brightness: Option<u8>,
         palette: Option<String>,
         fps: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speed: Option<u32>,
         ripple_base_color: Option<[u8; 3]>,
         ripple_color: Option<[u8; 3]>,
         #[serde(default)]
@@ -107,6 +112,7 @@ struct Status {
     brightness: u8,
     palette: String,
     fps: u32,
+    speed: u32,
     ripple_base_color: Option<[u8; 3]>,
     ripple_color: Option<[u8; 3]>,
     last_error: Option<String>,
@@ -310,6 +316,7 @@ impl Runtime {
             brightness: self.config.brightness,
             palette: self.config.palette.to_string(),
             fps: self.config.fps,
+            speed: self.config.speed,
             ripple_base_color: selected.ripples.base_color,
             ripple_color: selected.ripples.ripple_color,
             last_error: self.last_error.clone(),
@@ -421,6 +428,7 @@ impl Runtime {
                 brightness,
                 palette,
                 fps,
+                speed,
                 ripple_base_color,
                 ripple_color,
                 ripple_palette,
@@ -437,6 +445,9 @@ impl Runtime {
                 }
                 if let Some(v) = fps {
                     table.insert("fps".into(), toml::Value::Integer(v.into()));
+                }
+                if let Some(v) = speed {
+                    table.insert("speed".into(), toml::Value::Integer(v.into()));
                 }
                 let colors_changed =
                     ripple_base_color.is_some() || ripple_color.is_some() || ripple_palette;
@@ -646,6 +657,7 @@ pub fn control(options: ControlOptions) -> ProgramResult {
                 brightness,
                 palette,
                 fps,
+                speed,
                 ripple_base_color,
                 ripple_color,
                 ripple_palette,
@@ -653,6 +665,7 @@ pub fn control(options: ControlOptions) -> ProgramResult {
                 brightness,
                 palette: palette.map(|v| v.to_string()),
                 fps,
+                speed,
                 ripple_base_color,
                 ripple_color,
                 ripple_palette,
@@ -713,6 +726,7 @@ mod tests {
             "breath",
         ] {
             assert_eq!(validate(&preset(name)).unwrap().brightness, 255, "{name}");
+            assert_eq!(validate(&preset(name)).unwrap().speed, 100, "{name}");
         }
     }
 
@@ -777,10 +791,42 @@ mod tests {
             brightness: None,
             palette: None,
             fps: None,
+            speed: None,
             ripple_base_color: base,
             ripple_color: ripple,
             ripple_palette: reset,
         }
+    }
+
+    #[test]
+    fn speed_updates_are_persistent_validated_and_atomic() {
+        let dir = std::env::temp_dir().join(format!("wooting-speed-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut rt = runtime(preset("matrix"), dir.clone());
+        let settings = |speed| Action::Settings {
+            speed: Some(speed),
+            brightness: Some(73),
+            palette: None,
+            fps: None,
+            ripple_base_color: None,
+            ripple_color: None,
+            ripple_palette: false,
+        };
+        rt.action(settings(50)).unwrap();
+        assert_eq!(rt.status().speed, 50);
+        let before = fs::read(dir.join("state.json")).unwrap();
+        for invalid in [0, 9, 401, u32::MAX] {
+            assert!(rt.action(settings(invalid)).is_err());
+            assert_eq!(rt.status().speed, 50);
+            assert_eq!(fs::read(dir.join("state.json")).unwrap(), before);
+        }
+        let saved: Saved = serde_json::from_slice(&before).unwrap();
+        let config = validate(&saved.config).unwrap();
+        assert_eq!(config.speed, 50);
+        assert_eq!(config.brightness, 73);
+        assert_eq!(config.fps, 30);
+        assert!(!saved.enabled);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -837,6 +883,7 @@ mod tests {
             let info = crate::preview::preview_device();
             let layout = crate::layout::KeyboardLayout::for_device(&info);
             let ctx = crate::render::RenderContext {
+                animation_seconds: 0.0,
                 info: &info,
                 layout: &layout,
                 brightness: 255,

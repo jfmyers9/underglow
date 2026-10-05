@@ -138,6 +138,7 @@ mod tests {
             ..AppAuraConfig::default()
         });
         let frame = signal.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,

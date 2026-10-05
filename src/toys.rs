@@ -67,6 +67,7 @@ fn run_ripples(
         palette: options.palette,
         brightness: options.brightness,
         fps: options.fps,
+        speed: wooting_signals::animation::DEFAULT_SPEED,
         seconds: options.seconds,
         continuous: options.seconds.is_none(),
     };

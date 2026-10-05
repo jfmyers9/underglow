@@ -29,6 +29,46 @@ impl fmt::Display for EffectKind {
 
 impl EffectKind {
     pub fn render(self, ctx: &RenderContext<'_>) -> Frame {
+        // A calm, effect-specific baseline at 100% speed. Interpolate between
+        // logical steps so a high render FPS improves smoothness, not pace.
+        let (steps_per_second, period) = match self {
+            Self::RowTest => return row_test(ctx),
+            Self::Rainbow => (2.0, 60), // 12 degrees/second: a 30-second cycle.
+            Self::Comet => (12.0, ctx.layout.keys().len().max(1) as u32),
+            Self::Matrix => (7.5, u32::from(ctx.info.max_rows.max(1))),
+            Self::Breath => (16.0, 96 * ctx.palette.palette().color_count() as u32),
+        };
+        let phase = (ctx.animation_seconds * steps_per_second).rem_euclid(f64::from(period));
+        let mut sample = ctx.clone();
+        sample.tick = phase.floor() as u32;
+        let mut frame = self.render_step(&sample);
+        let fraction = phase.fract();
+        if fraction > 0.0 {
+            sample.tick = (sample.tick + 1) % period;
+            let next = self.render_step(&sample);
+            for row in 0..crate::render::MAX_ROWS {
+                for column in 0..crate::render::MAX_COLUMNS {
+                    let a = frame.get(row, column);
+                    let b = next.get(row, column);
+                    let blend = |a: u8, b: u8| {
+                        (f64::from(a) + (f64::from(b) - f64::from(a)) * fraction).round() as u8
+                    };
+                    frame.set(
+                        row,
+                        column,
+                        Color::new(
+                            blend(a.red, b.red),
+                            blend(a.green, b.green),
+                            blend(a.blue, b.blue),
+                        ),
+                    );
+                }
+            }
+        }
+        frame
+    }
+
+    fn render_step(self, ctx: &RenderContext<'_>) -> Frame {
         match self {
             Self::RowTest => row_test(ctx),
             Self::Rainbow => rainbow(ctx),
@@ -166,6 +206,65 @@ mod tests {
     use crate::render::{FRAME_BYTES, RenderContext};
     use crate::sdk::rgb::{DeviceInfo, DeviceType, Layout};
 
+    #[test]
+    fn effect_pace_is_elapsed_time_not_render_tick() {
+        let info = info(6, 17);
+        let layout = KeyboardLayout::for_device(&info);
+        for effect in [
+            EffectKind::Rainbow,
+            EffectKind::Comet,
+            EffectKind::Matrix,
+            EffectKind::Breath,
+        ] {
+            let mut context = RenderContext {
+                info: &info,
+                layout: &layout,
+                brightness: 255,
+                palette: PaletteName::Ocean,
+                tick: 0,
+                animation_seconds: 1.25,
+            };
+            let expected = effect.render(&context);
+            for fps in [5, 10, 30, 60, 120] {
+                context.tick = (fps as f64 * 1.25) as u32;
+                assert_eq!(effect.render(&context), expected, "{effect:?} at {fps} FPS");
+            }
+            context.animation_seconds = 0.0;
+            assert_ne!(effect.render(&context), expected, "{effect:?} must animate");
+        }
+    }
+
+    #[test]
+    fn matrix_default_is_seven_and_a_half_rows_per_second_with_substep_blending() {
+        let info = info(6, 17);
+        let layout = KeyboardLayout::for_device(&info);
+        let mut context = RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: 255,
+            palette: PaletteName::Ocean,
+            tick: 3,
+            animation_seconds: 0.4,
+        };
+        assert_eq!(EffectKind::Matrix.render(&context), matrix(&context));
+        context.tick = 0;
+        let start = matrix(&context);
+        context.tick = 1;
+        let end = matrix(&context);
+        context.animation_seconds = 0.5 / 7.5;
+        let between = EffectKind::Matrix.render(&context);
+        assert_ne!(between, start);
+        assert_ne!(between, end);
+        for ((&a, &b), &c) in start
+            .as_bytes()
+            .iter()
+            .zip(end.as_bytes())
+            .zip(between.as_bytes())
+        {
+            assert!((a.min(b)..=a.max(b)).contains(&c));
+        }
+    }
+
     fn info(rows: u8, columns: u8) -> DeviceInfo {
         DeviceInfo {
             connected: true,
@@ -186,6 +285,7 @@ mod tests {
         let info = info(1, 2);
         let layout = KeyboardLayout::for_device(&info);
         let frame = EffectKind::RowTest.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 10,
@@ -208,6 +308,7 @@ mod tests {
             EffectKind::Breath,
         ] {
             let frame = effect.render(&RenderContext {
+                animation_seconds: 0.0,
                 info: &info,
                 layout: &layout,
                 brightness: 96,

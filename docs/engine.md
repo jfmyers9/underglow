@@ -14,11 +14,28 @@ wooting-signals control settings --ripple-base-color 002040 --ripple-color 78fff
 wooting-signals control resume
 wooting-signals control pause
 wooting-signals control select --preset comet
+wooting-signals control settings --speed 100 --fps 30
 wooting-signals control resume
 wooting-signals control stop
 ```
 
 Available built-ins: ripples, comet, rainbow, breath, matrix, focus-cockpit.
+Comet, rainbow, breath and matrix use elapsed-time animation. Root TOML `speed`
+and CLI `--speed` are percentages (10–400, default 100); `fps` only controls their
+render frequency. At 100%, Matrix moves 7.5 rows/second, Comet 12 keys/second,
+rainbow cycles in 30 seconds and breath in 6 seconds. Frames interpolate between
+logical animation steps. Live FPS/speed updates do not reset animation phase,
+reopen the SDK, or replay commands. Speed persists with the other visual settings.
+It also applies to static effects in profiles/scenes; it does not alter ripple
+physics, provider polling, notification lifetimes, or Focus timers. Other status
+pulse animations still use their existing timing.
+
+Older configs without `speed` use 100%. Explicit FPS values are preserved, but
+no longer act as speed controls for these four effects. To slow one down, lower
+Speed rather than FPS; 50% takes twice as long. Foreground `effect`, `rainbow`,
+`signal run`, and `preview effect` accept `--speed`; `preview effect --fps`
+samples deterministic frames at `tick / fps` seconds without opening an SDK.
+
 For the ripple mode, the optional RGB hex colors keep idle keys lit and blend
 pressure-driven waves toward the ripple color. Global brightness scales both.
 `control settings --ripple-palette` restores the original black background and
@@ -98,13 +115,13 @@ No keyboard presses or travel buffers are logged.
 CLI controls emit JSON on stdout and nonzero exit status on failure:
 `{ "ok": true, "error": null, "status": { ... } }`.
 Status includes schema_version, state (paused/active/retrying/error), enabled,
-mode, brightness, palette, fps, last_error, and retry_attempt. Error text can be
+mode, brightness, palette, fps, speed, last_error, and retry_attempt. Error text can be
 present while paused when release/persistence failed; check it before assuming
 restoration succeeded.
 
 One newline-delimited JSON request per socket connection:
 `{"schema_version":1,"action":"status"}`. Actions are status, pause, resume,
-stop, select (config text), and settings (brightness/palette/fps). Unknown
+stop, select (config text), and settings (brightness/palette/fps/speed and ripple colors). Unknown
 versions/actions/settings are rejected. Same-user access is trusted local
 control, including configured command execution. Do not expose this socket over
 a network or place it in a shared directory.

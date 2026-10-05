@@ -7,9 +7,11 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+use wooting_signals::animation::{AnimationClock, DEFAULT_SPEED};
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
+    pub speed: u32,
     pub effect: EffectKind,
     pub palette: PaletteName,
     pub brightness: u8,
@@ -21,6 +23,7 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> Self {
         Self {
+            speed: DEFAULT_SPEED,
             effect: EffectKind::Rainbow,
             palette: PaletteName::Wooting,
             brightness: wooting_signals::DEFAULT_BRIGHTNESS,
@@ -33,6 +36,7 @@ impl Default for RunOptions {
 
 #[derive(Clone, Debug)]
 pub struct SignalRunOptions {
+    pub speed: u32,
     pub palette: PaletteName,
     pub brightness: u8,
     pub fps: u32,
@@ -47,6 +51,7 @@ impl Default for SignalRunOptions {
             palette: run.palette,
             brightness: run.brightness,
             fps: run.fps,
+            speed: run.speed,
             seconds: run.seconds,
             continuous: run.continuous,
         }
@@ -59,6 +64,7 @@ impl From<&RunOptions> for SignalRunOptions {
             palette: options.palette,
             brightness: options.brightness,
             fps: options.fps,
+            speed: options.speed,
             seconds: options.seconds,
             continuous: options.continuous,
         }
@@ -67,6 +73,8 @@ impl From<&RunOptions> for SignalRunOptions {
 
 /// A live mode's RGB session. Call close even after a failed frame.
 pub struct Session {
+    epoch: Instant,
+    animation: AnimationClock,
     keyboard: WootingRgb,
     options: SignalRunOptions,
     deadline: Option<Instant>,
@@ -75,6 +83,9 @@ pub struct Session {
 }
 impl Session {
     pub fn set_visuals(&mut self, options: &SignalRunOptions) {
+        self.animation
+            .set_speed(self.epoch.elapsed(), options.speed);
+        self.options.speed = options.speed;
         self.options.brightness = options.brightness;
         self.options.palette = options.palette;
         self.options.fps = options.fps;
@@ -89,6 +100,9 @@ impl Session {
         }
         if !(1..=120).contains(&options.fps) {
             return Err("fps must be between 1 and 120".into());
+        }
+        if !(10..=400).contains(&options.speed) {
+            return Err("speed must be between 10 and 400 percent".into());
         }
         let deadline = options
             .seconds
@@ -121,7 +135,11 @@ impl Session {
         let deadline = deadline.map(|_| {
             Instant::now() + Duration::from_secs(options.seconds.expect("finite duration"))
         });
+        let mut animation = AnimationClock::default();
+        animation.set_speed(Duration::ZERO, options.speed);
         Ok(Self {
+            epoch: Instant::now(),
+            animation,
             keyboard: keyboard.expect("opened"),
             options: options.clone(),
             deadline,
@@ -146,6 +164,7 @@ impl Session {
             &self.options,
             signal,
             self.tick,
+            self.animation.advance_to(self.epoch.elapsed()),
             interrupted,
         )?;
         self.tick = self.tick.wrapping_add(1);
@@ -207,11 +226,13 @@ fn render_frame(
     options: &SignalRunOptions,
     signal: &mut dyn SignalProgram,
     tick: u32,
+    animation_seconds: f64,
     interrupted: &AtomicBool,
 ) -> ProgramResult {
     signal.tick(interrupted)?;
     let layout = KeyboardLayout::for_device(keyboard.info());
     let frame = signal.render(&RenderContext {
+        animation_seconds,
         info: keyboard.info(),
         layout: &layout,
         brightness: options.brightness,
@@ -256,6 +277,7 @@ fn run_frames(
         .transpose()?;
     let layout = KeyboardLayout::for_device(keyboard.info());
     let mut tick = 0;
+    let epoch = Instant::now();
 
     while !interrupted.load(Ordering::SeqCst)
         && !signal.finished()
@@ -264,6 +286,7 @@ fn run_frames(
         let started = Instant::now();
         signal.tick(interrupted)?;
         let frame = signal.render(&RenderContext {
+            animation_seconds: epoch.elapsed().as_secs_f64() * f64::from(options.speed) / 100.0,
             info: keyboard.info(),
             layout: &layout,
             brightness: options.brightness,

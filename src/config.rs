@@ -18,6 +18,7 @@ pub struct AppConfig {
     pub palette: PaletteName,
     pub brightness: u8,
     pub fps: u32,
+    pub speed: u32,
     pub seconds: Option<u64>,
     pub continuous: bool,
     pub warn_on_close_error: bool,
@@ -154,6 +155,7 @@ impl Default for AppConfig {
             palette: run.palette,
             brightness: run.brightness,
             fps: run.fps,
+            speed: run.speed,
             seconds: run.seconds,
             continuous: false,
             warn_on_close_error: true,
@@ -187,6 +189,11 @@ impl AppConfig {
         if !(1..=120).contains(&self.fps) {
             return Err(ConfigError::Invalid("fps must be between 1 and 120".into()));
         }
+        if !(10..=400).contains(&self.speed) {
+            return Err(ConfigError::Invalid(
+                "speed must be between 10 and 400 percent".into(),
+            ));
+        }
         // The analog SDK is process-global. Never initialize multiple instances
         // through a multi-source profile, even if a scene temporarily hides one.
         if self.signal.is_none()
@@ -209,6 +216,7 @@ impl AppConfig {
             palette: self.palette,
             brightness: self.brightness,
             fps: self.fps,
+            speed: self.speed,
             seconds: self.seconds,
             continuous: self.continuous,
         }
@@ -349,6 +357,7 @@ mod tests {
         legacy.validate().unwrap();
         assert_eq!(legacy.schema_version, 1);
         assert_eq!(legacy.brightness, 255);
+        assert_eq!(legacy.speed, 100);
         for brightness in [0, 42, 96, 180, 255] {
             let explicit: AppConfig =
                 toml::from_str(&format!("brightness = {brightness}")).unwrap();
@@ -362,6 +371,9 @@ mod tests {
             "schema_version = 2",
             "fps = 0",
             "fps = 121",
+            "speed = 0",
+            "speed = 9",
+            "speed = 401",
             "[[sources]]\ntype = 'ripples'\n[[sources]]\ntype = 'ripples'",
         ] {
             let config: AppConfig = toml::from_str(text).unwrap();

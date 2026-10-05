@@ -43,15 +43,22 @@ registers login startup automatically.
   click/hold mapped keys. It uses draft brightness, colors, and FPS; it is not
   live keyboard input or device feedback. Other effects retain illustrative
   previews. Simulation runs while lighting is paused and never opens an SDK.
-- The main page groups **Brightness** (shown as a percentage), **Palette**, and
+- The main page groups **Brightness** (shown as a percentage), **Palette**, **Speed**, and
   **Frame rate** (1–120 FPS) under **Lighting controls**, before the preview and
-  effect cards so frame rate stays visible in compact layouts. More FPS can mean
-  smoother or faster motion, with higher CPU usage: Spectrum, Comet, Matrix, and
-  Breathe advance per tick, while Ripples uses real time. Use **Apply changes** on
+  effect cards so frame rate stays visible in compact layouts. Spectrum, Comet,
+  Matrix, and Breathe use elapsed time: FPS controls sampling smoothness and CPU
+  usage, not animation pace. **Speed** (10–400%) adjusts their pace independently;
+  100% is the calm default. It is hidden for Ripples and Focus, and for older
+  engines that do not report speed support. Ripple physics and Focus timers are
+  unchanged. Use **Apply changes** on
   the main page to save these adjustments. Background polling does not overwrite
   unapplied edits. **Discard changes**, also on the main page, restores the latest
   confirmed engine values locally without fetching them again. Brightness still
   uses the engine's 0–255 range internally.
+- At 100% Speed, Matrix advances 7.5 rows/second, Comet 12 keys/second,
+  Spectrum completes a hue cycle in 30 seconds, and Breathe cycles in 6 seconds.
+  Higher render FPS interpolates between animation steps. Speed edits preserve
+  the current phase rather than restarting the effect; previews use draft speed.
 - **Palette** appears only for Comet, Breathe, and palette-based Ripples.
   Spectrum uses a fixed rainbow; Matrix uses Terminal green; Focus uses fixed
   phase colors. Their previews ignore the selected palette too. Focus previews

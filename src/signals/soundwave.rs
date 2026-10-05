@@ -112,6 +112,7 @@ mod tests {
         let layout = KeyboardLayout::for_device(&info);
         let signal = SoundwaveSignal::new(SoundwaveConfig::default());
         let frame = signal.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,
@@ -133,6 +134,7 @@ mod tests {
             ..SoundwaveConfig::default()
         });
         let frame = signal.render(&RenderContext {
+            animation_seconds: 0.0,
             info: &info,
             layout: &layout,
             brightness: 96,

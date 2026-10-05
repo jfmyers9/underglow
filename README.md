@@ -82,6 +82,11 @@ cargo run -- toy ripples --seconds 20 --brightness 180 --fps 30
 All effects default to **100% brightness (255/255)**. Use `--brightness` to tune it; this
 is a fixed cap, not a reading of or synchronization with Wootility's brightness.
 
+Comet, Spectrum/rainbow, Matrix, and Breathe have a separate **Speed** control
+(10–400%, default 100%). FPS changes smoothness rather than pace. Matrix defaults
+to 7.5 rows/second at any FPS; ripple physics is unchanged. See [GUI controls](docs/gui.md)
+and [engine settings](docs/engine.md) for timing defaults and CLI/TOML options.
+
 **First-version limits:** one connected analog keyboard, **80HE ANSI**. The typing
 block (letters, digits, punctuation, Tab, Caps Lock, Enter, Backspace, Shift and
 Space) launches ripples. Fn/custom keys, function keys and navigation keys do not
