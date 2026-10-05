@@ -65,7 +65,7 @@ enum Command {
     /// Paint a short row test pattern, then reset.
     Test {
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
+        #[arg(long, default_value_t = underglow::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Seconds to keep the pattern visible.
         #[arg(long, default_value_t = 3)]
@@ -80,7 +80,7 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         column: u8,
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
+        #[arg(long, default_value_t = underglow::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Seconds to keep the key visible.
         #[arg(long, default_value_t = 3)]
@@ -89,7 +89,7 @@ enum Command {
     /// Run a device-bounded rainbow animation, then reset.
     Rainbow {
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
+        #[arg(long, default_value_t = underglow::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Seconds to run the animation.
         #[arg(long, default_value_t = 10)]
@@ -98,7 +98,7 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         fps: u32,
         /// Static-effect animation speed in percent; independent of FPS.
-        #[arg(long, default_value_t = wooting_signals::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
+        #[arg(long, default_value_t = underglow::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
         speed: u32,
     },
     /// Run any named RGB demo effect.
@@ -110,7 +110,7 @@ enum Command {
         #[arg(long, value_enum, default_value_t = PaletteName::Wooting)]
         palette: PaletteName,
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
+        #[arg(long, default_value_t = underglow::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Seconds to run the effect.
         #[arg(long, default_value_t = 10)]
@@ -119,7 +119,7 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         fps: u32,
         /// Static-effect animation speed in percent; independent of FPS.
-        #[arg(long, default_value_t = wooting_signals::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
+        #[arg(long, default_value_t = underglow::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
         speed: u32,
     },
     /// Run a signal directly.
@@ -164,7 +164,7 @@ enum PreviewCommand {
         #[arg(long, value_enum, default_value_t = PaletteName::Wooting)]
         palette: PaletteName,
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
+        #[arg(long, default_value_t = underglow::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Number of ticks to render.
         #[arg(long, default_value_t = 3)]
@@ -173,7 +173,7 @@ enum PreviewCommand {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=120))]
         fps: u32,
         /// Animation speed in percent, independent of sampling FPS.
-        #[arg(long, default_value_t = wooting_signals::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
+        #[arg(long, default_value_t = underglow::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
         speed: u32,
         /// Preview output format.
         #[arg(long, value_enum, default_value_t = PreviewFormat::Ansi)]
@@ -195,13 +195,13 @@ enum SignalCommand {
         #[arg(long, value_enum, default_value_t = PaletteName::Wooting)]
         palette: PaletteName,
         /// Maximum RGB channel value.
-        #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
+        #[arg(long, default_value_t = underglow::DEFAULT_BRIGHTNESS)]
         brightness: u8,
         /// Animation frames per second.
         #[arg(long, default_value_t = 30)]
         fps: u32,
         /// Static-effect animation speed in percent; independent of FPS.
-        #[arg(long, default_value_t = wooting_signals::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
+        #[arg(long, default_value_t = underglow::animation::DEFAULT_SPEED, value_parser = clap::value_parser!(u32).range(10..=400))]
         speed: u32,
         /// Seconds to run static-effect or ripples.
         #[arg(long, default_value_t = 10)]

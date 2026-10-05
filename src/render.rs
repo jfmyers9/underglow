@@ -117,7 +117,7 @@ impl PaletteName {
             Self::Terminal => "terminal",
         };
         Palette {
-            colors: wooting_signals::ripple::palette_colors(name),
+            colors: underglow::ripple::palette_colors(name),
         }
     }
 }
@@ -132,7 +132,7 @@ impl Palette {
     }
 
     pub fn gradient(&self, position: u8) -> Color {
-        let [r, g, b] = wooting_signals::ripple::color_gradient(self.colors, position);
+        let [r, g, b] = underglow::ripple::color_gradient(self.colors, position);
         Color::new(r, g, b)
     }
 }

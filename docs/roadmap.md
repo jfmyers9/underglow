@@ -1,4 +1,4 @@
-# Wooting companion lighting app: roadmap
+# Underglow companion lighting app: roadmap
 
 Updated: 2026-10-03
 
@@ -16,8 +16,9 @@ provide an obvious way to return to the keyboard's normal lighting. Interactive
 toys are the center of the product; CI, build feedback, and timers remain useful
 optional modes rather than defining a workstation dashboard.
 
-Keep the existing `wooting-signals` binary and configuration workflows compatible
-where practical. A product rename is not a prerequisite for this roadmap.
+The app is now named Underglow. Preserve existing configuration workflows and
+provide packaged `wooting-signals` executable aliases where practical. Legacy
+state directories and service/lock identities deliberately remain unchanged.
 
 ## Division of responsibility
 

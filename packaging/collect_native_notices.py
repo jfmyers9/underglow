@@ -132,7 +132,7 @@ The captured Homebrew formula records original distribution build flags.
 ## libusb 1.0.30 (LGPL 2.1 or later)
 
 libusb is a separate, dynamically linked dylib; no libusb static objects are
-linked into Wooting Signals. The complete unmodified corresponding upstream
+linked into Underglow. The complete unmodified corresponding upstream
 source archive, COPYING, AUTHORS, INSTALL and Homebrew build recipe accompany
 this inventory. Extract source, then run
 `./configure --disable-dependency-tracking --prefix="$HOME/libusb-local"`

@@ -1,15 +1,15 @@
 # Native controller
 
-`wooting-gui` is an optional Rust/eframe desktop window, not a browser or an SDK
-client. It invokes the **sibling** `wooting-signals` executable for engine/control
-commands and the sibling `wooting-service` helper for login/service management.
+`underglow-gui` is an optional Rust/eframe desktop window, not a browser or an SDK
+client. It invokes the **sibling** `underglow` executable for engine/control
+commands and the sibling `underglow-service` helper for login/service management.
 Install matching versions together; it deliberately does not search `$PATH`.
 
 ## Build and launch
 
 ```sh
 cargo build --features gui --bins
-./target/debug/wooting-gui
+./target/debug/underglow-gui
 ```
 
 Building alone does not start the engine or access keyboard hardware. Ordinary
@@ -19,7 +19,7 @@ build dependencies for X11/Wayland and a working OpenGL desktop. macOS uses the
 native Cocoa window system. Platform service installation is separate; see the
 packaging/service documentation.
 
-On macOS, the **WS** menu-bar item offers **Open controller** and **Quit controller
+On macOS, the **UG** menu-bar item offers **Open controller** and **Quit controller
 (leave engine running)**. Closing the window hides it while the menu-bar item
 remains; use the menu to reopen it or quit. The menu-bar launcher is built only
 on macOS through an optional, GUI-only `tray-icon` dependency.
@@ -105,7 +105,7 @@ requires Python 3; the self-contained macOS app uses a bundled native helper.
 For a separate engine instance:
 
 ```sh
-./target/debug/wooting-gui --state-dir /absolute/path/to/test-state
+./target/debug/underglow-gui --state-dir /absolute/path/to/test-state
 ```
 
 This directory is passed unchanged to engine/control subprocesses. The
@@ -135,8 +135,8 @@ supervised, isolated engine; hardware is disabled unless explicitly requested.
 See [development workflow](dev.md).
 
 ```sh
-cargo test --features gui --bin wooting-gui
-cargo clippy --features gui --bin wooting-gui -- -D warnings
+cargo test --features gui --bin underglow-gui
+cargo clippy --features gui --bin underglow-gui -- -D warnings
 ```
 
 Tests cover response parsing, schema rejection, service diagnostics, exact

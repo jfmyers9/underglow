@@ -121,7 +121,7 @@ impl KeyboardLayout {
     }
 
     fn wooting_80he() -> Self {
-        let keys = wooting_signals::ripple::wooting_80he_geometry()
+        let keys = underglow::ripple::wooting_80he_geometry()
             .into_iter()
             .map(|key| KeyPosition {
                 coord: MatrixCoord {

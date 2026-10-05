@@ -310,7 +310,7 @@ fn get_json(config: &GitHubCiConfig, path: &str, token: Option<&str>) -> Result<
     let mut request = agent
         .get(&url)
         .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", "wooting-signals");
+        .set("User-Agent", "underglow");
     if let Some(token) = token.filter(|token| !token.is_empty()) {
         request = request.set("Authorization", &format!("Bearer {token}"));
     }

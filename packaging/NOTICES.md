@@ -5,7 +5,7 @@ current collected evidence and documented upstream licensing caveat. This
 template is not a release attestation. The macOS verified-inputs gate requires
 hash-bound `audit.json`, the actual application license, and no unresolved findings.
 
-Wooting Signals is declared MIT in Cargo.toml. Retain the project's copyright
+Underglow is declared MIT in Cargo.toml. Retain the project's copyright
 and license text in a release. This project is not an official Wooting product.
 
 ## Wooting RGB SDK

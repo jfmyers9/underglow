@@ -5,18 +5,18 @@ clients use the same versioned, user-private Unix socket; no TCP server runs.
 
 ```sh
 # Foreground engine. A fresh state starts PAUSED, without loading either SDK.
-wooting-signals engine
+underglow engine
 # In another terminal:
-wooting-signals control status
-wooting-signals control select --preset ripples
-wooting-signals control settings --brightness 180 --palette ocean --fps 30
-wooting-signals control settings --ripple-base-color 002040 --ripple-color 78ffff
-wooting-signals control resume
-wooting-signals control pause
-wooting-signals control select --preset comet
-wooting-signals control settings --speed 100 --fps 30
-wooting-signals control resume
-wooting-signals control stop
+underglow control status
+underglow control select --preset ripples
+underglow control settings --brightness 180 --palette ocean --fps 30
+underglow control settings --ripple-base-color 002040 --ripple-color 78ffff
+underglow control resume
+underglow control pause
+underglow control select --preset comet
+underglow control settings --speed 100 --fps 30
+underglow control resume
+underglow control stop
 ```
 
 Available built-ins: ripples, comet, rainbow, breath, matrix, focus-cockpit.
@@ -51,6 +51,11 @@ command presets can execute local commands. Review them first. Settings updates
 do not restart the current mode or rerun its command.
 
 ## State and ownership
+
+These paths and `WOOTING_*` environment variables intentionally keep their
+pre-Underglow names. Reusing the same state and lock files preserves existing
+settings and prevents an older Wooting Signals engine and Underglow from writing
+to the keyboard simultaneously. Do not rename or delete live lock files.
 
 - macOS: `~/Library/Application Support/wooting-signals/runtime`.
 - Linux: `$XDG_STATE_HOME/wooting-signals`, falling back to

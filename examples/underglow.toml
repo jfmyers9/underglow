@@ -1,0 +1,15 @@
+# Example Underglow static-effect profile.
+# Override sdk_path if the library is not in one of the default locations.
+# sdk_path = "external/wooting-rgb-sdk/mac/libwooting-rgb-sdk.dylib"
+
+effect = "comet"
+palette = "cyberpunk"
+brightness = 128
+fps = 30
+seconds = 10
+continuous = false
+warn_on_close_error = true
+
+[signal]
+kind = "static-effect"
+effect = "comet"

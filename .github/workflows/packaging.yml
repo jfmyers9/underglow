@@ -27,9 +27,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo test --locked --all-features
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo build --locked --bin wooting-signals
+      - run: cargo build --locked --bin underglow
       - name: Fixtures and isolated real-engine integration (synthetic SDKs only)
-        run: WOOTING_TEST_BINARY="$PWD/target/debug/wooting-signals" python3 -m unittest discover -s packaging/tests -v
+        run: WOOTING_TEST_BINARY="$PWD/target/debug/underglow" python3 -m unittest discover -s packaging/tests -v
       - name: Shell syntax (no installation or service activation)
         run: for script in scripts/*.sh; do bash -n "$script"; done
       - name: Development watcher fixtures (no GUI or hardware)

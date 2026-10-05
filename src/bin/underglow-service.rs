@@ -15,7 +15,10 @@ fn main() {
         ]
         .contains(&args[0].as_str())
     {
-        Err("usage: wooting-service status|enable|disable|start|stop|remove|prepare-update".into())
+        Err(
+            "usage: underglow-service status|enable|disable|start|stop|remove|prepare-update"
+                .into(),
+        )
     } else {
         dispatch(&args[0])
     };
@@ -53,6 +56,8 @@ mod mac {
         thread,
         time::{Duration, Instant},
     };
+    // Keep the registration identity through the rename: never create a second
+    // login service alongside an older Wooting Signals installation.
     const LABEL: &str = "io.github.jfmyers9.wooting-signals";
     const LIMIT: u64 = 256 * 1024;
     type Result<T> = std::result::Result<T, String>;
@@ -348,7 +353,7 @@ mod mac {
             "status" => return Ok(response(s)),
             "enable" => {
                 if !p.binary.is_file() {
-                    return Err("sibling wooting-signals executable is missing".into());
+                    return Err("sibling underglow executable is missing".into());
                 }
                 // Never bootout/kickstart here, even if an old engine is running.
                 registration(p, true)?;
@@ -363,7 +368,7 @@ mod mac {
                     return Ok(response(s));
                 }
                 if !p.binary.is_file() {
-                    return Err("sibling wooting-signals executable is missing".into());
+                    return Err("sibling underglow executable is missing".into());
                 }
                 if !s.loaded {
                     registration(p, s.enabled)?;
@@ -434,7 +439,7 @@ mod mac {
         let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set")?);
         let binary = std::env::current_exe()
             .map_err(err)?
-            .with_file_name("wooting-signals");
+            .with_file_name("underglow");
         let p = Paths::new(&home, binary, uid)?;
         action(
             verb,
@@ -464,7 +469,7 @@ mod mac {
                 ));
                 fs::create_dir(&root).unwrap();
                 let uid = fs::metadata(&root).unwrap().uid();
-                let binary = root.join("Wooting & Signals.app/Contents/MacOS/wooting-signals");
+                let binary = root.join("Underglow & Test.app/Contents/MacOS/underglow");
                 fs::create_dir_all(binary.parent().unwrap()).unwrap();
                 fs::write(&binary, b"fake").unwrap();
                 let p = Paths::new(&root, binary, uid).unwrap();
@@ -579,13 +584,22 @@ mod mac {
         #[test]
         fn enable_is_next_login_only_and_permissions_are_private() {
             let f = Fixture::new();
+            assert_eq!(LABEL, "io.github.jfmyers9.wooting-signals");
+            assert!(
+                f.p.state
+                    .ends_with("Library/Application Support/wooting-signals/runtime")
+            );
+            assert!(
+                f.p.registration
+                    .ends_with("Library/LaunchAgents/io.github.jfmyers9.wooting-signals.plist")
+            );
             let mut r = Fake::new(&f.p);
             let v = action("enable", &f.p, &mut r, false).unwrap();
             assert_eq!(v["enabled"], true);
             assert_eq!(v["running"], false);
             assert!(r.mutations().is_empty());
             let content = fs::read_to_string(&f.p.registration).unwrap();
-            assert!(content.contains("Wooting &amp; Signals.app"));
+            assert!(content.contains("Underglow &amp; Test.app"));
             assert!(content.contains("<key>WOOTING_STATE_DIR</key>"));
             assert_eq!(
                 fs::metadata(&f.p.state).unwrap().permissions().mode() & 0o777,
@@ -614,7 +628,7 @@ mod mac {
             registration(&f.p, true).unwrap();
             let old = fs::read_to_string(&f.p.registration)
                 .unwrap()
-                .replace("Wooting &amp; Signals.app", "OLD");
+                .replace("Underglow &amp; Test.app", "OLD");
             fs::write(&f.p.registration, old).unwrap();
             r.loaded = true;
             r.running = true;

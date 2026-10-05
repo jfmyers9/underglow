@@ -36,7 +36,7 @@ class FakeSupervisor(dev.Supervisor):
 
 class WatchTests(unittest.TestCase):
     def test_classification(self):
-        self.assertTrue(dev.gui_only({'src/bin/wooting-gui.rs', 'src/bin/gui/preview.rs'}))
+        self.assertTrue(dev.gui_only({'src/bin/underglow-gui.rs', 'src/bin/gui/preview.rs'}))
         for paths in (set(), {'src/engine.rs'}, {'Cargo.lock'},
                       {'src/bin/gui/preview.rs', 'src/main.rs'}, {'build.rs'}):
             self.assertFalse(dev.gui_only(paths))
@@ -90,6 +90,7 @@ class WatchTests(unittest.TestCase):
 
     def test_short_stable_socket_path(self):
         root = Path('/some/' + 'long/' * 100)
+        self.assertTrue(dev.runtime_path(root).name.startswith(f'wsdev-{os.getuid()}-'))
         self.assertEqual(dev.runtime_path(root), dev.runtime_path(root))
         self.assertLess(len(str(dev.runtime_path(root) / 'simulation/control.sock')), 104)
         self.assertNotEqual(dev.runtime_path(root), dev.runtime_path(root / 'other'))
@@ -141,6 +142,32 @@ class WatchTests(unittest.TestCase):
             self.assertEqual(env['WOOTING_RGB_SDK_PATH'], 'explicit/nonexistent/is/authoritative')
             self.assertEqual(env['WOOTING_ANALOG_SDK_PATH'], str(analog))
 
+    def test_sdk_discovery_prefers_new_bundles_and_falls_back_per_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            apps = [Path(directory) / 'system', Path(directory) / 'user']
+            legacy = apps[0] / 'Wooting Signals.app/Contents/Frameworks'
+            user = apps[1] / 'Underglow.app/Contents/Frameworks'
+            system = apps[0] / 'Underglow.app/Contents/Frameworks'
+            for path in (legacy, user, system):
+                path.mkdir(parents=True)
+            rgb = 'libwooting-rgb-sdk.dylib'
+            analog = 'libwooting_analog_sdk_dist.dylib'
+            (legacy / rgb).touch()
+            (legacy / analog).touch()
+            (user / rgb).touch()
+            env = {}
+            dev.discover_sdks(env, apps)
+            self.assertEqual(env['WOOTING_RGB_SDK_PATH'], str(user / rgb))
+            self.assertEqual(env['WOOTING_ANALOG_SDK_PATH'], str(legacy / analog))
+            (system / rgb).touch()
+            env = {}
+            dev.discover_sdks(env, apps)
+            self.assertEqual(env['WOOTING_RGB_SDK_PATH'], str(system / rgb))
+            override = {'WOOTING_RGB_SDK_PATH': '', 'WOOTING_ANALOG_SDK_PATH': 'explicit'}
+            dev.discover_sdks(override, apps)
+            self.assertEqual(override, {'WOOTING_RGB_SDK_PATH': '',
+                                        'WOOTING_ANALOG_SDK_PATH': 'explicit'})
+
     def test_stop_does_not_signal_reaped_pid(self):
         child = mock.Mock()
         child.poll.return_value = 0
@@ -159,6 +186,7 @@ class WatchTests(unittest.TestCase):
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
+        self.assertEqual(dev.BINARIES, ('underglow', 'underglow-gui', 'underglow-service'))
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         binaries = self.root / 'target/debug'
@@ -168,7 +196,7 @@ class LifecycleTests(unittest.TestCase):
             path.write_text(FAKE)
             path.chmod(0o700)
         self.supervisor = FakeSupervisor(self.root, self.root / 'runtime')
-        self.initial = {'src/main.rs': b'one', 'src/bin/wooting-gui.rs': b'one'}
+        self.initial = {'src/main.rs': b'one', 'src/bin/underglow-gui.rs': b'one'}
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(self.supervisor.close)
 
@@ -203,14 +231,14 @@ class LifecycleTests(unittest.TestCase):
         s.rebuild(self.initial)
         engine, gui, generation = s.engine, s.gui, s.engine_generation
         with mock.patch.object(s, 'control', wraps=s.control) as control:
-            s.rebuild(dict(self.initial, **{'src/bin/wooting-gui.rs': b'two'}))
+            s.rebuild(dict(self.initial, **{'src/bin/underglow-gui.rs': b'two'}))
             control.assert_not_called()
         self.assertIs(s.engine, engine)
         self.assertIsNot(s.gui, gui)
         self.assertIsNotNone(gui.poll())
         self.assertTrue(generation.exists())
         self.assertNotEqual(s.gui_generation, generation)
-        self.assertTrue((s.gui_generation / 'wooting-signals').is_file())
+        self.assertTrue((s.gui_generation / 'underglow').is_file())
 
     def test_shared_change_restarts_both_paused_and_preserves_state(self):
         s = self.supervisor
@@ -234,18 +262,18 @@ class LifecycleTests(unittest.TestCase):
         shared = dict(self.initial, **{'src/main.rs': b'two'})
         s.rebuild(shared)
         s.fail = False
-        s.rebuild(dict(shared, **{'src/bin/wooting-gui.rs': b'two'}))
+        s.rebuild(dict(shared, **{'src/bin/underglow-gui.rs': b'two'}))
         self.assertIsNot(s.engine, engine)
 
     def test_build_output_replacement_does_not_change_generation(self):
         s = self.supervisor
         s.rebuild(self.initial)
-        staged = s.engine_generation / 'wooting-signals'
+        staged = s.engine_generation / 'underglow'
         before = staged.read_bytes()
-        (self.root / 'target/debug/wooting-signals').write_text('replacement')
+        (self.root / 'target/debug/underglow').write_text('replacement')
         self.assertEqual(staged.read_bytes(), before)
         self.assertNotEqual(staged.stat().st_ino,
-                            (self.root / 'target/debug/wooting-signals').stat().st_ino)
+                            (self.root / 'target/debug/underglow').stat().st_ino)
 
     def test_shutdown_reaps_owned_processes(self):
         s = self.supervisor
@@ -260,7 +288,7 @@ class LifecycleTests(unittest.TestCase):
         s = self.supervisor
         s.rebuild(self.initial)
         engine, gui = s.engine, s.gui
-        (self.root / 'target/debug/wooting-gui').unlink()
+        (self.root / 'target/debug/underglow-gui').unlink()
         with self.assertRaises(FileNotFoundError):
             s.rebuild(dict(self.initial, **{'src/main.rs': b'two'}))
         self.assertIsNone(engine.poll())

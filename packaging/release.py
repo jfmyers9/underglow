@@ -137,7 +137,7 @@ def validate_notices(directory, native_files):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, default=ROOT / 'target/release/wooting-signals')
+    parser.add_argument('--binary', type=Path, default=ROOT / 'target/release/underglow')
     parser.add_argument('--gui', type=Path, help='optional native GUI binary')
     parser.add_argument('--rgb-sdk', type=Path, required=True)
     parser.add_argument('--analog-sdk', type=Path, required=True)
@@ -158,19 +158,19 @@ def main():
         parser.error('GUI binary missing')
     suffix = 'dylib' if system == 'Darwin' else 'so'
     with tempfile.TemporaryDirectory(prefix='wooting-release-') as temporary:
-        stage = Path(temporary) / 'wooting-signals'
+        stage = Path(temporary) / 'underglow'
         (stage / 'bin').mkdir(parents=True)
-        inputs = [(args.binary, stage / 'bin/wooting-signals'),
+        inputs = [(args.binary, stage / 'bin/underglow'),
                   (args.rgb_sdk, stage / 'lib/wooting-signals' / ('libwooting-rgb-sdk.' + suffix)),
                   (args.analog_sdk, stage / 'lib/wooting-signals' / ('libwooting_analog_sdk_dist.' + suffix))]
         if args.gui:
-            inputs.append((args.gui, stage / 'bin/wooting-gui'))
+            inputs.append((args.gui, stage / 'bin/underglow-gui'))
         origins = bundle_dependencies(stage, system)(inputs)
         validate_notices(args.notices, origins)
         share = stage / 'share/wooting-signals'
         shutil.copytree(args.notices, share)
         shutil.copytree(ROOT / 'examples', share / 'examples')
-        shutil.copy2(ROOT / 'packaging/wooting-service', stage / 'bin/wooting-service')
+        shutil.copy2(ROOT / 'packaging/underglow-service', stage / 'bin/underglow-service')
         shutil.copy2(ROOT / 'packaging/install.py', stage / 'install.py')
         shutil.copy2(ROOT / 'docs/install.md', stage / 'INSTALL.md')
         manifest = {'format': 1, 'system': system, 'architecture': platform.machine(),
@@ -183,7 +183,7 @@ def main():
         (stage / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with tarfile.open(args.output, 'w:gz') as archive:
-            archive.add(stage, arcname='wooting-signals')
+            archive.add(stage, arcname='underglow')
     digest = hashlib.sha256(args.output.read_bytes()).hexdigest()
     args.output.with_name(args.output.name + '.sha256').write_text(digest + '  ' + args.output.name + '\n')
     print(args.output)

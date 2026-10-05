@@ -269,7 +269,7 @@ pub fn fetch_json(api_url: &str, token_env: &str) -> Result<Value, ExternalFetch
     let mut request = agent
         .get(api_url)
         .set("Accept", "application/json")
-        .set("User-Agent", "wooting-signals");
+        .set("User-Agent", "underglow");
     if let Some(token) = token.filter(|token| !token.is_empty()) {
         request = request.set("Authorization", &format!("Bearer {token}"));
     }

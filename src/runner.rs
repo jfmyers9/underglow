@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use wooting_signals::animation::{AnimationClock, DEFAULT_SPEED};
+use underglow::animation::{AnimationClock, DEFAULT_SPEED};
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
@@ -26,7 +26,7 @@ impl Default for RunOptions {
             speed: DEFAULT_SPEED,
             effect: EffectKind::Rainbow,
             palette: PaletteName::Wooting,
-            brightness: wooting_signals::DEFAULT_BRIGHTNESS,
+            brightness: underglow::DEFAULT_BRIGHTNESS,
             fps: 30,
             seconds: Some(10),
             continuous: false,

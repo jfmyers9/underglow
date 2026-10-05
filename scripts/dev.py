@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 
-BINARIES = ('wooting-signals', 'wooting-gui', 'wooting-service')
+BINARIES = ('underglow', 'underglow-gui', 'underglow-service')
 
 
 def snapshot(root):
@@ -38,7 +38,7 @@ def changes(before, after):
 
 
 def gui_only(paths):
-    return bool(paths) and all(p == 'src/bin/wooting-gui.rs' or p.startswith('src/bin/gui/')
+    return bool(paths) and all(p == 'src/bin/underglow-gui.rs' or p.startswith('src/bin/gui/')
                                for p in paths)
 
 
@@ -107,8 +107,11 @@ def discover_sdks(env, app_roots=None):
         ('WOOTING_ANALOG_SDK_PATH', 'libwooting_analog_sdk_dist.dylib'),
     ):
         if key not in env:
-            for root in app_roots:
-                candidate = root / 'Wooting Signals.app/Contents/Frameworks' / name
+            # Prefer either Underglow install over legacy bundles, per library.
+            candidates = (root / app / 'Contents/Frameworks' / name
+                          for app in ('Underglow.app', 'Wooting Signals.app')
+                          for root in app_roots)
+            for candidate in candidates:
                 if candidate.is_file():
                     env[key] = str(candidate)
                     break
@@ -182,7 +185,7 @@ class Supervisor:
         return generation
 
     def control(self, action):
-        args = [str(self.engine_generation / 'wooting-signals'), 'control',
+        args = [str(self.engine_generation / 'underglow'), 'control',
                 '--state-dir', str(self.state), action]
         process = subprocess.Popen(args, cwd=self.root, env=self.env, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, start_new_session=True)
@@ -236,11 +239,11 @@ class Supervisor:
             stop(self.engine)
             self.engine = None
             self.engine_generation = generation
-            self.engine = self.spawn([str(generation / 'wooting-signals'), 'engine',
+            self.engine = self.spawn([str(generation / 'underglow'), 'engine',
                                       '--state-dir', str(self.state), '--paused'], 'engine.log')
             self.ready()
         self.gui_generation = generation
-        self.gui = self.spawn([str(generation / 'wooting-gui'), '--state-dir', str(self.state)],
+        self.gui = self.spawn([str(generation / 'underglow-gui'), '--state-dir', str(self.state)],
                               'gui.log')
         self.applied = current
         self.prune()

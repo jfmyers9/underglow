@@ -8,13 +8,19 @@ Requires Python 3 and the normal Rust GUI build dependencies; no watcher package
 DMG, installation, or login-service changes. The first build may be slow; later
 builds reuse Cargo's incremental `target` cache.
 
+After updating from Wooting Signals to Underglow, stop your existing watcher with
+Ctrl-C and restart `make dev` once (with `DEV_HARDWARE=1` if needed). The running
+Python watcher cannot reload its renamed binary paths. Existing development
+settings and the per-checkout lock namespace are preserved; do not kill unrelated
+processes or delete their locks.
+
 The default is **simulation**: SDK access is blocked. Use the GUI keyboard preview
 to tune ripples without taking over the physical keyboard. Saved selections,
 brightness, FPS, and colors are private to this checkout and mode.
 
 Save Rust/Cargo inputs to rebuild automatically:
 
-- `src/bin/wooting-gui.rs` or `src/bin/gui/**`: restart only the GUI.
+- `src/bin/underglow-gui.rs` or `src/bin/gui/**`: restart only the GUI.
 - Shared code, engine code, Cargo files, or build inputs: restart both owned processes.
 - Compile errors appear in the terminal; the last working processes remain running.
 - Each engine startup/restart is paused; lighting never auto-resumes. GUI-only
@@ -50,8 +56,9 @@ macOS may require permissions for the development process separately from the
 installed app; review any system prompt rather than changing permissions globally.
 
 On macOS, hardware mode discovers the exact SDK libraries in
-`/Applications/Wooting Signals.app/Contents/Frameworks` (then `~/Applications`),
-if installed. It prints its choices and never changes the installed app. Existing
+`/Applications/Underglow.app/Contents/Frameworks` (then `~/Applications/Underglow.app`),
+falling back to `Wooting Signals.app` in those locations for each missing library.
+It prints its choices and never changes the installed app. Existing
 `WOOTING_RGB_SDK_PATH` and `WOOTING_ANALOG_SDK_PATH` overrides take precedence,
 even if invalid. Without a bundle or overrides, normal SDK discovery applies.
 
@@ -59,6 +66,8 @@ even if invalid. Without a bundle or overrides, normal SDK discovery applies.
 
 Startup prints the state/log directories. They live under a mode-0700 short path:
 `/tmp/wsdev-<uid>-<checkout-hash>/`. This avoids macOS Unix-socket path limits.
+The legacy `wsdev` namespace and internal `WOOTING_*` environment variables remain
+unchanged for compatibility and shared hardware ownership safety.
 Settings survive supervisor restarts but may be removed by OS temporary-file
 cleanup. Remove this directory only while the supervisor is stopped to reset the
 development settings. It contains:

@@ -1,23 +1,23 @@
 [package]
-name = "wooting-signals"
+name = "underglow"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Interactive keyboard toys, RGB visualizations, and utilities for Wooting keyboards"
-default-run = "wooting-signals"
+description = "Reactive keyboard lighting and notifications for Wooting keyboards"
+default-run = "underglow"
 
 [features]
 default = []
 gui = ["dep:eframe", "dep:tray-icon"]
 
 [[bin]]
-name = "wooting-gui"
-path = "src/bin/wooting-gui.rs"
+name = "underglow-gui"
+path = "src/bin/underglow-gui.rs"
 required-features = ["gui"]
 
 [[bin]]
-name = "wooting-service"
-path = "src/bin/wooting-service.rs"
+name = "underglow-service"
+path = "src/bin/underglow-service.rs"
 required-features = ["gui"]
 
 [dependencies]

@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 pub type Error = Box<dyn std::error::Error>;
 
 pub fn state_dir() -> Result<PathBuf, Error> {
+    // Compatibility identity, not product branding: changing this also changes
+    // the hardware lease namespace and could allow an older engine to coexist.
     if let Some(path) = std::env::var_os("WOOTING_STATE_DIR") {
         return Ok(path.into());
     }
@@ -62,7 +64,7 @@ impl Lease {
             .mode(0o600)
             .open(&path)?;
         file.try_lock().map_err(|_| {
-            format!("another wooting-signals process holds the {kind} lock; pause or stop it first")
+            format!("another Underglow or legacy Wooting Signals process holds the {kind} lock; stop it first")
         })?;
         Ok(Self { _file: file })
     }

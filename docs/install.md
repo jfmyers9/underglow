@@ -9,16 +9,16 @@ prefix. The older archive/prefix workflow below remains for Linux and CLI users.
 macOS and Linux per-user installs use a dedicated prefix, by default
 `~/.local/opt/wooting-signals`. No sudo, service activation, hardware probe, or
 profile change occurs during installation. Python **3.9+** is required by the
-installer and `wooting-service`; it is a documented system prerequisite, not
+installer and `underglow-service`; it is a documented system prerequisite, not
 bundled. Linux additionally needs a working desktop session for GUI use and
 systemd's user manager for login integration. OS frameworks, glibc/ELF loader,
 GPU drivers, display server, and dynamically discovered platform plugins remain
 system prerequisites. Native linked non-system dependencies are bundled.
 
 ```
-<prefix>/bin/wooting-signals
-<prefix>/bin/wooting-gui                 # optional
-<prefix>/bin/wooting-service             # JSON helper, Python3
+<prefix>/bin/underglow
+<prefix>/bin/underglow-gui                 # optional
+<prefix>/bin/underglow-service             # JSON helper, Python3
 <prefix>/lib/wooting-signals/            # both SDKs + native dependency closure
 <prefix>/share/wooting-signals/          # notices, licenses, examples
 ```
@@ -34,38 +34,53 @@ Verify its `.sha256` against a trusted release source (a checksum is not a
 signature), extract, then:
 
 ```sh
-cd wooting-signals
+cd underglow
 python3 install.py install                    # dry run
 python3 install.py install --apply            # explicit filesystem changes
-~/.local/opt/wooting-signals/bin/wooting-service status
+~/.local/opt/wooting-signals/bin/underglow-service status
 ```
 
 Use `--prefix /absolute/dedicated/directory` to override. Add `<prefix>/bin` to
 PATH yourself; the installer does not alter shell configuration or existing
 binaries in `~/.local/bin`. From a source checkout the equivalent is
-`scripts/install-macos.sh --package /path/to/extracted/wooting-signals --apply`
+`scripts/install-macos.sh --package /path/to/extracted/underglow --apply`
 (or `scripts/install-linux.sh`). The old `--bootstrap` switch is deliberately
 removed: login and immediate start are separate explicit decisions.
 
-With a GUI binary, installation creates `~/Applications/Wooting Signals.app` on
+With a GUI binary, installation creates `~/Applications/Underglow.app` on
 macOS or an XDG user applications desktop entry on Linux. These launch the GUI,
 not a hardware effect. The macOS app is a local launcher, not a self-contained,
 Developer-ID-signed or notarized application. Do not move the installed prefix
-without reinstalling its integration. The optional macOS GUI provides a WS
+without reinstalling its integration. The optional macOS GUI provides a UG
 menu-bar launcher; Linux uses the installed desktop/settings-window fallback.
+
+### Rename compatibility
+
+The default prefix, state paths, service labels, and internal `lib/share`
+directories retain `wooting-signals` deliberately. Installed `wooting-signals`,
+`wooting-gui`, and `wooting-service` are relative symlinks to the new binaries;
+the optional GUI alias is present only when the GUI is installed. Archive
+validation still rejects supplied symlinks; the installer generates these aliases
+after verification. Legacy-only managed prefixes and their owned launchers can
+be upgraded in place. Re-enable login explicitly after upgrading if it was enabled.
+
+For the self-contained old macOS app, follow the
+[Wooting Signals migration steps](macos-release.md#upgrade-from-wooting-signals):
+stop with the old helper, quit, move the old app aside, install Underglow, and
+explicitly refresh enabled login registration. Do not delete application data.
 
 ## Opt-in engine/login control
 
 ```sh
-wooting-service enable     # next-login opt-in; does NOT start now
-wooting-service start      # explicit start now; does NOT opt in at login
-wooting-service status
-wooting-signals control status
-wooting-signals control select --preset ripples
-wooting-signals control resume
-wooting-signals control pause
-wooting-service stop       # stops managed engine; keeps login preference
-wooting-service disable    # stops managed engine and removes login preference
+underglow-service enable     # next-login opt-in; does NOT start now
+underglow-service start      # explicit start now; does NOT opt in at login
+underglow-service status
+underglow control status
+underglow control select --preset ripples
+underglow control resume
+underglow control pause
+underglow-service stop       # stops managed engine; keeps login preference
+underglow-service disable    # stops managed engine and removes login preference
 ```
 
 A fresh engine starts paused. On later starts its saved settings are retained;
@@ -94,14 +109,14 @@ must never be run as root merely to work around permissions.
 
 ## Upgrade and uninstall
 
-First close the GUI, stop any custom-state engine, then `wooting-service stop`
-and `wooting-signals control stop` for any independently started default engine.
+First close the GUI, stop any custom-state engine, then `underglow-service stop`
+and `underglow control stop` for any independently started default engine.
 Install the new extracted archive into the same prefix. Upgrades refuse a
 reachable default engine, stage the new files, then swap the dedicated prefix;
 config/state and login preference remain untouched. Installation never restarts
 an engine. A later explicit start may restore the saved active state.
 
-To uninstall, `wooting-service disable`, stop any foreground engine, then:
+To uninstall, `underglow-service disable`, stop any foreground engine, then:
 
 ```sh
 python3 install.py uninstall --apply          # same --prefix if customized
@@ -110,8 +125,8 @@ python3 install.py uninstall --apply          # same --prefix if customized
 An unmanaged prefix is rejected. Installation/uninstallation also rejects a
 nonempty `WOOTING_STATE_DIR`, so its engine checks cannot target a different
 instance. Uninstall requires removing even an inactive service registration
-with `wooting-service disable`. Config/state/logs remain for reinstall. Old
-pre-engine `~/.local/bin/wooting-{signals,extension,hack}` aliases and legacy
+with `underglow-service disable`. Config/state/logs remain for reinstall. Old
+pre-engine executables or aliases in `~/.local/bin` and legacy
 LaunchAgents are not migrated or removed automatically. Stop/remove those
 manually before using the new engine to avoid two RGB owners.
 
@@ -134,8 +149,8 @@ must cover every native basename, e.g.:
 
 ```json
 {
-  "wooting-signals": "application-and-rust-notices.txt",
-  "wooting-gui": "application-and-rust-notices.txt",
+  "underglow": "application-and-rust-notices.txt",
+  "underglow-gui": "application-and-rust-notices.txt",
   "libwooting-rgb-sdk.dylib": "rgb-notices.txt",
   "libwooting_analog_sdk_dist.dylib": "analog-and-embedded-notices.txt",
   "libhidapi.0.dylib": "hidapi-notices.txt",
@@ -147,9 +162,9 @@ must cover every native basename, e.g.:
 scripts/package-release.sh \
   --rgb-sdk external/wooting-rgb-sdk/mac/libwooting-rgb-sdk.dylib \
   --analog-sdk /verified/analog-0.9.1/release/libwooting_analog_sdk_dist.dylib \
-  --gui target/release/wooting-gui \
+  --gui target/release/underglow-gui \
   --notices /reviewed/release-notices \
-  --output /tmp/wooting-signals-macos-arm64.tar.gz
+  --output /tmp/underglow-macos-arm64.tar.gz
 ```
 
 On Linux use the built `.so` inputs and install build-time `patchelf`. Packaging
@@ -179,8 +194,8 @@ not claims made by the automated fixture tests.
 To include the real packaged-CLI integration checks locally:
 
 ```sh
-cargo build --locked --bin wooting-signals
-WOOTING_TEST_BINARY="$PWD/target/debug/wooting-signals" \
+cargo build --locked --bin underglow
+WOOTING_TEST_BINARY="$PWD/target/debug/underglow" \
   python3 -m unittest discover -s packaging/tests -v
 ```
 

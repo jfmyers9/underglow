@@ -71,7 +71,7 @@ class AppRuntimeIntegration(unittest.TestCase):
                         XDG_STATE_HOME=str(self.home / 's'), XDG_DATA_HOME=str(self.home / 'd'),
                         WOOTING_STATE_DIR=str(self.home / 'state'))
         self.app = self.home / 'Original App.app'
-        self.binary = self.app / 'Contents/MacOS/wooting-signals'
+        self.binary = self.app / 'Contents/MacOS/underglow'
         self.binary.parent.mkdir(parents=True)
         shutil.copy2(Path(os.environ['WOOTING_TEST_BINARY']).resolve(), self.binary)
         self.frameworks = self.app / 'Contents/Frameworks'
@@ -169,7 +169,7 @@ class AppRuntimeIntegration(unittest.TestCase):
         self.app = self.home / 'Moved App.app'
         shutil.move(str(old_app), self.app)
         self.assertFalse(old_app.exists())
-        self.binary = self.app / 'Contents/MacOS/wooting-signals'
+        self.binary = self.app / 'Contents/MacOS/underglow'
         self.frameworks = self.app / 'Contents/Frameworks'
         self.set_allowed_paths()
         self.verify_cli_guard()

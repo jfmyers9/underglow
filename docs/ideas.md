@@ -1,6 +1,6 @@
-# Wooting Signals Ideas
+# Underglow Ideas
 
-Wooting Signals is a data-driven RGB automation app for Wooting keyboards. A signal reads external state, turns it into a small status snapshot, and renders a lighting strategy on the keyboard while Wootility remains responsible for keyboard configuration and baseline profiles.
+Underglow is a data-driven RGB automation app for Wooting keyboards. A signal reads external state, turns it into a small status snapshot, and renders a lighting strategy on the keyboard while Wootility remains responsible for keyboard configuration and baseline profiles.
 
 ## Core vocabulary
 

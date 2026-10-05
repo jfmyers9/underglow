@@ -28,7 +28,7 @@ pub struct RippleOptions {
     #[arg(long, value_enum, default_value_t = PaletteName::Ocean)]
     palette: PaletteName,
     /// Maximum RGB channel value (0–255); independent of Wootility brightness.
-    #[arg(long, default_value_t = wooting_signals::DEFAULT_BRIGHTNESS)]
+    #[arg(long, default_value_t = underglow::DEFAULT_BRIGHTNESS)]
     brightness: u8,
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=120))]
     fps: u32,
@@ -67,7 +67,7 @@ fn run_ripples(
         palette: options.palette,
         brightness: options.brightness,
         fps: options.fps,
-        speed: wooting_signals::animation::DEFAULT_SPEED,
+        speed: underglow::animation::DEFAULT_SPEED,
         seconds: options.seconds,
         continuous: options.seconds.is_none(),
     };
@@ -200,7 +200,7 @@ impl SignalProgram for RippleSignal {
 
 /// Adapter from SDK/layout types to the shared pure renderer.
 #[derive(Default)]
-struct Ripples(wooting_signals::ripple::RippleSimulation);
+struct Ripples(underglow::ripple::RippleSimulation);
 
 impl Ripples {
     fn advance(&mut self, dt: f32, keys: &[AnalogKeyPressure]) {
@@ -218,7 +218,7 @@ impl Ripples {
         let geometry: Vec<_> = layout
             .keys()
             .iter()
-            .map(|key| wooting_signals::ripple::KeyGeometry {
+            .map(|key| underglow::ripple::KeyGeometry {
                 row: key.coord.row,
                 column: key.coord.column,
                 x: key.x,
@@ -246,7 +246,7 @@ impl Ripples {
 
 #[cfg(test)]
 fn hid_coord(code: u16) -> Option<MatrixCoord> {
-    wooting_signals::ripple::hid_coord(code).map(|coord| MatrixCoord {
+    underglow::ripple::hid_coord(code).map(|coord| MatrixCoord {
         row: coord.row,
         column: coord.column,
     })
@@ -305,9 +305,7 @@ mod tests {
     fn brighter_default_preserves_explicit_brightness() {
         for (extra, expected) in [(vec![], 255), (vec!["--brightness", "96"], 96)] {
             let cli = crate::Cli::try_parse_from(
-                ["wooting-signals", "toy", "ripples"]
-                    .into_iter()
-                    .chain(extra),
+                ["underglow", "toy", "ripples"].into_iter().chain(extra),
             )
             .unwrap();
             let crate::Command::Toy {

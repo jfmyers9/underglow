@@ -5,14 +5,42 @@ import platform
 import plistlib
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'packaging'))
 import macos
+
+
+class IconTests(unittest.TestCase):
+    def test_icon_uses_underglow_u_instead_of_the_legacy_w(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            icon = Path(temporary) / 'AppIcon.icns'
+            macos.create_icon(icon)
+            data = icon.read_bytes()
+            self.assertEqual(data[:4], b'icns')
+            self.assertEqual(data[8:12], b'ic07')
+            length = struct.unpack('>I', data[12:16])[0]
+            png = data[16:8 + length]
+            self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')
+            offset, compressed = 8, bytearray()
+            while offset < len(png):
+                size = struct.unpack('>I', png[offset:offset + 4])[0]
+                if png[offset + 4:offset + 8] == b'IDAT':
+                    compressed.extend(png[offset + 8:offset + 8 + size])
+                offset += size + 12
+            pixels = zlib.decompress(compressed)
+            def pixel(x, y):
+                offset = int(y * 128) * (128 * 4 + 1) + 1 + int(x * 128) * 4
+                return tuple(pixels[offset:offset + 4])
+            self.assertEqual(pixel(.28, .35), (118, 235, 198, 255))
+            self.assertEqual(pixel(.50, .68), (118, 235, 198, 255))
+            self.assertEqual(pixel(.50, .40), (21, 29, 38, 255))
 
 
 class BundleTests(unittest.TestCase):
@@ -25,8 +53,8 @@ class BundleTests(unittest.TestCase):
         for name in ('NOTICES.md', 'MPL-2.0.txt'):
             (self.notices / name).write_text('fixture only')
         self.inputs = {}
-        for flag, name in [('binary', 'wooting-signals'), ('gui', 'wooting-gui'),
-                           ('service', 'wooting-service'), ('rgb-sdk', 'libwooting-rgb-sdk.dylib'),
+        for flag, name in [('binary', 'underglow'), ('gui', 'underglow-gui'),
+                           ('service', 'underglow-service'), ('rgb-sdk', 'libwooting-rgb-sdk.dylib'),
                            ('analog-sdk', 'libwooting_analog_sdk_dist.dylib')]:
             path = self.home / name
             path.write_bytes(macos.MACH_MAGICS[0] + b'synthetic fixture')
@@ -36,7 +64,7 @@ class BundleTests(unittest.TestCase):
         flags = [item for flag, path in self.inputs.items() for item in ('--' + flag, str(path))]
         self.args = macos.parser().parse_args(flags + [
             '--notices', str(self.notices), '--output', str(self.home / 'result'),
-            '--version', '1.2.3', '--identifier', 'org.example.wooting-signals',
+            '--version', '1.2.3', '--identifier', 'org.example.underglow',
             '--minimum-os', '13.0', '--architecture', 'arm64', '--verified-inputs'])
         shutil.copy2(ROOT / 'LICENSE', self.notices / 'APPLICATION-LICENSE.txt')
         self.write_audit()
@@ -65,6 +93,15 @@ class BundleTests(unittest.TestCase):
         }
         audit.update(overrides)
         (self.notices / 'audit.json').write_text(json.dumps(audit))
+
+    def test_pre_rename_audit_cannot_authorize_new_names(self):
+        old_names = {'underglow': 'wooting-signals', 'underglow-gui': 'wooting-gui',
+                     'underglow-service': 'wooting-service'}
+        self.write_audit(native_inputs={old_names.get(p.name, p.name): macos.digest(p)
+                                        for p in self.inputs.values()})
+        with self.assertRaisesRegex(RuntimeError, 'native_inputs must exactly match'):
+            macos.build(self.args)
+        self.assertFalse(self.args.output.exists())
 
     def test_audit_missing_rejected(self):
         (self.notices / 'audit.json').unlink()
@@ -192,7 +229,7 @@ class BundleTests(unittest.TestCase):
         self.assertNotIn('not for public distribution', self.image_readme)
         app = self.args.output / macos.APP
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
-        self.assertEqual(info['CFBundleExecutable'], 'wooting-gui')
+        self.assertEqual(info['CFBundleExecutable'], 'underglow-gui')
         self.assertEqual(info['CFBundleShortVersionString'], '1.2.3')
         self.assertEqual(info['LSMinimumSystemVersion'], '13.0')
         self.assertEqual(info['LSApplicationCategoryType'], 'public.app-category.utilities')
@@ -200,21 +237,31 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(info['CFBundleIconFile'], 'AppIcon')
         self.assertEqual((app / 'Contents/Resources/AppIcon.icns').read_bytes()[:4], b'icns')
         self.assertEqual(sorted(p.name for p in (app / 'Contents/MacOS').iterdir()),
-                         ['wooting-gui', 'wooting-service', 'wooting-signals'])
+                         ['underglow', 'underglow-gui', 'underglow-service',
+                          'wooting-gui', 'wooting-service', 'wooting-signals'])
+        self.assertEqual(info['CFBundleName'], 'Underglow')
+        self.assertEqual(info['CFBundleIdentifier'], self.args.identifier)
+        for old, new in [('wooting-signals', 'underglow'),
+                         ('wooting-gui', 'underglow-gui'),
+                         ('wooting-service', 'underglow-service')]:
+            alias = app / 'Contents/MacOS' / old
+            self.assertTrue(alias.is_symlink())
+            self.assertEqual(os.readlink(alias), new)
+            self.assertEqual(alias.resolve(), (app / 'Contents/MacOS' / new).resolve())
         self.assertEqual(len(list((app / 'Contents/Frameworks').iterdir())), 2)
         provenance = json.loads((self.args.output / 'provenance.json').read_text())
         self.assertEqual(provenance['distribution'], 'ad-hoc-unnotarized')
         self.assertEqual(len(provenance['native_inputs']), 5)
-        self.assertIn('Contents/MacOS/wooting-service', provenance['native_inputs'])
+        self.assertIn('Contents/MacOS/underglow-service', provenance['native_inputs'])
         dmg = next(self.args.output.glob('*.dmg'))
         self.assertEqual((self.args.output / 'SHA256SUMS').read_text(), macos.digest(dmg) + '  ' + dmg.name + '\n')
         self.assertFalse(any('attach' in c or 'launchctl' in c or 'notarytool' in c for c in self.calls))
         self.assertFalse(list(self.home.glob('.wooting-macos-*')))
 
     def test_missing_service_license_mapping_rejected(self):
-        del self.mapping['wooting-service']
+        del self.mapping['underglow-service']
         (self.notices / 'native-licenses.json').write_text(json.dumps(self.mapping))
-        with self.assertRaisesRegex(RuntimeError, 'missing native license mapping: wooting-service'):
+        with self.assertRaisesRegex(RuntimeError, 'missing native license mapping: underglow-service'):
             macos.build(self.args)
         self.assertFalse(self.args.output.exists())
 
@@ -224,7 +271,7 @@ class BundleTests(unittest.TestCase):
             macos.build(self.args)
 
     def test_notice_escape_mapping_rejected(self):
-        self.mapping['wooting-service'] = '../wooting-service'
+        self.mapping['underglow-service'] = '../underglow-service'
         (self.notices / 'native-licenses.json').write_text(json.dumps(self.mapping))
         with self.assertRaisesRegex(RuntimeError, 'invalid license'):
             macos.build(self.args)
@@ -321,7 +368,7 @@ class BundleTests(unittest.TestCase):
         library = self.home / 'libfixture.dylib'
         library.write_bytes(macos.MACH_MAGICS[0])
         def dependency(*args):
-            if args[:2] == ('otool', '-L') and Path(args[-1]).name == 'wooting-gui':
+            if args[:2] == ('otool', '-L') and Path(args[-1]).name == 'underglow-gui':
                 return 'fixture:\n\t' + str(library) + ' (compatibility version 1.0.0, current version 1.0.0)'
             return self.fake_run(*args)
         def too_new(*args):
@@ -362,7 +409,7 @@ class BundleTests(unittest.TestCase):
             stage = self.home / binary_dir.replace('/', '-')
             with patch.object(macos.release, 'run', side_effect=fake):
                 origins = macos.release.bundle_dependencies(stage, 'Darwin', library_dir, sign=False)(
-                    [(executable, stage / binary_dir / 'wooting-gui')])
+                    [(executable, stage / binary_dir / 'underglow-gui')])
             self.assertIn(library_dir + '/libfixture.dylib', origins)
             self.assertTrue(any(relative in c for c in self.calls))
 
@@ -405,7 +452,7 @@ class NativeFixtureTests(unittest.TestCase):
             notices.mkdir()
             for name in ('NOTICES.md', 'MPL-2.0.txt'):
                 (notices / name).write_text('Synthetic fixture only, not product license review')
-            names = ['wooting-gui', 'wooting-signals', 'wooting-service',
+            names = ['underglow-gui', 'underglow', 'underglow-service',
                      'libwooting-rgb-sdk.dylib', 'libwooting_analog_sdk_dist.dylib', 'libfixture.dylib']
             (notices / 'native-licenses.json').write_text(json.dumps({name: 'NOTICES.md' for name in names}))
             flags = ['--binary', str(exe), '--gui', str(exe), '--service', str(exe),

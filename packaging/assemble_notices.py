@@ -69,7 +69,7 @@ def assemble(collections, binaries, findings, output):
         (output / 'review-findings.json').write_text(json.dumps(findings, indent=2) + '\n')
         status = 'incomplete' if findings['unresolved'] else 'reviewed'
         (output / 'NOTICES.md').write_text(
-            '# Wooting Signals — licenses and corresponding source\n\n'
+            '# Underglow — licenses and corresponding source\n\n'
             'Copyright (c) 2026 James Myers. Application license: APPLICATION-LICENSE.txt (MIT).\n'
             'This project is not an official Wooting product.\n\n'
             'Release review status: **' + status + '**. See review-findings.json. '
@@ -111,7 +111,7 @@ def main():
     args = parser.parse_args()
     collections = {name: getattr(args, name.replace('-', '_'))
                    for name in ('application-rust', 'analog-rust', 'runtime', 'native')}
-    binaries = {'wooting-signals': args.binary, 'wooting-gui': args.gui, 'wooting-service': args.service}
+    binaries = {'underglow': args.binary, 'underglow-gui': args.gui, 'underglow-service': args.service}
     audit = assemble(collections, binaries, json.loads(args.findings.read_text()), args.output)
     print(f"Notice bundle created; release review: {audit['status']}")
 

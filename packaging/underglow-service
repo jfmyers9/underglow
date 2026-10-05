@@ -25,7 +25,7 @@ def run(args, check=True):
 def paths(system=None, home=None, binary=None):
     system = system or platform.system()
     home = Path(home or Path.home())
-    binary = Path(binary or Path(__file__).resolve().with_name('wooting-signals'))
+    binary = Path(binary or Path(__file__).resolve().with_name('underglow'))
     config = Path(os.environ.get('XDG_CONFIG_HOME', home / '.config'))
     state = (home / 'Library/Application Support/wooting-signals/runtime' if system == 'Darwin'
              else Path(os.environ.get('XDG_STATE_HOME', home / '.local/state')) / 'wooting-signals')
@@ -56,7 +56,7 @@ def write_registration(system, binary, state, registration, enabled):
                 'StandardErrorPath': str(state / 'engine.log')}
         registration.write_bytes(plistlib.dumps(data))
     else:
-        registration.write_text('[Unit]\nDescription=Wooting Signals engine\n\n[Service]\nType=simple\n'
+        registration.write_text('[Unit]\nDescription=Underglow engine\n\n[Service]\nType=simple\n'
                                 + 'ExecStart=' + ' '.join(unit_quote(a) for a in args) + '\n'
                                 + ''.join('Environment=' + unit_quote(k + '=' + v) + '\n' for k, v in env.items())
                                 + 'TimeoutStopSec=15\n\n[Install]\nWantedBy=default.target\n')
@@ -87,7 +87,7 @@ def action(command, system=None, home=None, binary=None):
     if command == 'status':
         return dict(ok=True, supported=True, enabled=enabled, running=running)
     if not binary.is_file():
-        raise RuntimeError('sibling wooting-signals executable is missing')
+        raise RuntimeError('sibling underglow executable is missing')
     domain = 'gui/' + str(os.getuid())
     if command in ('enable', 'start'):
         write_registration(system, binary, state, registration, command == 'enable' or enabled)
@@ -123,7 +123,7 @@ def action(command, system=None, home=None, binary=None):
 def main():
     try:
         if len(sys.argv) != 2 or sys.argv[1] not in ('status', 'enable', 'disable', 'start', 'stop'):
-            raise ValueError('usage: wooting-service status|enable|disable|start|stop')
+            raise ValueError('usage: underglow-service status|enable|disable|start|stop')
         result = action(sys.argv[1])
     except Exception as error:
         result = dict(ok=False, supported=platform.system() in ('Darwin', 'Linux'),

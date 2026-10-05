@@ -24,7 +24,7 @@ run-command-pulse:
 	cargo run -- signal run command-pulse -- make check
 
 config-dry-run:
-	cargo run -- run --config examples/wooting-signals.toml --dry-run
+	cargo run -- run --config examples/underglow.toml --dry-run
 
 command-pulse-dry-run:
 	cargo run -- run --config examples/command-pulse.toml --dry-run

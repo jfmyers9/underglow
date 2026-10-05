@@ -46,9 +46,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo test --locked --all-features
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo build --locked --bin wooting-signals
+      - run: cargo build --locked --bin underglow
       - name: Packaging fixtures (no host install or keyboard access)
-        run: WOOTING_TEST_BINARY="$PWD/target/debug/wooting-signals" python3 -m unittest discover -s packaging/tests -v
+        run: WOOTING_TEST_BINARY="$PWD/target/debug/underglow" python3 -m unittest discover -s packaging/tests -v
       - name: Check shell syntax
         run: for script in scripts/*.sh; do bash -n "$script"; done
       - name: Fetch checksum-pinned reviewed inputs
@@ -68,9 +68,9 @@ jobs:
           case "$architecture" in arm64|x86_64) ;; *) echo 'Unsupported native architecture'; exit 1;; esac
           echo "architecture=$architecture" >> "$GITHUB_OUTPUT"
           scripts/package-macos.sh \
-            --binary "$PWD/target/release/wooting-signals" \
-            --gui "$PWD/target/release/wooting-gui" \
-            --service "$PWD/target/release/wooting-service" \
+            --binary "$PWD/target/release/underglow" \
+            --gui "$PWD/target/release/underglow-gui" \
+            --service "$PWD/target/release/underglow-service" \
             --rgb-sdk "$RUNNER_TEMP/reviewed-inputs/rgb-sdk.dylib" \
             --analog-sdk "$RUNNER_TEMP/reviewed-inputs/analog-sdk.dylib" \
             --notices "$RUNNER_TEMP/reviewed-inputs/notices" \
@@ -85,7 +85,7 @@ jobs:
       # No secrets, signing identities, notarization profiles, or release APIs used.
       - uses: actions/upload-artifact@v4
         with:
-          name: Wooting-Signals-LOCAL-TEST-NOT-NOTARIZED-${{ steps.package.outputs.architecture }}-${{ github.run_number }}
+          name: Underglow-LOCAL-TEST-NOT-NOTARIZED-${{ steps.package.outputs.architecture }}-${{ github.run_number }}
           path: |
             ${{ runner.temp }}/macos-candidate/*.dmg
             ${{ runner.temp }}/macos-candidate/SHA256SUMS

@@ -1,11 +1,18 @@
-# Wooting keyboard playground
+# Underglow
 
-Interactive toys and visualizations for Wooting keyboards. Pick a toy, play, stop,
-and return to your normal lighting. Wootility remains the configuration tool.
+Reactive keyboard lighting and notifications for Wooting keyboards. Choose an
+effect, react to key presses, or show build status, timers, and API alerts through
+light. Wootility remains the keyboard configuration tool.
 
-The binary is still named `wooting-signals` for compatibility. Existing status
-utilities (build feedback, CI, timers, and API alerts) remain available, but the
-main direction is keyboard toys rather than a workstation dashboard.
+Formerly **Wooting Signals**. The CLI is now `underglow`, with `underglow-gui`
+and `underglow-service` companions. This is an independent project, not an
+official Wooting application.
+
+Existing settings, state paths, service identifiers, environment variables, and
+hardware locks retain their legacy names intentionally. Packaged installs provide
+the old executable names as compatibility aliases. See [installation and upgrades](docs/install.md)
+before replacing an installed Wooting Signals app; the rename does not activate
+lighting or enable login startup automatically.
 
 See the [companion app roadmap](docs/roadmap.md) for the Wootility coexistence
 model, macOS/Linux packaging, background engine, configuration, and GUI plan.
@@ -25,7 +32,7 @@ cargo run -- control pause
 ```
 
 Build the optional settings app with `cargo build --features gui --bins`, then
-launch `target/debug/wooting-gui`. Closing its window leaves the engine running.
+launch `target/debug/underglow-gui`. Closing its window leaves the engine running.
 Use Pause to restore/release lighting, or Stop engine to shut it down.
 
 For the faster development loop, run **`make dev`**: incremental rebuilds,
@@ -196,13 +203,13 @@ combinations. Keep the SDK response-size fix in place throughout these tests.
 - **Soundwave**: opt-in desk-toy prototype driven by manual audio levels.
 - **Static effects**: run comet, rainbow, matrix, breath, and row test scenes.
 
-Wooting Signals is **not** a Wootility replacement. Configure firmware, key maps, actuation, rapid trigger, onboard profiles, and baseline lighting in Wootility; run Wooting Signals when you want host-driven overlays.
+Underglow is **not** a Wootility replacement. Configure firmware, key maps, actuation, rapid trigger, onboard profiles, and baseline lighting in Wootility; run Underglow when you want host-driven overlays.
 
 ## Quick start
 
 ### 1. Build the RGB SDK
 
-From the repository root, build the official [`WootingKb/wooting-rgb-sdk`](https://github.com/WootingKb/wooting-rgb-sdk). Wooting Signals loads this library at runtime.
+From the repository root, build the official [`WootingKb/wooting-rgb-sdk`](https://github.com/WootingKb/wooting-rgb-sdk). Underglow loads this library at runtime.
 
 Use the pinned submodule revision (`451f40d` or later), not the v1.8.0 tag.
 It includes the upstream fix for variable-length multi-report responses. Without
@@ -313,7 +320,7 @@ Configuration compatibility and validation:
 Validate without touching the keyboard:
 
 ```sh
-cargo run -- run --config examples/wooting-signals.toml --dry-run
+cargo run -- run --config examples/underglow.toml --dry-run
 cargo run -- run --config examples/command-pulse.toml --dry-run
 cargo run -- run --config examples/github-ci.toml --dry-run
 cargo run -- run --config examples/focus-cockpit.toml --dry-run
@@ -330,7 +337,7 @@ cargo run -- run --config examples/fixture-replay.toml --dry-run --preview --pre
 Run a profile:
 
 ```sh
-cargo run -- run --config examples/wooting-signals.toml
+cargo run -- run --config examples/underglow.toml
 ```
 
 Minimal Command Pulse profile:
@@ -481,7 +488,7 @@ hardware certification is implied by the packaging tests.
 ## Safety and coexistence
 
 - Start with moderate brightness, for example `--brightness 96`.
-- Wooting Signals opens an RGB session and attempts to reset/close it on normal exit and Ctrl-C.
+- Underglow opens an RGB session and attempts to reset/close it on normal exit and Ctrl-C.
 - If Wootility or Wootility Background Service writes RGB at the same time, lighting is effectively last-writer-wins.
 - Long-running profiles should use conservative brightness and polling intervals.
 
@@ -521,4 +528,6 @@ cargo run -- run --config examples/visual-meeting-safe.toml --dry-run --preview
 cargo run -- run --config examples/visual-app-aura.toml --dry-run --preview
 ```
 
-Compatibility aliases `wooting-extension` and `wooting-hack` are retained during migration, but `wooting-signals` is the primary binary name.
+The legacy sample paths `examples/wooting-signals.toml`,
+`examples/wooting-extension.toml`, and `examples/wooting-hack.toml` remain usable.
+New examples and commands use `examples/underglow.toml` and the `underglow` binary.

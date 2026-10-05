@@ -2,9 +2,7 @@
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use std::time::Duration;
-use wooting_signals::ripple::{
-    RippleSimulation, hid_coord, palette_gradient, wooting_80he_geometry,
-};
+use underglow::ripple::{RippleSimulation, hid_coord, palette_gradient, wooting_80he_geometry};
 
 pub type RippleColors = (Option<[u8; 3]>, Option<[u8; 3]>);
 
@@ -18,7 +16,7 @@ impl Default for PreviewTiming {
     fn default() -> Self {
         Self {
             fps: 30,
-            speed: wooting_signals::animation::DEFAULT_SPEED,
+            speed: underglow::animation::DEFAULT_SPEED,
         }
     }
 }
@@ -35,7 +33,7 @@ pub fn fixed_color_note(mode: &str) -> Option<&'static str> {
 }
 
 pub struct KeyboardPreview {
-    animation: wooting_signals::animation::AnimationClock,
+    animation: underglow::animation::AnimationClock,
     effect_tick: Option<f64>,
     effect_seconds: f64,
     simulation: RippleSimulation,

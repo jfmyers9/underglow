@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-const BINARY: &str = env!("CARGO_BIN_EXE_wooting-signals");
+const BINARY: &str = env!("CARGO_BIN_EXE_underglow");
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 struct Mock {
@@ -633,6 +633,125 @@ impl Drop for EngineChild {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+#[test]
+fn renamed_binary_reuses_legacy_default_state_and_lock_namespace() {
+    use std::io::Read;
+    use std::path::Path;
+    let mock = Mock::new();
+    let home = mock.dir.join("h");
+    let xdg = home.join("state");
+    // These strings deliberately describe the OLD application's identity, not
+    // the current crate name. Changing the name must not create a second owner.
+    let state = if cfg!(target_os = "macos") {
+        home.join("Library/Application Support/wooting-signals/runtime")
+    } else {
+        xdg.join("wooting-signals")
+    };
+    fs::create_dir_all(&state).unwrap();
+    fs::write(
+        state.join("state.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1, "enabled": false,
+            "config": "brightness=73\nfps=9\n[signal]\nkind='static-effect'\neffect='matrix'\n"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let command = |binary: &Path| {
+        let mut command = Command::new(binary);
+        command
+            .env_remove("WOOTING_STATE_DIR")
+            .env("HOME", &home)
+            .env("XDG_STATE_HOME", &xdg)
+            .env("WOOTING_DEV_SIMULATION", "1")
+            .env("WOOTING_RGB_SDK_PATH", &mock.library)
+            .env("WOOTING_ANALOG_SDK_PATH", &mock.library)
+            .env("MOCK_LOG", &mock.log);
+        command
+    };
+    let binary = Path::new(BINARY);
+    let legacy = mock.dir.join("wooting-signals");
+    std::os::unix::fs::symlink(binary, &legacy).unwrap();
+    let hardware_lock = fs::File::create(state.join("hardware.lock")).unwrap();
+    hardware_lock.try_lock().unwrap();
+    for executable in [binary, legacy.as_path()] {
+        let denied = command(executable).arg("info").output().unwrap();
+        assert!(!denied.status.success());
+        assert!(String::from_utf8_lossy(&denied.stderr).contains("hardware lock"));
+    }
+    drop(hardware_lock);
+    let engine_lock = fs::File::create(state.join("engine.lock")).unwrap();
+    engine_lock.try_lock().unwrap();
+    let mut denied = EngineChild(
+        command(binary)
+            .arg("engine")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let start = Instant::now();
+    while denied.0.try_wait().unwrap().is_none() && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        denied.0.try_wait().unwrap().is_some(),
+        "renamed engine bypassed the old engine lock"
+    );
+    let mut error = String::new();
+    denied
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut error)
+        .unwrap();
+    assert!(error.contains("engine lock"), "{error}");
+    drop(engine_lock);
+
+    let mut engine = EngineChild(
+        command(binary)
+            .arg("engine")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let start = Instant::now();
+    let status = loop {
+        assert!(engine.0.try_wait().unwrap().is_none());
+        let output = command(&legacy)
+            .args(["control", "status"])
+            .output()
+            .unwrap();
+        if output.status.success() {
+            break serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "legacy state socket was not found"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status["status"]["brightness"], 73);
+    assert_eq!(status["status"]["fps"], 9);
+    assert_eq!(status["status"]["mode"], "matrix");
+    assert_eq!(status["status"]["state"], "paused");
+    assert!(
+        command(&legacy)
+            .args(["control", "stop"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(engine.0.wait().unwrap().success());
+    assert!(
+        mock.calls().is_empty(),
+        "rename compatibility must not initialize SDKs"
+    );
 }
 impl Mock {
     fn engine_command(&self) -> Command {

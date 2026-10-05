@@ -32,7 +32,7 @@ class AssemblyTests(unittest.TestCase):
         sdk_lock = self.collections['native'] / 'notices/analog/Cargo.lock'
         sdk_lock.parent.mkdir(parents=True)
         sdk_lock.write_text('SDK lock')
-        self.binaries = {name: self.home / name for name in ('wooting-signals', 'wooting-gui', 'wooting-service')}
+        self.binaries = {name: self.home / name for name in ('underglow', 'underglow-gui', 'underglow-service')}
         for p in self.binaries.values():
             p.write_bytes(b'fake executable; never run')
         common = dict(schema_version=1, status='complete', unresolved=[])
@@ -86,7 +86,7 @@ class AssemblyTests(unittest.TestCase):
     def test_changed_lock_policy_and_binary_rejected(self):
         for path, error in [(self.root/'Cargo.lock', 'Cargo.lock'),
                             (self.root/'packaging/licenses/rust-overrides.json', 'policy'),
-                            (self.binaries['wooting-gui'], 'binary changed')]:
+                            (self.binaries['underglow-gui'], 'binary changed')]:
             original = path.read_bytes()
             path.write_bytes(b'{}' if 'Cargo.lock' in str(path) else b'{"changed":true}')
             with self.subTest(path=path), self.assertRaisesRegex(ValueError, error):

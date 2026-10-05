@@ -24,7 +24,7 @@ def load(name, path):
     return module
 
 
-service = load('service', ROOT / 'packaging/wooting-service')
+service = load('service', ROOT / 'packaging/underglow-service')
 installer = load('installer', ROOT / 'packaging/install.py')
 release = load('release', ROOT / 'packaging/release.py')
 
@@ -51,10 +51,10 @@ class InstallTests(Isolated):
     def package(self, system, gui=True):
         package = self.home / 'release'
         package.mkdir(exist_ok=True)
-        self.executable(package / 'bin/wooting-signals', 'exit 1')
-        self.executable(package / 'bin/wooting-service', '''printf '%s\\n' '{"ok":true,"supported":true,"enabled":false,"running":false}' ''')
+        self.executable(package / 'bin/underglow', 'exit 1')
+        self.executable(package / 'bin/underglow-service', '''printf '%s\\n' '{"ok":true,"supported":true,"enabled":false,"running":false}' ''')
         if gui:
-            self.executable(package / 'bin/wooting-gui', 'exit 0')
+            self.executable(package / 'bin/underglow-gui', 'exit 0')
         suffix = 'dylib' if system == 'Darwin' else 'so'
         lib = package / 'lib/wooting-signals'
         lib.mkdir(parents=True, exist_ok=True)
@@ -68,6 +68,68 @@ class InstallTests(Isolated):
                               for p in package.rglob('*') if p.is_file() and p.name != 'manifest.json'}}
         (package / 'manifest.json').write_text(json.dumps(manifest))
         return package
+
+    def legacy_prefix(self, system):
+        prefix = self.home / 'installed'
+        self.executable(prefix / 'bin/wooting-signals', 'exit 1')
+        self.executable(prefix / 'bin/wooting-service',
+                        """echo '{"enabled":false,"running":false}'""")
+        self.executable(prefix / 'bin/wooting-gui', 'exit 0')
+        (prefix / installer.MARKER).write_text('{}')
+        if system == 'Darwin':
+            marker = self.home / 'Applications/Wooting Signals.app/Contents/wooting-prefix'
+            marker.parent.mkdir(parents=True)
+            marker.write_text(str(prefix))
+        else:
+            desktop = self.home / 'data/applications/wooting-signals.desktop'
+            desktop.parent.mkdir(parents=True)
+            desktop.write_text(installer.desktop_entry(prefix / 'bin/wooting-gui')
+                               .replace('Name=Underglow', 'Name=Wooting Signals'))
+        return prefix
+
+    def test_legacy_upgrade_and_relative_aliases(self):
+        for system in ('Darwin', 'Linux'):
+            with self.subTest(system=system):
+                prefix = self.legacy_prefix(system)
+                package = self.package(system)
+                installer.install(package, prefix, system, self.home)
+                for old, new in [('wooting-signals', 'underglow'),
+                                 ('wooting-gui', 'underglow-gui'),
+                                 ('wooting-service', 'underglow-service')]:
+                    alias = prefix / 'bin' / old
+                    self.assertTrue(alias.is_symlink())
+                    self.assertEqual(os.readlink(alias), new)
+                    self.assertEqual(alias.resolve(), (prefix / 'bin' / new).resolve())
+                self.assertFalse((self.home / 'Applications/Wooting Signals.app').exists())
+                if system == 'Darwin':
+                    self.assertTrue((self.home / 'Applications/Underglow.app').exists())
+                else:
+                    self.assertIn('Name=Underglow', (self.home / 'data/applications/wooting-signals.desktop').read_text())
+                installer.uninstall(prefix, system, self.home)
+                shutil.rmtree(package)
+
+    def test_legacy_launcher_survives_unrelated_new_app_conflict(self):
+        prefix = self.legacy_prefix('Darwin')
+        app = self.home / 'Applications/Underglow.app'
+        app.mkdir()
+        with self.assertRaisesRegex(RuntimeError, 'unrelated application'):
+            installer.install(self.package('Darwin'), prefix, 'Darwin', self.home)
+        self.assertTrue((self.home / 'Applications/Wooting Signals.app/Contents/wooting-prefix').is_file())
+        self.assertTrue((prefix / 'bin/wooting-signals').is_file())
+        self.assertFalse((prefix / 'bin/underglow').exists())
+
+    def test_legacy_only_uninstall(self):
+        for system in ('Darwin', 'Linux'):
+            with self.subTest(system=system):
+                prefix = self.legacy_prefix(system)
+                installer.uninstall(prefix, system, self.home)
+                self.assertFalse(prefix.exists())
+                self.assertFalse((self.home / 'Applications/Wooting Signals.app').exists())
+
+    def test_optional_gui_does_not_create_dangling_alias(self):
+        prefix = self.home / 'installed'
+        installer.install(self.package('Linux', gui=False), prefix, 'Linux', self.home)
+        self.assertFalse((prefix / 'bin/wooting-gui').is_symlink())
 
     def test_dry_run_has_no_side_effects(self):
         prefix = self.home / 'prefix'
@@ -108,7 +170,7 @@ class InstallTests(Isolated):
 
     def test_hash_mismatch_rejected(self):
         package = self.package('Linux')
-        (package / 'bin/wooting-signals').write_text('modified')
+        (package / 'bin/underglow').write_text('modified')
         with self.assertRaisesRegex(RuntimeError, 'checksum'):
             installer.install(package, self.home / 'installed', 'Linux', self.home)
 
@@ -124,7 +186,7 @@ class InstallTests(Isolated):
         package = self.package('Linux')
         prefix = self.home / 'installed'
         installer.install(package, prefix, 'Linux', self.home)
-        self.executable(prefix / 'bin/wooting-signals', 'exit 0')
+        self.executable(prefix / 'bin/underglow', 'exit 0')
         with self.assertRaisesRegex(RuntimeError, 'stop the engine'):
             installer.install(package, prefix, 'Linux', self.home)
         with self.assertRaisesRegex(RuntimeError, 'reachable'):
@@ -146,28 +208,28 @@ class InstallTests(Isolated):
         package = self.package('Linux')
         prefix = self.home / 'installed'
         installer.install(package, prefix, 'Linux', self.home)
-        original = (prefix / 'bin/wooting-signals').read_bytes()
+        original = (prefix / 'bin/underglow').read_bytes()
         with patch.object(installer, 'integrations', side_effect=RuntimeError('launcher failure')):
             with self.assertRaisesRegex(RuntimeError, 'launcher failure'):
                 installer.install(package, prefix, 'Linux', self.home)
-        self.assertEqual((prefix / 'bin/wooting-signals').read_bytes(), original)
+        self.assertEqual((prefix / 'bin/underglow').read_bytes(), original)
         self.assertFalse(prefix.with_name(prefix.name + '.previous').exists())
 
     def test_mac_launcher_quotes_paths(self):
         prefix = self.home / "space and ' quote"
-        self.executable(prefix / 'bin/wooting-gui', 'exit 0')
+        self.executable(prefix / 'bin/underglow-gui', 'exit 0')
         installer.integrations(prefix, 'Darwin', self.home)
-        app = self.home / 'Applications/Wooting Signals.app'
+        app = self.home / 'Applications/Underglow.app'
         plist = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
-        self.assertEqual(plist['CFBundleExecutable'], 'wooting-gui')
-        subprocess.run(['sh', '-n', str(app / 'Contents/MacOS/wooting-gui')], check=True)
-        self.assertNotIn(str(ROOT), (app / 'Contents/MacOS/wooting-gui').read_text())
+        self.assertEqual(plist['CFBundleExecutable'], 'underglow-gui')
+        subprocess.run(['sh', '-n', str(app / 'Contents/MacOS/underglow-gui')], check=True)
+        self.assertNotIn(str(ROOT), (app / 'Contents/MacOS/underglow-gui').read_text())
 
 
 class ServiceTests(Isolated):
     def setUp(self):
         super().setUp()
-        self.binary = self.executable(self.home / 'prefix/bin/wooting-signals', 'exit 1')
+        self.binary = self.executable(self.home / 'prefix/bin/underglow', 'exit 1')
         self.calls = []
         self.loaded = False
         self.running = False
@@ -260,7 +322,7 @@ class ServiceTests(Isolated):
             run.assert_not_called()
 
     def test_cli_json_errors(self):
-        result = subprocess.run([sys.executable, str(ROOT / 'packaging/wooting-service'), 'invalid'], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, str(ROOT / 'packaging/underglow-service'), 'invalid'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertFalse(json.loads(result.stdout)['ok'])
 
@@ -277,7 +339,7 @@ class ReleaseTests(Isolated):
     def test_linux_recursive_dependency_relocation(self):
         origin = self.home / 'original'
         origin.mkdir()
-        binary = origin / 'wooting-signals'
+        binary = origin / 'underglow'
         binary.write_text('ELF fixture')
         dependency = origin / 'libhidapi.so.0'
         dependency.write_text('ELF fixture dependency')
@@ -298,7 +360,7 @@ class ReleaseTests(Isolated):
             binary, dependency = binary2, dependency2
             stage = self.home / 'stage'
             with patch.object(release, 'run', run):
-                result = release.bundle_dependencies(stage, 'Linux')([(binary, stage / 'bin/wooting-signals')])
+                result = release.bundle_dependencies(stage, 'Linux')([(binary, stage / 'bin/underglow')])
             self.assertIn('lib/wooting-signals/libhidapi.so.0', result)
             self.assertFalse((stage / 'lib/wooting-signals/libc.so.6').exists())
             self.assertTrue(any('$ORIGIN/../lib/wooting-signals' in args for args in calls))
@@ -317,16 +379,16 @@ class ReleaseTests(Isolated):
         (origin / 'main.c').write_text('extern int fixture(void); int main(void) { return fixture(); }')
         library_flags = ['-dynamiclib', '-Wl,-install_name,' + str(dependency)] if system == 'Darwin' else ['-shared', '-fPIC', '-Wl,-soname,' + dependency.name]
         subprocess.run(['cc', *library_flags, str(origin / 'library.c'), '-o', str(dependency)], check=True, capture_output=True)
-        binary = origin / 'wooting-signals'
+        binary = origin / 'underglow'
         flags = ['-Wl,-headerpad_max_install_names'] if system == 'Darwin' else ['-Wl,-rpath,' + str(origin)]
         subprocess.run(['cc', str(origin / 'main.c'), str(dependency), *flags, '-o', str(binary)], check=True, capture_output=True)
         stage = self.home / 'native-stage'
-        result = release.bundle_dependencies(stage, system)([(binary, stage / 'bin/wooting-signals')])
+        result = release.bundle_dependencies(stage, system)([(binary, stage / 'bin/underglow')])
         self.assertIn('lib/wooting-signals/' + dependency.name, result)
         shutil.rmtree(origin)
-        subprocess.run([str(stage / 'bin/wooting-signals')], check=True, capture_output=True)
+        subprocess.run([str(stage / 'bin/underglow')], check=True, capture_output=True)
         if system == 'Darwin':
-            dependencies = release.mac_dependencies(stage / 'bin/wooting-signals')
+            dependencies = release.mac_dependencies(stage / 'bin/underglow')
             self.assertTrue(any(item.startswith('@loader_path/') for item in dependencies))
             self.assertFalse(any('native-origin' in item for item in dependencies))
 
@@ -336,7 +398,7 @@ class ReleaseTests(Isolated):
         stage = self.home / 'stage'
         with patch.object(release, 'run', return_value='libmissing.so => not found'):
             with self.assertRaisesRegex(RuntimeError, 'unresolved ELF'):
-                release.bundle_dependencies(stage, 'Linux')([(binary, stage / 'bin/wooting-signals')])
+                release.bundle_dependencies(stage, 'Linux')([(binary, stage / 'bin/underglow')])
 
     def test_shell_syntax(self):
         for script in (ROOT / 'scripts').glob('*.sh'):

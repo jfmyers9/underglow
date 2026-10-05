@@ -1,5 +1,14 @@
 # macOS dependency notice audit
 
+## Underglow rename
+
+Historical evidence below describes the pre-rename collection, not approval of
+new Underglow artifacts. Recollect application/runtime notices and assemble a new
+hash-bound audit for `underglow`, `underglow-gui`, and `underglow-service`.
+Old receipts do not authorize renamed/rebuilt binaries: packaging requires exact
+native input names and hashes and fails closed on a mismatch. Original license
+wording, upstream SDK names, and historical evidence remain unchanged.
+
 ## Result and scope
 
 The current arm64/macOS inputs have complete **technical notice collection**:
@@ -107,8 +116,8 @@ python3 packaging/collect_native_notices.py \
   --output target/license-audit/native/collected
 
 python3 packaging/collect_runtime_notices.py \
-  --binary target/release/wooting-signals --binary target/release/wooting-gui \
-  --binary target/release/wooting-service --analog-sdk /path/to/analog-sdk.dylib \
+  --binary target/release/underglow --binary target/release/underglow-gui \
+  --binary target/release/underglow-service --analog-sdk /path/to/analog-sdk.dylib \
   --cache target/license-audit/toolchain-sources --output target/license-audit/runtime
 ```
 
@@ -129,8 +138,8 @@ python3 packaging/assemble_notices.py \
   --analog-rust target/license-audit/analog-rust \
   --runtime target/license-audit/runtime \
   --native target/license-audit/native/collected-final \
-  --binary target/release/wooting-signals --gui target/release/wooting-gui \
-  --service target/release/wooting-service --output target/license-audit/notices
+  --binary target/release/underglow --gui target/release/underglow-gui \
+  --service target/release/underglow-service --output target/license-audit/notices
 ```
 
 This validates collection hashes, lockfiles, policy and runtime/binary identity,

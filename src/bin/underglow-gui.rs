@@ -25,7 +25,7 @@ const PRESETS: &[&str] = &[
 ];
 
 #[derive(Parser)]
-#[command(about = "Native controller for the sibling wooting-signals engine")]
+#[command(about = "Native controller for the sibling underglow engine")]
 struct Args {
     /// Use a separate engine state directory (disables system service controls).
     #[arg(long)]
@@ -105,9 +105,9 @@ impl Backend {
     fn command(&self, action: &Action) -> Command {
         let service = matches!(action, Action::Service(_));
         let name = if service {
-            "wooting-service"
+            "underglow-service"
         } else {
-            "wooting-signals"
+            "underglow"
         };
         let mut command = Command::new(
             self.directory
@@ -407,11 +407,11 @@ impl MenuBar {
         menu.append_items(&[&show, &quit])?;
         // Constructed by eframe's app creator on the AppKit main/event-loop thread.
         let icon = tray_icon::TrayIconBuilder::new()
-            .with_title(if development { "WS Dev" } else { "WS" })
+            .with_title(if development { "UG Dev" } else { "UG" })
             .with_tooltip(if development {
-                "Wooting Signals — Dev"
+                "Underglow — Dev"
             } else {
-                "Wooting Signals"
+                "Underglow"
             })
             .with_menu(Box::new(menu))
             .build()?;
@@ -519,10 +519,10 @@ impl Controller {
             custom_state,
             bundled_app,
             preset: "ripples".into(),
-            brightness: wooting_signals::DEFAULT_BRIGHTNESS,
+            brightness: underglow::DEFAULT_BRIGHTNESS,
             palette: "wooting".into(),
             fps: 30,
-            speed: wooting_signals::animation::DEFAULT_SPEED,
+            speed: underglow::animation::DEFAULT_SPEED,
             ripple_colors: RippleColors::default(),
             ripple_colors_dirty: false,
             settings_dirty: false,
@@ -606,9 +606,8 @@ impl Controller {
                                 self.brightness = status.brightness;
                                 self.palette = status.palette.clone();
                                 self.fps = status.fps;
-                                self.speed = status
-                                    .speed
-                                    .unwrap_or(wooting_signals::animation::DEFAULT_SPEED);
+                                self.speed =
+                                    status.speed.unwrap_or(underglow::animation::DEFAULT_SPEED);
                                 self.ripple_colors = RippleColors::from_status(&status);
                             }
                             self.status = Some(status);
@@ -802,9 +801,7 @@ impl Controller {
             self.brightness = status.brightness;
             self.palette = status.palette.clone();
             self.fps = status.fps;
-            self.speed = status
-                .speed
-                .unwrap_or(wooting_signals::animation::DEFAULT_SPEED);
+            self.speed = status.speed.unwrap_or(underglow::animation::DEFAULT_SPEED);
             self.ripple_colors = RippleColors::from_status(status);
             self.settings_dirty = false;
             self.ripple_colors_dirty = false;
@@ -840,7 +837,7 @@ impl Controller {
     }
 
     fn speed_available(&self) -> bool {
-        wooting_signals::animation::supports_speed(&self.preset)
+        underglow::animation::supports_speed(&self.preset)
             && self
                 .status
                 .as_ref()
@@ -858,7 +855,7 @@ impl Controller {
                 ui.label(egui::RichText::new("Startup").strong());
                 ui.small("Closing this window leaves the engine running. Login startup is always opt-in.");
                 #[cfg(target_os = "macos")]
-                if self.menu_bar.is_some() { ui.small("Use the WS menu-bar item to reopen or quit the controller."); }
+                if self.menu_bar.is_some() { ui.small("Use the UG menu-bar item to reopen or quit the controller."); }
                 ui.small("Enable login starts the background engine at your next login, not now. Disable login also stops the managed engine.");
                 if self.custom_state { ui.small("Service controls are unavailable with a custom state directory."); }
                 ui.add_enabled_ui(!self.custom_state, |ui| {
@@ -927,8 +924,8 @@ impl Controller {
     fn show_lighting(&mut self, context: &egui::Context) {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(28)).show(context, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("W /").size(23.0).strong().color(ACCENT));
-                    ui.label(egui::RichText::new("WOOTING SIGNALS").size(12.0).strong().color(MUTED));
+                    ui.label(egui::RichText::new("U /").size(23.0).strong().color(ACCENT));
+                    ui.label(egui::RichText::new("UNDERGLOW").size(12.0).strong().color(MUTED));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Settings").clicked() { self.settings_open = !self.settings_open; }
                     });
@@ -1094,9 +1091,9 @@ fn main() -> eframe::Result {
     };
     eframe::run_native(
         if std::env::var_os("WOOTING_DEV_SUPERVISED").is_some() {
-            "Wooting Signals — Dev"
+            "Underglow — Dev"
         } else {
-            "Wooting Signals"
+            "Underglow"
         },
         options,
         Box::new(move |cc| Ok(Box::new(Controller::new(&cc.egui_ctx, backend)))),
@@ -1203,7 +1200,7 @@ mod tests {
             brightness: 128,
             palette: "ocean".into(),
             fps: 30,
-            speed: wooting_signals::animation::DEFAULT_SPEED,
+            speed: underglow::animation::DEFAULT_SPEED,
             ripple_colors: RippleColors::default(),
             ripple_colors_dirty: false,
             settings_dirty: false,
@@ -1360,7 +1357,7 @@ mod tests {
                 );
                 assert_eq!(
                     has_text("Speed"),
-                    wooting_signals::animation::supports_speed(mode)
+                    underglow::animation::supports_speed(mode)
                 );
                 if let Some(note) = gui_preview::fixed_color_note(mode) {
                     assert!(has_text(note), "fixed-color behavior must be explained");
@@ -1678,7 +1675,7 @@ mod tests {
             command
                 .get_program()
                 .to_string_lossy()
-                .contains("/installed tools/wooting-signals")
+                .contains("/installed tools/underglow")
         );
     }
 
@@ -1787,7 +1784,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .speed
-                .unwrap_or(wooting_signals::animation::DEFAULT_SPEED)
+                .unwrap_or(underglow::animation::DEFAULT_SPEED)
         );
         assert!(!app.ripple_colors.enabled);
         assert!(!app.ripple_colors_dirty);
@@ -1860,7 +1857,7 @@ mod tests {
     #[cfg(unix)]
     fn timeout_stops_helper_descendants() {
         let marker = std::env::temp_dir().join(format!(
-            "wooting-gui-descendant-{}-{}",
+            "underglow-gui-descendant-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1887,9 +1884,9 @@ mod tests {
     fn startup_errors_are_reported_and_logged_without_a_pipe_to_the_window() {
         use std::os::unix::fs::PermissionsExt;
         let directory =
-            std::env::temp_dir().join(format!("wooting-gui-start-{}", std::process::id()));
+            std::env::temp_dir().join(format!("underglow-gui-start-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let binary = directory.join("wooting-signals");
+        let binary = directory.join("underglow");
         std::fs::write(
             &binary,
             "#!/bin/sh\necho fixture-start-failure >&2\nexit 1\n",

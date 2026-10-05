@@ -22,7 +22,7 @@ import zlib
 
 import release
 
-APP = 'Wooting Signals.app'
+APP = 'Underglow.app'
 MACH_MAGICS = (b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf',
                b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca',
                b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca')
@@ -43,7 +43,7 @@ def digest(path):
 
 
 def create_icon(path):
-    """Dependency-free ICNS: dark rounded tile, mint W and keyboard signal bars."""
+    """Dependency-free ICNS: dark rounded tile, mint U and keyboard signal bars."""
     def chunk(kind, payload):
         data = kind + payload
         return struct.pack('>I', len(payload)) + data + struct.pack('>I', zlib.crc32(data))
@@ -51,8 +51,9 @@ def create_icon(path):
     images = []
     for size, kind in ((128, b'ic07'), (256, b'ic08'), (512, b'ic09')):
         rows = bytearray()
-        segments = ((.23, .26, .34, .64), (.34, .64, .50, .40),
-                    (.50, .40, .66, .64), (.66, .64, .77, .26))
+        segments = ((.28, .26, .28, .50), (.28, .50, .34, .64),
+                    (.34, .64, .50, .68), (.50, .68, .66, .64),
+                    (.66, .64, .72, .50), (.72, .50, .72, .26))
         for y in range(size):
             rows.append(0)  # PNG no-filter row
             py = (y + .5) / size
@@ -234,8 +235,8 @@ def build(args):
         frameworks = app / 'Contents/Frameworks'
         resources = app / 'Contents/Resources'
         resources.mkdir(parents=True)
-        inputs = [(args.gui, macos / 'wooting-gui'), (args.binary, macos / 'wooting-signals'),
-                  (args.service, macos / 'wooting-service'),
+        inputs = [(args.gui, macos / 'underglow-gui'), (args.binary, macos / 'underglow'),
+                  (args.service, macos / 'underglow-service'),
                   (args.rgb_sdk, frameworks / 'libwooting-rgb-sdk.dylib'),
                   (args.analog_sdk, frameworks / 'libwooting_analog_sdk_dist.dylib')]
         origins = release.bundle_dependencies(app, 'Darwin', library_dir='Contents/Frameworks', sign=False)(inputs)
@@ -248,8 +249,13 @@ def build(args):
         shutil.copytree(release.ROOT / 'examples', resources / 'examples')
         for path in macos.iterdir():
             path.chmod(0o755)
-        info = {'CFBundleExecutable': 'wooting-gui', 'CFBundleName': 'Wooting Signals',
-                'CFBundleDisplayName': 'Wooting Signals', 'CFBundleIdentifier': args.identifier,
+        # Relative aliases preserve old scripts without duplicating signed binaries.
+        for legacy, canonical in [('wooting-signals', 'underglow'),
+                                  ('wooting-gui', 'underglow-gui'),
+                                  ('wooting-service', 'underglow-service')]:
+            (macos / legacy).symlink_to(canonical)
+        info = {'CFBundleExecutable': 'underglow-gui', 'CFBundleName': 'Underglow',
+                'CFBundleDisplayName': 'Underglow', 'CFBundleIdentifier': args.identifier,
                 'CFBundlePackageType': 'APPL', 'CFBundleInfoDictionaryVersion': '6.0',
                 'CFBundleShortVersionString': args.version, 'CFBundleVersion': args.version,
                 'LSMinimumSystemVersion': args.minimum_os, 'NSHighResolutionCapable': True,
@@ -288,16 +294,19 @@ def build(args):
         shutil.copytree(app, image_root / APP, symlinks=True)
         (image_root / 'Applications').symlink_to('/Applications')
         (image_root / 'READ ME.txt').write_text(
-            'Drag Wooting Signals.app to Applications, then launch it.\n'
+            'Drag Underglow.app to Applications, then launch it.\n'
             'Login startup is optional. Updates: quit the app and stop its engine before replacing.\n'
+            'Upgrading Wooting Signals: run the old app Contents/MacOS/wooting-service prepare-update, wait for success, then quit its WS controller.\n'
+            'Move the stopped old app aside before installing Underglow.app; keep application data.\n'
+            'If login was enabled, explicitly run /Applications/Underglow.app/Contents/MacOS/underglow-service enable to refresh its path.\n'
             + ('LOCAL TEST BUILD: ad-hoc signed, not notarized; not for public distribution.\n'
                if args.local_test else
                'EARLY RELEASE: ad-hoc signed, NOT notarized; publisher identity is not verified.\n'
                'Gatekeeper may block launch. For a download you trust, System Settings > Privacy & Security > Open Anyway may be available.\n'
                'Open Anyway is not guaranteed, especially on managed Macs. Do not disable Gatekeeper.\n'
                if not args.sign_identity else 'Signing status: ' + mode + '\n'))
-        dmg = product / ('Wooting-Signals-' + args.version + '-' + args.architecture + '.dmg')
-        run('hdiutil', 'create', '-volname', 'Wooting Signals', '-srcfolder', image_root,
+        dmg = product / ('Underglow-' + args.version + '-' + args.architecture + '.dmg')
+        run('hdiutil', 'create', '-volname', 'Underglow', '-srcfolder', image_root,
             '-format', 'UDZO', '-ov', dmg)
         if args.sign_identity:
             run('codesign', '--force', '--sign', args.sign_identity, '--timestamp', dmg)

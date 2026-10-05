@@ -6,7 +6,7 @@ environment variables, or separate SDK downloads.
 
 ## Installation and lifecycle
 
-1. Open the `.dmg`, drag **Wooting Signals.app** into **Applications**, eject the
+1. Open the `.dmg`, drag **Underglow.app** into **Applications**, eject the
    image, and launch the installed app. Do not enable login from a disk image.
 2. Click **Start engine**, choose an effect, and **Resume lighting**. Fresh state
    starts paused; existing saved enabled lighting may resume on startup.
@@ -14,7 +14,7 @@ environment variables, or separate SDK downloads.
    Settings. Permissions are never granted automatically.
 
 Closing the window leaves the engine running. Pause returns lighting control;
-the **WS** menu quits the controller. Login startup is always opt-in.
+the **UG** menu quits the controller. Login startup is always opt-in.
 
 - **Settings → Enable login** registers next-login startup without starting now.
   **Advanced engine controls → Start managed service** starts now;
@@ -40,6 +40,28 @@ After license review, an ad-hoc prerelease is an option with explicit warnings;
 Open Anyway may be required and is not guaranteed on managed Macs. Developer ID
 and notarization provide the normal lower-friction public delivery experience.
 
+## Upgrade from Wooting Signals
+
+The new name does not cause Finder to replace the old app automatically.
+
+1. While the old app is still in its installed location, stop its engines:
+   `"/Applications/Wooting Signals.app/Contents/MacOS/wooting-service" prepare-update`.
+   Wait for success, then quit the old controller from its **WS** menu.
+2. Move the stopped old app aside, then install **Underglow.app** in Applications.
+   Do not run both controllers. Keep your existing application data.
+3. If login startup was enabled, explicitly refresh its absolute executable path:
+   `"/Applications/Underglow.app/Contents/MacOS/underglow-service" enable`.
+   This registers next-login startup; it does not start the engine immediately.
+4. Launch Underglow and start the engine explicitly when ready. Once verified,
+   discard the old app bundle (not its application data).
+
+The bundle identifier, LaunchAgent label, and
+`~/Library/Application Support/wooting-signals/runtime` remain deliberately
+unchanged. The new app includes old executable-name aliases for scripts, but
+aliases do not repair a registration pointing at the old app's location.
+macOS may ask for permissions again after the executable/signature changes;
+retaining the bundle identifier does not guarantee existing grants carry over.
+
 ## Build a local candidate
 
 Build on macOS. Python 3.9+ and Apple command-line tools are build-time only.
@@ -48,9 +70,9 @@ Use trusted native inputs and a new output directory (overwrites are rejected):
 ```sh
 cargo build --release --locked --features gui --bins
 scripts/package-macos.sh \
-  --binary target/release/wooting-signals \
-  --gui target/release/wooting-gui \
-  --service target/release/wooting-service \
+  --binary target/release/underglow \
+  --gui target/release/underglow-gui \
+  --service target/release/underglow-service \
   --rgb-sdk /trusted/libwooting-rgb-sdk.dylib \
   --analog-sdk /trusted/libwooting_analog_sdk_dist.dylib \
   --notices /local/candidate-notices \

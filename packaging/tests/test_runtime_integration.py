@@ -1,6 +1,6 @@
 """Opt-in real CLI integration, exclusively using temporary state and synthetic SDKs.
 
-Run after cargo build with WOOTING_TEST_BINARY=/absolute/path/to/wooting-signals.
+Run after cargo build with WOOTING_TEST_BINARY=/absolute/path/to/underglow.
 The authoritative SDK overrides are deliberate: a loader regression must never
 fall through to any SDK installed on a developer's real host.
 """
@@ -35,10 +35,10 @@ class RuntimeIntegration(unittest.TestCase):
                                 XDG_STATE_HOME=str(self.home / 's'), XDG_DATA_HOME=str(self.home / 'd'))
         self.system = platform.system()
         self.package = self.home / 'release'
-        binary = self.package / 'bin/wooting-signals'
+        binary = self.package / 'bin/underglow'
         binary.parent.mkdir(parents=True)
         shutil.copy2(Path(os.environ['WOOTING_TEST_BINARY']).resolve(), binary)
-        shutil.copy2(ROOT / 'packaging/wooting-service', binary.with_name('wooting-service'))
+        shutil.copy2(ROOT / 'packaging/underglow-service', binary.with_name('underglow-service'))
         # Reuse the existing audited hardware-free ABI fixture, not an SDK.
         source = (ROOT / 'tests/toys_cli.rs').read_text().split('const MOCK_C: &str = r#"', 1)[1].split('"#;', 1)[0]
         c_file = self.home / 'mock.c'
@@ -74,7 +74,7 @@ class RuntimeIntegration(unittest.TestCase):
         self.processes = []
         self.addCleanup(self.stop_processes)
         installer.install(self.package, self.prefix, self.system, self.home)
-        self.binary = self.prefix / 'bin/wooting-signals'
+        self.binary = self.prefix / 'bin/underglow'
         self.state = service.paths(self.system, self.home, self.binary)[2]
 
     def manifest(self):
