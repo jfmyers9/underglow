@@ -8,6 +8,17 @@ use wooting_signals::ripple::{
 
 pub type RippleColors = (Option<[u8; 3]>, Option<[u8; 3]>);
 
+pub fn fixed_color_note(mode: &str) -> Option<&'static str> {
+    match mode {
+        "rainbow" => Some("Spectrum uses a fixed rainbow, not a palette."),
+        "matrix" => Some("Matrix uses the fixed Terminal green palette."),
+        "focus-cockpit" => Some(
+            "Focus uses phase colors; the preview illustrates the blue focus phase, not the live timer.",
+        ),
+        _ => None,
+    }
+}
+
 pub struct RipplePreview {
     simulation: RippleSimulation,
     last_tick: Option<f64>,
@@ -157,7 +168,7 @@ pub fn keyboard(
     let origin = Pos2::new(space.center().x - width / 2.0, space.top() + unit * 0.25);
     let board = Rect::from_min_size(origin, Vec2::new(width, unit * 7.05));
     let time = ui.input(|i| i.time) as f32;
-    let accent = palette_color(palette, 0.25);
+    let accent = effect_color(mode, palette, 0.25);
 
     // Layered chassis and a narrow underside highlight give the board depth
     // without overwhelming the key illumination with a neon frame.
@@ -187,7 +198,7 @@ pub fn keyboard(
         );
         let (strength, hue) = illumination(mode, x + w * 0.5, y, time);
         let (color, strength) = (
-            palette_color(palette, hue),
+            effect_color(mode, palette, hue),
             strength * f32::from(brightness) / 255.0,
         );
         if strength > 0.05 {
@@ -381,24 +392,82 @@ fn mix(a: Color32, b: Color32, amount: f32) -> Color32 {
     Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
 }
 
-fn palette_color(palette: &str, phase: f32) -> Color32 {
-    let (a, b) = match palette {
-        "cyberpunk" => ([194, 123, 244], [85, 215, 232]),
-        "heat" => ([248, 119, 84], [246, 206, 118]),
-        "terminal" => ([94, 211, 141], [187, 235, 151]),
-        "ocean" => ([70, 163, 229], [102, 226, 215]),
-        _ => ([109, 230, 189], [101, 180, 235]),
-    };
-    mix(
-        Color32::from_rgb(a[0], a[1], a[2]),
-        Color32::from_rgb(b[0], b[1], b[2]),
-        (phase * std::f32::consts::TAU).sin() * 0.5 + 0.5,
-    )
+fn effect_color(mode: &str, palette: &str, phase: f32) -> Color32 {
+    // Motion remains illustrative, but color choices must respect the runtime.
+    match mode {
+        "rainbow" => Color32::from(egui::ecolor::Hsva::new(
+            phase.rem_euclid(1.0),
+            1.0,
+            1.0,
+            1.0,
+        )),
+        "focus-cockpit" => Color32::from_rgb(0, 180, 255),
+        _ => {
+            let palette = if mode == "matrix" {
+                "terminal"
+            } else {
+                palette
+            };
+            let [r, g, b] = palette_gradient(palette, (phase.rem_euclid(1.0) * 255.0) as u8);
+            Color32::from_rgb(r, g, b)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_color_previews_ignore_palette_but_palette_effects_respond() {
+        let render = |mode: &str, palette: &str| {
+            egui::Context::default()
+                .run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 600.0))),
+                        time: Some(2.5),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            keyboard(
+                                ui,
+                                mode,
+                                palette,
+                                255,
+                                (None, None),
+                                30,
+                                &mut RipplePreview::default(),
+                            );
+                        });
+                    },
+                )
+                .shapes
+        };
+        for mode in ["rainbow", "matrix", "focus-cockpit"] {
+            assert_eq!(render(mode, "ocean"), render(mode, "heat"), "{mode}");
+        }
+        for mode in ["comet", "breath"] {
+            assert_ne!(render(mode, "ocean"), render(mode, "heat"), "{mode}");
+        }
+        assert_eq!(effect_color("rainbow", "ocean", 0.0), Color32::RED);
+        assert_eq!(
+            effect_color("focus-cockpit", "heat", 0.5),
+            Color32::from_rgb(0, 180, 255)
+        );
+        let [r, g, b] = palette_gradient("terminal", 127);
+        assert_eq!(
+            effect_color("matrix", "heat", 0.5),
+            Color32::from_rgb(r, g, b)
+        );
+        for palette in ["wooting", "cyberpunk", "ocean", "heat", "terminal"] {
+            let [r, g, b] = palette_gradient(palette, 127);
+            assert_eq!(
+                effect_color("comet", palette, 0.5),
+                Color32::from_rgb(r, g, b)
+            );
+        }
+    }
 
     #[test]
     fn preview_paints_without_a_window_or_device() {

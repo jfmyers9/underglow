@@ -972,7 +972,7 @@ impl Controller {
                             self.settings_dirty |= changed;
                             self.ripple_colors_dirty |= changed;
                         }
-                        if self.preset != "ripples" || !self.ripple_colors.enabled {
+                        if matches!(self.preset.as_str(), "comet" | "breath") || (self.preset == "ripples" && !self.ripple_colors.enabled) {
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Palette");
                             for (palette, label) in PALETTES.iter().zip(["Wooting", "Neon", "Ocean", "Ember", "Terminal"]) {
@@ -981,6 +981,8 @@ impl Controller {
                                 }
                             }
                         });
+                        } else if let Some(note) = gui_preview::fixed_color_note(&self.preset) {
+                            ui.small(note);
                         }
                         ui.horizontal(|ui| {
                             ui.label("Frame rate");
@@ -1295,6 +1297,47 @@ mod tests {
         );
         app.settings_dirty = false;
         assert_eq!(labels(&frame(&mut app)), before);
+    }
+
+    #[test]
+    fn palette_control_is_only_shown_for_supported_modes() {
+        for mode in PRESETS {
+            for two_tone in [false, true] {
+                let (mut app, _incoming) = controller_fixture();
+                app.preset = (*mode).into();
+                app.ripple_colors.enabled = two_tone;
+                let context = egui::Context::default();
+                configure_style(&context);
+                let output = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(940.0, 850.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| app.show_lighting(ctx),
+                );
+                let has_text = |expected: &str| {
+                    output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == expected))
+                };
+                let supported =
+                    matches!(*mode, "comet" | "breath") || (*mode == "ripples" && !two_tone);
+                assert_eq!(
+                    has_text("Palette"),
+                    supported,
+                    "{mode}, two-tone={two_tone}"
+                );
+                if let Some(note) = gui_preview::fixed_color_note(mode) {
+                    assert!(has_text(note), "fixed-color behavior must be explained");
+                }
+                assert!(
+                    !app.settings_dirty,
+                    "hiding a control must not change settings"
+                );
+                assert_eq!(app.palette, "ocean");
+            }
+        }
     }
 
     #[test]

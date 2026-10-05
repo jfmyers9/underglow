@@ -52,6 +52,11 @@ registers login startup automatically.
   unapplied edits. **Discard changes**, also on the main page, restores the latest
   confirmed engine values locally without fetching them again. Brightness still
   uses the engine's 0–255 range internally.
+- **Palette** appears only for Comet, Breathe, and palette-based Ripples.
+  Spectrum uses a fixed rainbow; Matrix uses Terminal green; Focus uses fixed
+  phase colors. Their previews ignore the selected palette too. Focus previews
+  illustrate the blue focus phase, not the live timer. Other non-ripple motion
+  remains illustrative, even though palette-based colors use the shared palette definitions.
 - For **Ripples**, enable **Two-tone ripple** and choose **Base color** and
   **Ripple color**, then **Apply changes**. Idle keys keep the base color and
   pressure-driven waves blend toward the ripple color before fading back.
