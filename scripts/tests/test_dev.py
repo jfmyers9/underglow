@@ -68,6 +68,16 @@ class WatchTests(unittest.TestCase):
             self.assertEqual(changed, {'examples/ripples.toml'})
             self.assertFalse(dev.gui_only(changed))
 
+    def test_embedded_icon_is_a_gui_only_build_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'assets/icon').mkdir(parents=True)
+            before = dev.snapshot(root)
+            (root / 'assets/icon/underglow-256.png').write_bytes(b'icon fixture')
+            changed = dev.changes(before, dev.snapshot(root))
+            self.assertEqual(changed, {'assets/icon/underglow-256.png'})
+            self.assertTrue(dev.gui_only(changed))
+
     def test_debounce_and_no_retry_storm(self):
         watcher = dev.Watcher({'x': 1})
         self.assertFalse(watcher.poll({'x': 2}, 1))

@@ -1085,6 +1085,7 @@ fn main() -> eframe::Result {
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(application_icon(backend.bundled_app()))
             .with_inner_size([940.0, 850.0])
             .with_min_inner_size([620.0, 640.0]),
         ..Default::default()
@@ -1100,9 +1101,35 @@ fn main() -> eframe::Result {
     )
 }
 
+fn application_icon(bundled_app: bool) -> egui::IconData {
+    if bundled_app {
+        // Keep the bundle's ICNS (including --icon overrides). eframe otherwise
+        // replaces the Dock icon with its own default, even inside a .app.
+        egui::IconData::default()
+    } else {
+        eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon/underglow-256.png"))
+            .expect("checked-in application icon must be a valid PNG")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_icon_preserves_bundle_art_and_has_transparent_margins() {
+        assert_eq!(application_icon(true), egui::IconData::default());
+        let icon = application_icon(false);
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        let alpha = |x: usize, y: usize| icon.rgba[(y * 256 + x) * 4 + 3];
+        for (x, y) in [(0, 0), (255, 0), (0, 255), (255, 255), (128, 8), (8, 128)] {
+            assert_eq!(alpha(x, y), 0);
+        }
+        assert_eq!(alpha(128, 128), 255);
+        assert_eq!(alpha(128, 190), 255); // Keep the glow inside the tile.
+        assert!(icon.rgba.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
+    }
 
     fn painted_text(shape: &egui::Shape, text: &mut String) {
         match shape {

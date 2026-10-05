@@ -15,14 +15,13 @@ import platform
 import plistlib
 import re
 import shutil
-import struct
 import subprocess
 import tempfile
-import zlib
 
 import release
 
 APP = 'Underglow.app'
+DEFAULT_ICON = release.ROOT / 'assets/icon/Underglow.icns'
 MACH_MAGICS = (b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf',
                b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca',
                b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca')
@@ -40,44 +39,6 @@ def digest(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             value.update(block)
         return value.hexdigest()
-
-
-def create_icon(path):
-    """Dependency-free ICNS: dark rounded tile, mint U and keyboard signal bars."""
-    def chunk(kind, payload):
-        data = kind + payload
-        return struct.pack('>I', len(payload)) + data + struct.pack('>I', zlib.crc32(data))
-
-    images = []
-    for size, kind in ((128, b'ic07'), (256, b'ic08'), (512, b'ic09')):
-        rows = bytearray()
-        segments = ((.28, .26, .28, .50), (.28, .50, .34, .64),
-                    (.34, .64, .50, .68), (.50, .68, .66, .64),
-                    (.66, .64, .72, .50), (.72, .50, .72, .26))
-        for y in range(size):
-            rows.append(0)  # PNG no-filter row
-            py = (y + .5) / size
-            for x in range(size):
-                px = (x + .5) / size
-                dx, dy = max(.19 - px, 0, px - .81), max(.19 - py, 0, py - .81)
-                if dx * dx + dy * dy > .14 ** 2:
-                    rows.extend((0, 0, 0, 0))
-                    continue
-                color = (21, 29, 38, 255)
-                for ax, ay, bx, by in segments:
-                    vx, vy = bx - ax, by - ay
-                    t = max(0, min(1, ((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy)))
-                    if (px - ax - t * vx) ** 2 + (py - ay - t * vy) ** 2 < .032 ** 2:
-                        color = (118, 235, 198, 255)
-                if .76 < py < .80 and .24 < px < .76 and int((px - .24) / .065) % 2 == 0:
-                    color = (71, 141, 129, 255)
-                rows.extend(color)
-        png = (b'\x89PNG\r\n\x1a\n'
-               + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 6, 0, 0, 0))
-               + chunk(b'IDAT', zlib.compress(bytes(rows), 9)) + chunk(b'IEND', b''))
-        images.append(kind + struct.pack('>I', len(png) + 8) + png)
-    payload = b''.join(images)
-    path.write_bytes(b'icns' + struct.pack('>I', len(payload) + 8) + payload)
 
 
 def version_tuple(value):
@@ -166,7 +127,8 @@ def parser():
     review.add_argument('--local-test', action='store_true', help='trusted local inputs; license review pending; NOT FOR DISTRIBUTION')
     p.add_argument('--rgb-sdk-version', default='operator-supplied; see input SHA-256')
     p.add_argument('--analog-sdk-version', default='operator-supplied; see input SHA-256')
-    p.add_argument('--icon', type=Path, help='optional .icns file')
+    p.add_argument('--icon', type=Path, default=DEFAULT_ICON,
+                   help='override the bundled Underglow .icns artwork')
     p.add_argument('--sign-identity', help='explicit Developer ID Application identity (not a secret)')
     p.add_argument('--notary-profile', help='existing notarytool keychain profile; sends artifacts to Apple')
     return p
@@ -191,7 +153,7 @@ def validate(args):
         raise RuntimeError('--sign-identity must be a Developer ID Application identity')
     if args.notary_profile and not args.sign_identity:
         raise RuntimeError('notarization requires --sign-identity')
-    if args.icon and (args.icon.suffix != '.icns' or not args.icon.is_file()):
+    if args.icon.suffix != '.icns' or not args.icon.is_file():
         raise RuntimeError('--icon must be an existing .icns file')
     validate_notice_tree(args.notices)
     for path in (args.binary, args.gui, args.service, args.rgb_sdk, args.analog_sdk):
@@ -262,10 +224,7 @@ def build(args):
                 'LSApplicationCategoryType': 'public.app-category.utilities',
                 'NSInputMonitoringUsageDescription': 'Access your Wooting keyboard for lighting and key-travel effects. Key input is not recorded.',
                 'NSHumanReadableCopyright': 'Copyright © 2026 James Myers'}
-        if args.icon:
-            shutil.copy2(args.icon, resources / 'AppIcon.icns')
-        else:
-            create_icon(resources / 'AppIcon.icns')
+        shutil.copy2(args.icon, resources / 'AppIcon.icns')
         info['CFBundleIconFile'] = 'AppIcon'
         (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         mode = 'notarized' if args.notary_profile else ('developer-id-unnotarized' if args.sign_identity else ('ad-hoc-local-test-only' if args.local_test else 'ad-hoc-unnotarized'))

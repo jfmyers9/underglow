@@ -21,6 +21,8 @@ brightness, FPS, and colors are private to this checkout and mode.
 Save Rust/Cargo inputs to rebuild automatically:
 
 - `src/bin/underglow-gui.rs` or `src/bin/gui/**`: restart only the GUI.
+- `assets/icon/underglow-256.png`: update the embedded app/Dock icon and restart
+  only the GUI. The development app uses the same artwork as the Mac bundle.
 - Shared code, engine code, Cargo files, or build inputs: restart both owned processes.
 - Compile errors appear in the terminal; the last working processes remain running.
 - Each engine startup/restart is paused; lighting never auto-resumes. GUI-only

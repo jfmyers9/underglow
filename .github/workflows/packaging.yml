@@ -1,9 +1,9 @@
 name: Packaging fixtures
 on:
   push:
-    paths: ['packaging/**', 'scripts/**', 'src/**', 'tests/toys_cli.rs', 'Cargo.*', 'Makefile', '.github/workflows/packaging.yml']
+    paths: ['packaging/**', 'scripts/**', 'assets/icon/**', 'src/**', 'tests/toys_cli.rs', 'Cargo.*', 'Makefile', '.github/workflows/packaging.yml']
   pull_request:
-    paths: ['packaging/**', 'scripts/**', 'src/**', 'tests/toys_cli.rs', 'Cargo.*', 'Makefile', '.github/workflows/packaging.yml']
+    paths: ['packaging/**', 'scripts/**', 'assets/icon/**', 'src/**', 'tests/toys_cli.rs', 'Cargo.*', 'Makefile', '.github/workflows/packaging.yml']
   workflow_dispatch:
 permissions:
   contents: read

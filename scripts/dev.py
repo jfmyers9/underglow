@@ -24,6 +24,7 @@ def snapshot(root):
     for directory in ('src', '.cargo', 'examples'):
         paths.extend(p for p in (root / directory).rglob('*') if p.is_file())
     paths.append(root / 'external/wooting-rgb-sdk/src/wooting-rgb-sdk.h')
+    paths.append(root / 'assets/icon/underglow-256.png')
     result = {}
     for path in paths:
         try:
@@ -38,7 +39,8 @@ def changes(before, after):
 
 
 def gui_only(paths):
-    return bool(paths) and all(p == 'src/bin/underglow-gui.rs' or p.startswith('src/bin/gui/')
+    return bool(paths) and all(p in ('src/bin/underglow-gui.rs', 'assets/icon/underglow-256.png')
+                               or p.startswith('src/bin/gui/')
                                for p in paths)
 
 

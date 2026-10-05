@@ -9,7 +9,6 @@ import struct
 import sys
 import tempfile
 import unittest
-import zlib
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,29 +17,28 @@ import macos
 
 
 class IconTests(unittest.TestCase):
-    def test_icon_uses_underglow_u_instead_of_the_legacy_w(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            icon = Path(temporary) / 'AppIcon.icns'
-            macos.create_icon(icon)
-            data = icon.read_bytes()
-            self.assertEqual(data[:4], b'icns')
-            self.assertEqual(data[8:12], b'ic07')
-            length = struct.unpack('>I', data[12:16])[0]
-            png = data[16:8 + length]
+    def test_curated_icon_has_retina_representations_and_matches_gui_png(self):
+        data = macos.DEFAULT_ICON.read_bytes()
+        self.assertEqual(data[:4], b'icns')
+        self.assertEqual(struct.unpack('>I', data[4:8])[0], len(data))
+        entries, offset = {}, 8
+        while offset < len(data):
+            kind, length = struct.unpack('>4sI', data[offset:offset + 8])
+            self.assertGreaterEqual(length, 8)
+            self.assertLessEqual(offset + length, len(data))
+            self.assertNotIn(kind, entries)
+            entries[kind] = data[offset + 8:offset + length]
+            offset += length
+        self.assertEqual(offset, len(data))
+        self.assertTrue({b'ic04', b'ic05'} <= entries.keys())  # 16 and 32px
+        for kind, size in [(b'ic11', 32), (b'ic12', 64), (b'ic07', 128),
+                           (b'ic08', 256), (b'ic13', 256), (b'ic09', 512),
+                           (b'ic14', 512), (b'ic10', 1024)]:
+            png = entries[kind]
             self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')
-            offset, compressed = 8, bytearray()
-            while offset < len(png):
-                size = struct.unpack('>I', png[offset:offset + 4])[0]
-                if png[offset + 4:offset + 8] == b'IDAT':
-                    compressed.extend(png[offset + 8:offset + 8 + size])
-                offset += size + 12
-            pixels = zlib.decompress(compressed)
-            def pixel(x, y):
-                offset = int(y * 128) * (128 * 4 + 1) + 1 + int(x * 128) * 4
-                return tuple(pixels[offset:offset + 4])
-            self.assertEqual(pixel(.28, .35), (118, 235, 198, 255))
-            self.assertEqual(pixel(.50, .68), (118, 235, 198, 255))
-            self.assertEqual(pixel(.50, .40), (21, 29, 38, 255))
+            self.assertEqual(struct.unpack('>IIBB', png[16:26]), (size, size, 8, 6))
+        self.assertEqual(entries[b'ic08'], (ROOT / 'assets/icon/underglow-256.png').read_bytes())
+        self.assertEqual(entries[b'ic10'], (ROOT / 'assets/icon/underglow.png').read_bytes())
 
 
 class BundleTests(unittest.TestCase):
@@ -220,6 +218,20 @@ class BundleTests(unittest.TestCase):
             return '{"status":"Accepted"}'
         return ''
 
+    def test_custom_icon_is_copied_without_replacement(self):
+        custom = self.home / 'custom.icns'
+        custom.write_bytes(b'icns-custom-icon-fixture')
+        self.args.icon = custom
+        macos.build(self.args)
+        bundled = self.args.output / macos.APP / 'Contents/Resources/AppIcon.icns'
+        self.assertEqual(bundled.read_bytes(), custom.read_bytes())
+
+    def test_missing_default_icon_fails_instead_of_using_a_placeholder(self):
+        self.args.icon = self.home / 'missing.icns'
+        with self.assertRaisesRegex(RuntimeError, 'existing .icns'):
+            macos.build(self.args)
+        self.assertFalse(self.args.output.exists())
+
     def test_self_contained_layout_metadata_and_no_host_actions(self):
         macos.build(self.args)
         provenance = json.loads((self.args.output / 'provenance.json').read_text())
@@ -235,7 +247,8 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(info['LSApplicationCategoryType'], 'public.app-category.utilities')
         self.assertIn('Key input is not recorded', info['NSInputMonitoringUsageDescription'])
         self.assertEqual(info['CFBundleIconFile'], 'AppIcon')
-        self.assertEqual((app / 'Contents/Resources/AppIcon.icns').read_bytes()[:4], b'icns')
+        self.assertEqual((app / 'Contents/Resources/AppIcon.icns').read_bytes(),
+                         macos.DEFAULT_ICON.read_bytes())
         self.assertEqual(sorted(p.name for p in (app / 'Contents/MacOS').iterdir()),
                          ['underglow', 'underglow-gui', 'underglow-service',
                           'wooting-gui', 'wooting-service', 'wooting-signals'])
@@ -445,7 +458,7 @@ class NativeFixtureTests(unittest.TestCase):
                 macos.publish_directory(stage, output)
             self.assertTrue(stage.exists())
             icon = home / 'fixture.icns'
-            macos.create_icon(icon)
+            shutil.copy2(macos.DEFAULT_ICON, icon)
             subprocess.run(['/usr/bin/iconutil', '-c', 'iconset', str(icon)], check=True, capture_output=True)
             self.assertTrue((home / 'fixture.iconset/icon_512x512.png').is_file())
             notices = home / 'notices'

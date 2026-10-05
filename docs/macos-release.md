@@ -95,6 +95,12 @@ all three executables, SDKs, and native dependencies. See [notice requirements](
 gaps honestly and do not distribute. It forbids Developer ID/notarization.
 
 Output contains the `.app`, versioned `.dmg`, `SHA256SUMS`, and provenance.
+
+The default app icon is the transparent RGB keycap artwork in
+[`assets/icon`](../assets/icon/README.md). All macOS icon sizes are checked in;
+normal builds do not regenerate them. `--icon /path/to/custom.icns` overrides
+the bundle icon, and the GUI leaves that bundled icon intact at runtime.
+
 Executables live under `Contents/MacOS`, SDKs under `Contents/Frameworks`, and
 icon/notices/examples under `Contents/Resources`. Provenance records source
 revision/dirty state, input hashes, supplied SDK versions, minimum OS,
