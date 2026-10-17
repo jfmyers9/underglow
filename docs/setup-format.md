@@ -1,8 +1,10 @@
 # Canonical lighting setup format (v1)
 
 `underglow::setup::SetupDocument` is a hardware-independent, typed document.
-This defines the format; it does not yet replace the legacy application config
-or activate lighting. See [the example](../examples/layer-setup.toml).
+It can be embedded as optional `[setup]` in the application config; when absent,
+legacy signals/profiles are unchanged. Reading either format never activates
+lighting. See [the document example](../examples/layer-setup.toml) and
+[a runnable profile](../examples/layers-profile.toml).
 
 ## Identity and ordering
 
@@ -84,3 +86,50 @@ are also validated. Unknown versions, fields, groups, and keys are rejected.
 This data contains no SDK paths, executable definitions, connector trust,
 network actions, or physical activation settings. Reading/importing a setup
 cannot start a connector or take over keyboard lighting.
+
+## Shared runtime and engine integration
+
+`underglow::layer_runtime::CompiledSetup::compile(&document)` validates data and
+resource combinations without acquiring hardware. At most one **enabled**
+analog-input layer (ripples or reactive) is currently supported, including across
+conditional layers; disjoint masks do not create separate SDK ownership. Disabled
+layers still undergo document validation. Physical names and analog renderers
+require an 80HE ANSI layout, checked again against the live device.
+
+The runtime reuses the catalog effects, reactive/ripple simulations, focus timer
+and renderer, and shared opaque compositor. `composition(ctx, elapsed)` exposes
+ordered active contributions with masks and stack-index priorities;
+`compositor::winning_layer` resolves per-key overlap. `render(ctx, elapsed)`
+produces one fresh RGB frame, with uncovered keys and non-key cells black.
+Global `ctx.brightness` is a safety multiplier: effective brightness is
+`layer.brightness * ctx.brightness / 255`, applied once. Layer palette/speed
+settings (or catalog palette defaults) are authoritative.
+
+Pass **unscaled monotonic elapsed** time to `render`/`composition`, not the
+legacy global speed-adjusted `ctx.animation_seconds`. Each decorative layer
+applies its own speed. The binary adapter keeps a separate unscaled clock; focus
+durations, conditions and input simulation are never multiplied by global speed.
+
+`advance_input(dt, keys)` accepts in-memory HID pressure samples;
+`preview_tick(tick)` supplies a deterministic 100 ms demo, while
+`preview_tick_at(tick, dt)` accepts a caller's FPS/time step. Each preview owns a
+separate runtime; demo samples never enter the live external registry.
+`baseline(snapshot, now)` and `observe(snapshot, events, now)` reuse the existing
+AutomationRuntime lease/event/transition semantics. Resume discards historical
+events and transitions but retains currently leased persistent state. Missing
+sources hide only their conditional layers. Registry failure clears conditions;
+input failure hides only input-dependent contributions until input recovers
+(the live adapter retries SDK initialization only on the next explicit resume).
+
+`run --config examples/layers-profile.toml --preview --preview-format json`
+uses the same pure compiler/renderer as live runs, without either SDK or provider
+initialization. Ordinary config previews have no live facts. Engine `control
+preview` uses an independent canonical runtime with read-only live facts and
+synthetic input, including while paused; it does not resume lighting or start
+producers. Legacy notifications and automation remain optional overlays.
+
+Live setup programs initialize input only in the existing session lifecycle and
+never write RGB themselves: the session remains the sole RGB writer. Engine
+pause closes that session, restoring/releasing keyboard lighting and clearing
+input/transient state. Hardware-free tests cover lifecycle state and composition;
+real SDK restoration still requires a physical-device smoke test.

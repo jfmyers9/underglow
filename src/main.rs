@@ -703,12 +703,17 @@ fn build_config_signal_with_sources(
     sources: Option<ingress::SharedSources>,
 ) -> Result<Box<dyn signals::SignalProgram>, Box<dyn std::error::Error>> {
     config.validate()?;
-    let base: Box<dyn signals::SignalProgram> =
-        if ProfileRuntimeSignal::is_profile_runtime_config(config) {
-            Box::new(ProfileRuntimeSignal::new(config.clone())?)
-        } else {
-            build_signal(&config.signal_config(), config.effect)?
-        };
+    let base: Box<dyn signals::SignalProgram> = if let Some(setup) = &config.setup {
+        Box::new(signals::setup::SetupProgram::new(
+            setup,
+            sources.clone(),
+            config.fps,
+        )?)
+    } else if ProfileRuntimeSignal::is_profile_runtime_config(config) {
+        Box::new(ProfileRuntimeSignal::new(config.clone())?)
+    } else {
+        build_signal(&config.signal_config(), config.effect)?
+    };
     let base = notifications::wrap(base, &config.notifications, config.effect)?;
     external_rules::wrap(base, &config.automation, sources)
 }
@@ -768,6 +773,9 @@ fn print_config(config: &AppConfig) {
     println!("config:");
     println!("  schema_version: {}", config.schema_version);
     println!("  sdk_path: {}", path_display(config.sdk_path.as_ref()));
+    if let Some(setup) = &config.setup {
+        println!("  setup: {} ({} layers)", setup.id, setup.layers.len());
+    }
     println!("  signal: {:?}", signal.kind);
     println!("  effect: {}", config.effect);
     println!("  palette: {}", config.palette);
@@ -779,7 +787,9 @@ fn print_config(config: &AppConfig) {
     println!("  warn_on_close_error: {}", config.warn_on_close_error);
     println!(
         "  runtime: {}",
-        if ProfileRuntimeSignal::is_profile_runtime_config(config) {
+        if config.setup.is_some() {
+            "canonical-layers"
+        } else if ProfileRuntimeSignal::is_profile_runtime_config(config) {
             "profile-v2"
         } else {
             "single-signal"

@@ -319,6 +319,10 @@ impl Drop for Active {
 struct LivePreview {
     automation: underglow::automation::AutomationRuntime,
     animation: underglow::animation::AnimationClock,
+    setup: Option<underglow::layer_runtime::CompiledSetup>,
+    started: Duration,
+    previous_preview: Duration,
+    tick: u32,
 }
 impl LivePreview {
     fn new(config: &AppConfig, observation: &crate::ingress::Observation) -> Result<Self, Error> {
@@ -327,13 +331,28 @@ impl LivePreview {
         automation.baseline(&observation.snapshot, observation.now);
         let mut animation = underglow::animation::AnimationClock::default();
         animation.set_speed(observation.now, config.speed);
+        let mut setup = config
+            .setup
+            .as_ref()
+            .map(underglow::layer_runtime::CompiledSetup::compile)
+            .transpose()?;
+        if let Some(setup) = &mut setup {
+            setup.baseline(&observation.snapshot, observation.now);
+        }
         Ok(Self {
             automation,
             animation,
+            setup,
+            started: observation.now,
+            previous_preview: observation.now,
+            tick: 0,
         })
     }
 
     fn observe(&mut self, observation: &crate::ingress::Observation) {
+        if let Some(setup) = &mut self.setup {
+            setup.observe(&observation.snapshot, &observation.events, observation.now);
+        }
         self.automation
             .observe(&observation.snapshot, &observation.events, observation.now);
     }
@@ -347,7 +366,7 @@ impl LivePreview {
             layout: &layout,
             brightness: config.brightness,
             palette: config.palette,
-            tick: 0,
+            tick: self.tick,
             animation_seconds: seconds,
         };
         let selected = config.signal_config();
@@ -366,14 +385,25 @@ impl LivePreview {
                     .map(|_| [key.coord.row, key.coord.column])
             })
             .collect();
-        let frame = underglow::compositor::compose(effect.render(&ctx), &layout, &layers, now);
+        let base = if let Some(setup) = &mut self.setup {
+            setup.preview_tick_at(
+                self.tick,
+                now.saturating_sub(self.previous_preview).as_secs_f32(),
+            );
+            setup.render(&ctx, now.saturating_sub(self.started))
+        } else {
+            effect.render(&ctx)
+        };
+        self.tick = self.tick.wrapping_add(1);
+        self.previous_preview = now;
+        let frame = underglow::compositor::compose(base, &layout, &layers, now);
         serde_json::json!({
             "schema_version": 1,
             "kind": "simulated-live-sources",
             "layout": layout.name,
             "rgb": frame.as_bytes(),
             "overlay_keys": overlay_keys,
-            "base_effect": effect.to_string(),
+            "base_effect": if self.setup.is_some() { "setup".to_string() } else { effect.to_string() },
         })
     }
 }
@@ -440,7 +470,9 @@ impl Runtime {
 
     fn status(&self) -> Status {
         let selected = self.config.signal_config();
-        let mode = if selected.kind == crate::signals::SignalKind::StaticEffect {
+        let mode = if self.config.setup.is_some() {
+            "setup".to_string()
+        } else if selected.kind == crate::signals::SignalKind::StaticEffect {
             selected.effect.unwrap_or(self.config.effect).to_string()
         } else {
             selected
@@ -1102,6 +1134,124 @@ mod tests {
             next_frame: Instant::now(),
             healthy_since: Instant::now(),
         }
+    }
+
+    #[test]
+    fn canonical_control_preview_uses_shared_stack_without_resuming_or_publishing() {
+        let text = include_str!("../examples/layers-profile.toml").to_string();
+        let mut runtime = runtime(text, PathBuf::from("/unused/offline-preview-test"));
+        let before = runtime.sources.observe(0).unwrap().snapshot;
+        let result = runtime.preview().unwrap();
+        assert_eq!(result["base_effect"], "setup");
+        assert_eq!(runtime.status().mode, "setup");
+        assert!(!runtime.saved.enabled);
+        assert!(runtime.active.is_none());
+        assert!(runtime.connectors.is_none());
+        assert_eq!(before, runtime.sources.observe(0).unwrap().snapshot);
+        let doc = runtime.config.setup.as_ref().unwrap();
+        let pure = underglow::layer_runtime::CompiledSetup::compile(doc).unwrap();
+        let info = underglow::device::DeviceInfo::synthetic_80he();
+        let layout = underglow::layout::KeyboardLayout::for_device(&info);
+        // Static effects depend on elapsed, but black top keys are exact.
+        for name in ["F1", "F3"] {
+            let coord = underglow::key_targets::canonical_coord(name).unwrap();
+            let offset = (usize::from(coord.row) * 21 + usize::from(coord.column)) * 3;
+            assert_eq!(
+                &result["rgb"].as_array().unwrap()[offset..offset + 3],
+                &[
+                    serde_json::json!(0),
+                    serde_json::json!(0),
+                    serde_json::json!(0)
+                ]
+            );
+        }
+        // At a fixed supplied clock, control preview and pure preview are exact.
+        let mut registry = underglow::external::Registry::default();
+        let config = &runtime.config;
+        let observation = preview_observation(&mut registry, 0, 0);
+        let mut preview = LivePreview::new(config, &observation).unwrap();
+        let actual = preview.frame(config, Duration::from_secs(2));
+        let ctx = underglow::render::RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: config.brightness,
+            palette: config.palette,
+            tick: 0,
+            animation_seconds: 999.0,
+        };
+        assert_eq!(
+            actual["rgb"],
+            serde_json::json!(pure.render(&ctx, Duration::from_secs(2)).as_bytes())
+        );
+    }
+
+    #[test]
+    fn canonical_control_preview_reads_condition_facts_without_replaying_old_events() {
+        use underglow::external::{Payload, Registry};
+        use underglow::setup::{Activation, Renderer, Target};
+        let mut config = validate(include_str!("../examples/layers-profile.toml")).unwrap();
+        let doc = config.setup.as_mut().unwrap();
+        doc.layers.truncate(2);
+        doc.layers[1].target = Target::Whole {};
+        doc.layers[1].brightness = 255;
+        doc.layers[1].renderer = Renderer::Solid { color: [255, 0, 0] };
+        doc.layers[1].activation = Activation::OnEvent {
+            source: "pi".into(),
+            instance: None,
+            event: "done".into(),
+            duration_ms: 100,
+        };
+        let mut registry = Registry::default();
+        publish_preview(
+            &mut registry,
+            "a",
+            1,
+            Payload::Event {
+                event: "done".into(),
+                ttl_ms: 1000,
+            },
+            0,
+        );
+        let mut preview =
+            LivePreview::new(&config, &preview_observation(&mut registry, 0, 0)).unwrap();
+        let first = preview.frame(&config, Duration::ZERO);
+        assert!(
+            preview_colors(&first, underglow::layout::Zone::Alpha)
+                .iter()
+                .any(|c| *c != [255, 0, 0])
+        );
+        publish_preview(
+            &mut registry,
+            "a",
+            2,
+            Payload::Event {
+                event: "done".into(),
+                ttl_ms: 1000,
+            },
+            1,
+        );
+        preview.observe(&preview_observation(
+            &mut registry,
+            preview.automation.event_cursor(),
+            1,
+        ));
+        let active = preview.frame(&config, Duration::from_millis(1));
+        assert!(
+            preview_colors(&active, underglow::layout::Zone::Alpha)
+                .iter()
+                .all(|c| *c == [255, 0, 0])
+        );
+        preview.observe(&preview_observation(
+            &mut registry,
+            preview.automation.event_cursor(),
+            101,
+        ));
+        let expired = preview.frame(&config, Duration::from_millis(101));
+        assert!(
+            preview_colors(&expired, underglow::layout::Zone::Alpha)
+                .iter()
+                .any(|c| *c != [255, 0, 0])
+        );
     }
 
     fn preview_observation(

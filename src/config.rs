@@ -24,6 +24,8 @@ pub struct AppConfig {
     pub warn_on_close_error: bool,
     #[serde(alias = "extension")]
     pub signal: Option<SignalConfig>,
+    /// Canonical layers replace only the legacy base renderer, not connectors.
+    pub setup: Option<underglow::setup::SetupDocument>,
     pub notifications: Vec<crate::notifications::NotificationConfig>,
     pub connectors: Vec<crate::managed_connectors::ConnectorConfig>,
     pub automation: underglow::automation::AutomationConfig,
@@ -178,6 +180,7 @@ impl Default for AppConfig {
             continuous: false,
             warn_on_close_error: true,
             signal: None,
+            setup: None,
             notifications: Vec::new(),
             connectors: Vec::new(),
             automation: underglow::automation::AutomationConfig::default(),
@@ -200,6 +203,10 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(setup) = &self.setup {
+            underglow::layer_runtime::CompiledSetup::compile(setup)
+                .map_err(ConfigError::Invalid)?;
+        }
         crate::managed_connectors::validate(&self.connectors).map_err(ConfigError::Invalid)?;
         crate::notifications::validate(&self.notifications).map_err(ConfigError::Invalid)?;
         self.automation.validate().map_err(ConfigError::Invalid)?;
@@ -218,7 +225,8 @@ impl AppConfig {
         }
         // The analog SDK is process-global. Never initialize multiple instances
         // through a multi-source profile, even if a scene temporarily hides one.
-        if self.signal.is_none()
+        if self.setup.is_none()
+            && self.signal.is_none()
             && self
                 .sources
                 .iter()
@@ -255,7 +263,9 @@ impl AppConfig {
     /// Only effective sources count: an explicit signal overrides legacy sources.
     pub fn runs_commands(&self) -> bool {
         use crate::signals::SignalKind;
-        let base = if crate::profile::ProfileRuntimeSignal::is_profile_runtime_config(self) {
+        let base = if self.setup.is_some() {
+            false
+        } else if crate::profile::ProfileRuntimeSignal::is_profile_runtime_config(self) {
             self.sources
                 .iter()
                 .filter_map(|source| source.signal_config(self.effect))

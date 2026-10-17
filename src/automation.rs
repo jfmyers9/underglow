@@ -299,6 +299,18 @@ impl AutomationRuntime {
         self.cursor
     }
 
+    /// Evaluate a condition without rendering a dummy scene or resolving overlap.
+    pub fn is_active(&self, rule_id: &str) -> bool {
+        self.config
+            .rules
+            .iter()
+            .zip(&self.activations)
+            .any(|(rule, activation)| {
+                rule.id == rule_id
+                    && activation.is_some_and(|a| a.expires.is_none_or(|e| self.now < e))
+            })
+    }
+
     pub fn validate_layout(&self, info: &DeviceInfo) -> Result<(), String> {
         self.config.validate_layout(info)
     }

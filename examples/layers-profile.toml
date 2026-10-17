@@ -1,0 +1,30 @@
+# Run offline: underglow run --config examples/layers-profile.toml --preview
+schema_version = 1
+brightness = 255
+fps = 30
+continuous = true
+
+[setup]
+schema_version = 1
+id = "layer-demo"
+name = "Matrix with quiet function keys and Aurora arrows"
+
+[[setup.layers]]
+id = "matrix"
+name = "Matrix background"
+brightness = 160
+renderer = { kind = "effect", effect = "matrix", speed = 100 }
+target = { kind = "whole" }
+
+[[setup.layers]]
+id = "quiet"
+name = "Opaque black function keys"
+renderer = { kind = "solid", color = [0, 0, 0] }
+target = { kind = "selection", keys = ["F1", "F3"] }
+
+[[setup.layers]]
+id = "arrows"
+name = "Aurora arrows"
+brightness = 210
+renderer = { kind = "effect", effect = "aurora", palette = "ocean", speed = 150 }
+target = { kind = "selection", zones = ["arrows"] }

@@ -3,6 +3,84 @@
 
 use crate::layout::Zone;
 use crate::render::{Color, Frame, RenderContext, pulse_wave};
+use serde::Deserialize;
+use std::time::Duration;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct FocusConfig {
+    pub focus_minutes: u64,
+    pub break_minutes: u64,
+    pub cycles: u32,
+    pub start_paused: bool,
+    pub meeting_safe: bool,
+    pub dim: bool,
+}
+
+impl Default for FocusConfig {
+    fn default() -> Self {
+        Self {
+            focus_minutes: 25,
+            break_minutes: 5,
+            cycles: 1,
+            start_paused: false,
+            meeting_safe: false,
+            dim: false,
+        }
+    }
+}
+
+pub fn state_after(config: &FocusConfig, elapsed: Duration) -> FocusState {
+    if config.meeting_safe {
+        return FocusState {
+            phase: FocusPhase::MeetingSafe,
+            progress: 1.0,
+            cycle: 0,
+        };
+    }
+    if config.start_paused {
+        return FocusState {
+            phase: FocusPhase::Paused,
+            progress: 0.0,
+            cycle: 0,
+        };
+    }
+
+    let focus = Duration::from_secs(config.focus_minutes.max(1) * 60);
+    let break_duration = Duration::from_secs(config.break_minutes * 60);
+    let cycle_duration = focus + break_duration;
+    let cycles = config.cycles.max(1);
+    let total = cycle_duration * cycles;
+
+    if elapsed >= total {
+        return FocusState {
+            phase: FocusPhase::Overtime,
+            progress: 1.0,
+            cycle: cycles,
+        };
+    }
+
+    let cycle_index = (elapsed.as_secs() / cycle_duration.as_secs().max(1)) as u32;
+    let cycle_elapsed = elapsed.saturating_sub(cycle_duration * cycle_index);
+    if cycle_elapsed < focus {
+        FocusState {
+            phase: FocusPhase::Focus,
+            progress: duration_progress(cycle_elapsed, focus),
+            cycle: cycle_index + 1,
+        }
+    } else {
+        let break_elapsed = cycle_elapsed.saturating_sub(focus);
+        FocusState {
+            phase: FocusPhase::Break,
+            progress: duration_progress(break_elapsed, break_duration.max(Duration::from_secs(1))),
+            cycle: cycle_index + 1,
+        }
+    }
+}
+
+fn duration_progress(elapsed: Duration, total: Duration) -> f32 {
+    (elapsed.as_secs_f32() / total.as_secs_f32()).clamp(0.0, 1.0)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FocusPhase {

@@ -6,6 +6,7 @@ pub mod focus;
 pub mod github;
 pub mod market;
 pub mod reactive;
+pub mod setup;
 pub mod soundwave;
 pub mod sports;
 pub mod static_effect;
