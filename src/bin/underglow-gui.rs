@@ -41,6 +41,12 @@ mod setup_workflow_tests;
 #[path = "gui/sharing_panel.rs"]
 mod sharing_panel;
 #[cfg(test)]
+#[path = "gui/workspace_journey_tests.rs"]
+mod workspace_journey_tests;
+#[cfg(test)]
+#[path = "gui/workspace_snapshots.rs"]
+mod workspace_snapshots;
+#[cfg(test)]
 #[path = "gui/workspace_test_ui.rs"]
 mod workspace_test_ui;
 #[cfg(test)]

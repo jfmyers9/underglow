@@ -224,14 +224,49 @@ pub fn show_advanced(ui: &mut Ui, layer: &mut Layer) {
     ui.small("Preview only; saving and lighting activation are separate.");
 }
 
+fn renderer_description(ui: &mut Ui, renderer: &Renderer) {
+    let metadata = entry(renderer);
+    if let Some(entry) = metadata {
+        ui.label(entry.description);
+        if entry.palette == PaletteControl::Fixed {
+            ui.small(entry.fixed_color_note.unwrap_or(
+                "This renderer uses fixed colors; palette and color controls are unavailable.",
+            ));
+        } else if !entry.supports_two_tone {
+            ui.small("Uses a palette; arbitrary color controls are unavailable.");
+        }
+        if !entry.supports_speed {
+            ui.small(
+                "Animation speed is controlled by this renderer, not an editable speed setting.",
+            );
+        }
+        if !entry.selectable {
+            ui.small(
+                "Diagnostic effect: preserved from this setup, not offered as an everyday effect.",
+            );
+        }
+    } else {
+        ui.small("Uses a fixed color. Pulse and Sweep also have a timing control.")
+            .on_hover_text("Palettes and effect speed do not apply to these appearances.");
+    }
+}
+
 pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {
+    renderer_controls(ui, renderer, false)
+}
+
+pub fn show_renderer_compact(ui: &mut Ui, renderer: &mut Renderer) -> bool {
+    renderer_controls(ui, renderer, true)
+}
+
+fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> bool {
     let before = renderer.clone();
     ui.push_id("appearance", |ui| {
         let mut selected = renderer_id(renderer);
         let title = entry(renderer).map(|e| e.title)
             .or_else(|| PRIMITIVES.iter().find(|(id, _)| *id == selected).map(|(_, title)| *title))
             .unwrap_or("Unknown renderer");
-        egui::ComboBox::from_id_salt("renderer").selected_text(title)
+        let appearance = egui::ComboBox::from_id_salt("renderer").selected_text(title)
             .height(500.0).show_ui(ui, |ui| {
                 for choice in catalog::presets() {
                     ui.selectable_value(&mut selected, choice.id, choice.title);
@@ -244,22 +279,10 @@ pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {
         switch_appearance(renderer, selected);
 
         let metadata = entry(renderer);
-        if let Some(entry) = metadata {
-            ui.label(entry.description);
-            if entry.palette == PaletteControl::Fixed {
-                ui.small(entry.fixed_color_note.unwrap_or("This renderer uses fixed colors; palette and color controls are unavailable."));
-            } else if !entry.supports_two_tone {
-                ui.small("Uses a palette; arbitrary color controls are unavailable.");
-            }
-            if !entry.supports_speed {
-                ui.small("Animation speed is controlled by this renderer, not an editable speed setting.");
-            }
-            if !entry.selectable {
-                ui.small("Diagnostic effect: preserved from this setup, not offered as an everyday effect.");
-            }
+        if compact {
+            appearance.response.on_hover_ui(|ui| renderer_description(ui, renderer));
         } else {
-            ui.small("Uses a fixed color. Pulse and Sweep also have a timing control.")
-                .on_hover_text("Palettes and effect speed do not apply to these appearances.");
+            renderer_description(ui, renderer);
         }
         match renderer {
             Renderer::Effect { palette, speed, .. } => {
@@ -313,7 +336,14 @@ pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {
         if let Err(error) = renderer.validate() {
             ui.colored_label(egui::Color32::YELLOW, format!("Unsupported settings: {error}. Choose another effect to reset incompatible appearance settings."));
         }
-        ui.small("Preview only; lighting activation is separate.");
+        if compact {
+            ui.collapsing("Appearance help", |ui| {
+                renderer_description(ui, renderer);
+                ui.small("Preview only; lighting activation is separate.");
+            });
+        } else {
+            ui.small("Preview only; lighting activation is separate.");
+        }
     });
     before != *renderer
 }

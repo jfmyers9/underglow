@@ -30,149 +30,109 @@ fallback if macOS menu-bar creation fails (reported on stderr and in the window)
 Closing or quitting never pauses or kills the engine, and the controller never
 registers login startup automatically.
 
-## Controls
+## Edit a setup
 
-**Editor** and **Connections** are separate destinations. The **Setup** selector
-opens a **Setup browser** window, not an extra editor section. Browsing a saved
-item does not load it; opening a different setup is an explicit paused action
-blocked while the current draft has unsaved edits. Navigation and closing the
-browser preserve the draft, selected layer and preview context. Setup identity,
-**Saved / Unsaved changes**, and **Keyboard lighting** state stay in the fixed
-header outside the destination's scrolling content. **Settings** and
-**Diagnostics** open secondary windows; sharing remains a secondary section in
-the setup browser.
+The workflow is **choose a setup → edit layers → choose keys → try behavior →
+Save → explicitly enable lighting**. For hardware-free development, use
+`make dev`; its default simulation does not access the keyboard.
 
-### Layer composition (canonical setups)
+### Find your place
 
-See [Editing layers](layer-editing.md) for the Appearance/Keys/Behavior tabs,
-Add layer menu and advanced controls.
+- **Editor** is the lighting workspace; **Connections** is a separate destination
+  for applications and producers supplying information.
+- **Browse setups** opens the setup browser. Merely browsing or selecting a name
+  does not replace your draft. Open another setup deliberately.
+- The fixed header shows the setup, **Saved / Unsaved changes**, the one **Save**
+  action and keyboard-lighting state. **Start engine / Resume lighting / Pause
+  lighting** controls physical output separately.
+- At 940×850, layers sit beside one keyboard and the selected-layer inspector.
+  Lists and inspector content scroll independently. At 620×640, use the **Layer**
+  picker and inspector below the pinned keyboard. Resizing or visiting
+  Connections preserves the draft and selected layer.
 
-The GUI loads `control setup show` through its background subprocess worker.
-When a canonical setup is available, the **Editor** workspace is primary;
-whole-preset cards and legacy global-renderer controls are hidden so selecting an
-appearance cannot replace other layers. Status polling never replaces a dirty
-draft. The fixed Pause/Resume control remains separate and explicit.
+### Create and customize
 
-At 940×850 and wider, the workspace has a layer list, pinned composed keyboard,
-and selected-layer inspector. The layer list and inspector scroll independently;
-scrolling either keeps the setup selector, Save/Discard controls, lighting action,
-keyboard and selected-layer heading visible. At 620×640 the layer list becomes a
-**Layer** picker and the bounded inspector sits below the keyboard. **Layer
-actions** provides enable/mute and reordering in this compact layout. Changing
-window size or navigating away does not create a new draft or reset selection.
+1. In **Browse setups**, choose Blank or an editable starter such as **Matrix +
+   Pi**. A starter is a local draft, not a recurring default.
+2. **Add layer** offers Matrix, Aurora, a solid color, Pi status and other
+   supported effects. Layers are topmost first. Row **...** menus and compact
+   **Layer actions** provide rename, duplicate, reorder and delete.
+3. Select **Appearance**, **Keys**, or **Behavior**. Ordinary appearance/color
+   controls come first; advanced conditions, blending, transitions and IDs remain
+   available in their relevant details.
+   In the compact layout, **Layer actions** owns rename/duplicate/delete so the
+   appearance controls come first. **Appearance help** retains effect guidance.
+4. In **Keys**, select physical keys on the shared keyboard. Zones, direct keys
+   and group references combine as a union. **Also includes** lists the extras;
+   **Use selected keys only** removes that layer's zone/group references once
+   direct keys exist. Shared groups and other layers are unchanged.
 
-**Preview tools** opens the existing live/input-demo/Scenario controls, key
-explanations and coverage details in a separate, scrolling window. Close it to
-return to editing; the keyboard remains pinned in the workspace. Its **Preview
-only** badge always identifies the current source context and whether a Scenario
-is paused or running. These controls do not enable lighting or publish facts.
+Pi is one logical layer with **Idle / fallback**, **Working**, and **Finished
+(settled, not success)** appearances, all sharing the same target. Choosing an
+appearance to edit does not emit a source event. Deleting Pi removes it until
+you explicitly add another template. See [Editing layers](layer-editing.md).
 
-- Select layers by stable ID. Add, rename, enable/mute, duplicate, delete, and
-  move them **Toward bottom / Toward top**. The bounded, scrolling stack is shown
-  topmost first; the document still stores bottom to top, and later layers cover
-  earlier layers on their targets.
-- Appearance controls and the 80HE physical-target canvas edit only the selected
-  layer. Duplicates get a fresh ID and retain the original appearance, targets,
-  activation, and behavior variants. Custom-group operations protect references
-  from every other layer, including disabled layers.
-- **More → New blank composition → Create blank** creates an independently identified,
-  empty setup. Added layers are explicitly always-on, Whole-keyboard Aurora
-  layers using catalog defaults; no Pi behavior is injected. **More → Add Pi
-  template** remains an explicit editable copy, never a recurring default.
-- **Behavior appearances** edits the selected layer's base/fallback condition and
-  its reusable appearances. Choose **Always**, **While a source matches** (presence
-  or state), **When an event occurs**, or **When a state changes**. Capability
-  metadata supplies valid source, state, event and supported any/exact-instance
-  choices; transient duration is bounded to 1–60000 ms and capped by source/event
-  leases. Exact IDs can be typed or picked from read-only observations and may
-  identify ephemeral producer sessions, not focus/windows.
-- Add, rename, enable, delete and reorder appearances. Transients outrank
-  persistent appearances; later matching appearances win within each class.
-  All appearances share the logical layer's target. Appearance brightness may
-  inherit the layer value or explicitly override it; changing the renderer keeps
-  inheritance intact. The base/fallback can remain visible offline with Always,
-  or hide on absence/expiry with While source is present.
-- Missing/undeclared saved selectors remain visible with repair warnings rather
-  than being silently reset. Unknown observed facts are explicitly labeled
-  **unknown/observed**, not advertised as supported. Pi declares only Idle/Working
-  states and Finished (settled, not success). No form publishes facts or grants
-  executable trust.
-- **Save composition** explicitly submits the validated declarative
-  draft via bounded stdin JSON and the last engine revision. It never resumes
-  paused lighting, replaces executable trust, or automatically retries a stale
-  revision. Failed saves retain the draft. The editor is disabled while a save is
-  pending; only acknowledgment of the submitted draft clears its dirty state.
-  Save requires paused lighting; offline drafts remain editable. **Discard draft**
-  restores the last acknowledged composition locally without an engine write.
-- **Composition preview** renders the complete draft through the shared renderer,
-  distinct from the target-editing canvas. Sources are read-only; **Isolated input demo**
-  uses isolated synthetic inputs. Neither editing nor preview opens an SDK,
-  starts input producers, or changes physical lighting. Resume remains explicit.
-- Click a key in the **composed preview**, then open **Preview tools** to inspect
-  **Why this key?**, without
-  changing a layer's target or draft. The report shows rendered RGB, the winning
-  logical layer, contributions underneath, disabled/non-targeting/inactive layers,
-  every appearance's cached condition match and occurrence deadline, and current
-  evaluated source-state leases. Higher stack layers obscure lower ones even
-  when their pixel is black. Reordering and source expiry use the same compositor
-  arbitration as the displayed preview, not inferred color comparisons.
-  Live facts, isolated input demo (no source facts), and simulated Scenario facts
-  are labeled separately; none describes actual physical output. Missing current
-  state does not distinguish an expired/removed source from one never observed.
-  Inactive event/transition explanations do not invent trigger history.
-  Invalid drafts disable explanations while any last-valid preview is retained.
-- **Layer coverage and expiry** lists target, visible, obscured and overlapping
-  LED positions for every logical layer, including inactive and disabled ones.
-  Overlap counts mean target intersections, not necessarily an active conflict;
-  obscuration names the actual higher winning layers. Select a layer in the
-  stack and enable **Highlight selected layer coverage**: green outlines mark
-  visible positions, red cross-hatching marks obscured positions, and blue
-  outlines mark currently noncontributing targets. These annotations never
-  replace composed RGB fills; yellow still marks the inspected key.
-  To resolve a conflict, inspect the hiding layer, then explicitly reorder the
-  stack, mute it or edit its targets. The counts and outlines update immediately.
-  Transient countdowns use cached evaluator deadlines, capped by trigger/source
-  leases. Persistent state availability uses the latest *matching* instance
-  lease (or the exact selected instance), not unrelated facts or process health.
-  Countdown time is the frame's evaluation clock: paused Scenarios freeze and
-  steps advance expiry and obscuration together. Inactive layers with no cached
-  deadline have no invented timer. This is scenario/live preview, never device
-  feedback; inspecting and highlighting do not edit, save or resume lighting.
+### Try it without hardware
 
-Profiles without canonical setups use the clearly labeled **Legacy compatibility
-view** below, including migration warnings when supplied by the engine. Expand
-**Layer editor · create a new composition** to start an explicit blank stack.
-Legacy profile import remains in Settings with its separate executable-trust
-acknowledgment; persist a dirty composition before replacing the profile.
+The keyboard previews the complete draft through the shared composition runtime.
+It is not device feedback.
 
-### Connections and source health
+- **Live** uses real read-only connection data.
+- **Try behavior** and contextual **Idle / Working / Finished** choices use
+  private test facts. They do not edit the setup or publish to real connections.
+  Finished is a transient settled event, never a success fact.
+- **Play test / Pause test** controls private time. Facts have finite lifetimes;
+  pausing freezes leases and animations.
+- **Preview tools** retains simultaneous-source scenarios, deterministic
+  stepping, isolated input demo, coverage and expiry. Quick testing preserves
+  those advanced channels.
+- **Inspect** makes a key click open its actual **Why this key?** report before
+  advanced forms. It never retargets a layer or enables lighting.
 
-Use the separate **Connections** destination to inspect registered sources without
-leaving or replacing the current layer draft. Registry/producer health refreshes
-through the bounded control worker while this page is visible; live facts reuse
-the preview's read-only source worker. Neither destination changes physical activation.
+Keyboard modes are **Preview** (read-only), **Select keys** (target editing), and
+**Inspect** (explanation). Outlines do not replace rendered RGB colors. Missing
+source data is not treated as idle or success. Physical targets remain 80HE ANSI;
+unsupported keys, remaps and light-bar positions are not guessed. See
+[Preview testing](preview-testing.md) for advanced contexts and clocks.
 
-- Each source retains its human name, stable ID, declared state/event vocabulary,
-  instance selectors, TTLs, and expected renewal cadence. Observed values do not
-  invent declared capabilities. Missing/offline sources stay visible.
-- Managed process running/protocol health is separate from fresh application
-  leases and selected draft appearances. A healthy connector may report stale
-  state; fresh state may fail an exact instance/state selector or lose to another
-  behavior variant. External process health is **Unknown**, not inferred from
-  traffic absence, application focus, or task completion.
-- Inspect per-instance values, update ages, lease freshness, bounded event
-  history/gaps, restarts, retry timing, and connector errors without raw logs.
-  Expired/removed facts are marked last-seen, and retained observations are
-  cleared when the source engine generation changes. Failed health refreshes do
-  not hide independently fresh facts or become generic lighting errors.
-- Missing binding repair lists original layer IDs and variant names/IDs. Click
-  an affected layer to return to its editor; restore the source registration or
-  edit the binding rather than deleting layers. Preview selection is potential
-  composition, not proof of visible hardware output. Input-demo/scenario facts
-  never replace observed source health.
-- This page is read-only: it does not import capabilities, edit producer commands,
-  authorize trust, start producers, publish events, or resume lighting. Default
-  health views discard executable argv/environment fields entirely.
+### Save, copy and switch deliberately
+
+**Save** persists the draft with revision checks. If lighting is active, confirm
+**Pause and save** explicitly; saving never resumes it. Failures retain your
+draft, and late acknowledgements cannot clear newer edits.
+
+The browser owns setup naming, starters, **Save a copy**, opening, renaming and
+deleting setups. Copies are stored inactive. Replacing a dirty draft offers
+**Save changes / Discard changes / Cancel**. Closing a browser or following a
+Connections link is harmless navigation, not replacement.
+
+Offline drafts and local starters remain usable. Saving and remote operations
+explain their connectivity requirements. For conflicts, preserve a copy or
+explicitly reload the saved version; the GUI never forces an overwrite. See
+[Setup saving](setup-saving.md).
+
+### Connections, sharing and existing profiles
+
+A source-driven layer shows a concise note and **Connections: …** link. Recent
+data, registration and process health are separate: no recent facts do not prove
+an application stopped. Private tests never become live health observations.
+
+Connections starts with summaries; open details or **Connection administration**
+when needed. Executable review, trust and enablement remain separate explicit
+actions. Selecting visuals never installs or starts a producer. **Diagnostics**
+and **Settings** are secondary windows.
+
+**Browse setups → Share setups** opens import/export. A new imported copy
+requires explicit connection rebinding, including disabled appearances, and is
+stored without switching, credentials or executable trust.
+
+Existing legacy profiles offer **Keep current behavior** or **Begin new setup**.
+A new local draft does not replace old lighting. Before adoption, confirmation
+explains replacement of legacy visuals/notifications/automation in the private
+snapshot. Source files and machine-local Connections stay unchanged.
+
+See [Connections and exceptional flows](connection-workflow.md), the legacy
+reference below, and the [usability walkthrough](gui-walkthrough.md).
 
 ### Legacy compatibility controls
 
@@ -236,8 +196,8 @@ the light changes. Native macOS menus retain the platform's styling.
   **Configurations can execute commands as your user.** Editing the path resets
   acknowledgement. Do not select untrusted downloaded files.
 - The main screen shows engine state and lighting errors. **App settings →
-  Advanced engine controls** contains the detailed connection message, recovery
-  count, and last engine JSON response.
+  Advanced engine controls** contains recovery controls and counts;
+  **Diagnostics → Engine protocol response** contains the last engine JSON.
   Disconnected engine details are marked **Last seen**, not presented as live status.
 
 ### App settings

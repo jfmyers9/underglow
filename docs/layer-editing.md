@@ -13,6 +13,9 @@ enable keyboard lighting; save explicitly and enable lighting separately.
 - **Keys** edits the selected logical layer's target and reusable groups. Every
   appearance of that layer shares these keys. Group changes still protect all
   other references, including disabled layers.
+- Existing zones/groups combine with direct keys. **Also includes** lists those
+  extras; after selecting direct keys, **Use selected keys only** removes this
+  layer's extra references without modifying shared groups or other layers.
 - **Behavior** explains when the selected appearance is shown. Expand
   **Advanced condition** for the generic source/state/event/transition builder.
   Saved missing selectors remain intact with a repair warning. Observed choices

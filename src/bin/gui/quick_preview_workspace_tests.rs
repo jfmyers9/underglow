@@ -60,6 +60,23 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         let region = canvas(&frame);
         let key = visible(&frame, "F1");
+        for label in ["Save", "Resume lighting"] {
+            assert!(
+                frame
+                    .texts()
+                    .iter()
+                    .any(|text| text.text == label && text.fully_visible()),
+                "primary {label} remains reachable at {size:?}"
+            );
+        }
+        if size == MINIMUM_SIZE {
+            let title = visible(&frame, "Composition preview");
+            let mode = visible(&frame, "Preview");
+            assert!(
+                title.top() < mode.bottom() && mode.top() < title.bottom(),
+                "compact title and modes share one row rather than shrinking the keyboard"
+            );
+        }
         for label in [
             "Live",
             "Try behavior",
@@ -115,7 +132,18 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
                     _ => None,
                 })
                 .expect("RGB face under the key legend");
-            assert!(face.width() >= 12.0 && region.contains_rect(face));
+            let minimum_face = if size == MINIMUM_SIZE { 18.0 } else { 12.0 };
+            assert!(
+                face.width() >= minimum_face && region.contains_rect(face),
+                "readable RGB faces at {size:?}: face={face:?}, canvas={region:?}"
+            );
+            if size == MINIMUM_SIZE {
+                assert!(
+                    inspector.clip.height() >= 175.0,
+                    "compact chrome savings must also leave room for the inspector: {:?}",
+                    inspector.clip
+                );
+            }
             let appearance = app
                 .setup_editor
                 .preview
@@ -254,6 +282,52 @@ fn many_custom_choices_use_a_contextual_picker_instead_of_a_toolbar_wall() {
     assert_eq!(facts.states[0].identity.source, "custom");
     assert_eq!(facts.states[0].identity.instance, "exact");
     assert_eq!(facts.states[0].state, "state-3");
+    assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
+    assert!(incoming.try_recv().is_err());
+}
+
+#[test]
+fn three_long_quick_labels_use_measured_picker_budget_in_compact_workspace() {
+    let (mut app, incoming, mut doc) = app();
+    let mut descriptor = underglow::source_capabilities::pi_descriptor();
+    descriptor.source = "custom".into();
+    descriptor.display_name = "Custom".into();
+    descriptor.states = (0..3)
+        .map(|index| underglow::source_capabilities::FactDescriptor {
+            id: format!("state-{index}"),
+            label: format!("WWWWWWWWWWWWWWW{index}"),
+        })
+        .collect();
+    descriptor.events.clear();
+    let mut registry = CapabilityRegistry::new();
+    registry.insert(descriptor).unwrap();
+    doc.layers[1].activation = Activation::WhileState {
+        source: "custom".into(),
+        instance: Some("exact".into()),
+        state: None,
+    };
+    doc.layers[1].variants.clear();
+    app.setup_editor.load(Some(doc.clone()));
+    app.setup_editor.set_capabilities(registry);
+    let mut harness = Harness::new(MINIMUM_SIZE);
+    let frame = harness.settle(|ctx| app.show_lighting(ctx));
+    let region = canvas(&frame);
+    for label in ["Live", "Try behavior", "Try", "Play test", "Preview tools"] {
+        visible(&frame, label);
+    }
+    assert!(
+        !frame
+            .texts()
+            .iter()
+            .any(|text| text.text == "WWWWWWWWWWWWWWW2" && region.contains_rect(text.rect)),
+        "three nominally short labels must not overflow the actual font budget"
+    );
+    harness.click("Try", Some(region), |ctx| app.show_lighting(ctx));
+    let frame = harness.settle(|ctx| app.show_lighting(ctx));
+    visible(&frame, "Pause test");
+    let facts = app.setup_editor.preview.evaluation_facts().0;
+    assert_eq!(facts.states[0].state, "state-0");
+    assert_eq!(facts.states[0].identity.instance, "exact");
     assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
     assert!(incoming.try_recv().is_err());
 }

@@ -741,6 +741,7 @@ pub struct Editor {
     preview_tools_open: bool,
     inspector_tabs: BTreeMap<String, inspector::Tab>,
     rename_focus: Option<String>,
+    rename_editing: Option<String>,
 }
 
 fn fresh_id(prefix: &str) -> String {

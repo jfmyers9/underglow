@@ -452,6 +452,35 @@ impl TargetSelection {
         ui.small("Choose Select keys on the shared keyboard to edit direct keys or group members. Zones/groups remain unioned until unchecked.");
         ui.small("Physical positions, not OS characters/remaps. Fn, Mode, right Meta, numpad and light bar are unsupported. Dots are unnamed engine matrix cells, not invented keys.");
         if self.draft.is_none() {
+            if let Target::Selection {
+                keys,
+                zones,
+                groups,
+            } = target
+            {
+                let extras: Vec<_> = zones
+                    .iter()
+                    .map(|zone| {
+                        ZONES
+                            .iter()
+                            .find(|(candidate, _)| candidate == zone)
+                            .map_or("Zone", |(_, label)| *label)
+                            .to_owned()
+                    })
+                    .chain(groups.iter().map(|id| format!("Group: {id}")))
+                    .collect();
+                if !extras.is_empty() {
+                    let caption = format!("Also includes: {}", extras.join(", "));
+                    ui.add(egui::Label::new(&caption).truncate())
+                        .on_hover_text(&caption);
+                    if ui.add_enabled(!keys.is_empty(), egui::Button::new("Use selected keys only"))
+                        .on_hover_text("Remove this layer's zone and group references, keeping its direct keys. Other layers and saved groups are unchanged.")
+                        .clicked() {
+                        zones.clear();
+                        groups.clear();
+                    }
+                }
+            }
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .selectable_label(matches!(target, Target::Whole {}), "Whole keyboard")
@@ -1577,6 +1606,63 @@ mod tests {
                     .changed
             );
             h.target = direct(&["F1"]);
+        }
+    }
+
+    #[test]
+    fn fresh_status_zone_is_visible_and_direct_only_is_an_explicit_safe_action() {
+        for size in [Vec2::new(940.0, 850.0), Vec2::new(620.0, 640.0)] {
+            let mut h = CanvasHarness::new(size);
+            h.target = underglow::templates::pi_status_layer(
+                "pi".into(),
+                Target::Selection {
+                    zones: vec![TargetZone::Function],
+                    keys: vec![],
+                    groups: vec![],
+                },
+                None,
+            )
+            .target;
+            let before = h.target.clone();
+            h.controls(vec![]);
+            let (_, shapes) = h.controls(vec![]);
+            assert!(shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "Also includes: Function")));
+            let only = text_center(&shapes, "Use selected keys only");
+            h.controls(vec![
+                egui::Event::PointerMoved(only),
+                button(only, true, egui::Modifiers::NONE),
+            ]);
+            assert!(
+                !h.controls(vec![button(only, false, egui::Modifiers::NONE)])
+                    .0
+            );
+            assert_eq!(
+                h.target, before,
+                "no direct keys must never become an empty or whole target"
+            );
+
+            h.groups.insert("shared".into(), keys(&["F4"]));
+            if let Target::Selection { groups, .. } = &mut h.target {
+                groups.push("shared".into());
+            }
+            edit_keys(&mut h.target, &keys(&["F1", "F2"]), Edit::ReplaceDirect).unwrap();
+            let groups = h.groups.clone();
+            let (_, shapes) = h.controls(vec![]);
+            let only = text_center(&shapes, "Use selected keys only");
+            h.controls(vec![
+                egui::Event::PointerMoved(only),
+                button(only, true, egui::Modifiers::NONE),
+            ]);
+            assert!(
+                h.controls(vec![button(only, false, egui::Modifiers::NONE)])
+                    .0
+            );
+            assert_eq!(h.target, direct(&["F1", "F2"]));
+            assert_eq!(
+                h.groups, groups,
+                "clearing this layer's references never edits shared groups"
+            );
         }
     }
 

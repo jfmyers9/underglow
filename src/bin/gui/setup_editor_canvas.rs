@@ -39,6 +39,8 @@ impl Editor {
     pub(super) fn reset_canvas_context(&mut self) {
         self.targets.clear();
         self.inspector_tabs.clear();
+        self.rename_focus = None;
+        self.rename_editing = None;
         self.empty_canvas = setup_targets::TargetSelection::default();
         self.canvas_selection = None;
         self.canvas_mode = setup_targets::CanvasMode::Preview;
@@ -65,48 +67,45 @@ impl Editor {
         }
     }
 
-    pub(super) fn show_workspace_canvas(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn show_workspace_canvas(&mut self, ui: &mut egui::Ui, compact: bool) {
         self.sync_canvas_selection();
-        ui.horizontal(|ui| {
-            ui.strong("Composition preview");
-        });
-        ui.horizontal(|ui| {
-            for mode in [
-                setup_targets::CanvasMode::Preview,
-                setup_targets::CanvasMode::SelectKeys,
-                setup_targets::CanvasMode::Inspect,
-            ] {
-                if ui
-                    .selectable_label(self.canvas_mode == mode, mode.label())
-                    .on_hover_text(mode.help())
-                    .clicked()
-                {
-                    if mode == setup_targets::CanvasMode::SelectKeys {
-                        self.select_keys_mode();
-                    } else {
-                        self.canvas_mode = mode;
-                    }
+        if compact {
+            ui.horizontal(|ui| {
+                ui.strong("Composition preview");
+                self.show_canvas_modes(ui);
+                if ui.button("Preview tools").clicked() {
+                    self.preview_tools_open = true;
                 }
-            }
-        });
+            });
+        } else {
+            ui.strong("Composition preview");
+            ui.horizontal(|ui| self.show_canvas_modes(ui));
+        }
         // Reserve the mode caption, two compact test rows and the facts badge. At the
         // minimum viewport this scales the board, never scrolls it out of reach.
         let width = ui
             .available_width()
-            .min((ui.available_height() - 122.0).max(40.0) * 18.5 / 6.4)
+            .min(
+                (ui.available_height() - if compact { 54.0 } else { 122.0 }).max(40.0) * 18.5 / 6.4,
+            )
             .min(700.0);
         let content = egui::Rect::from_min_size(
             ui.cursor().min + egui::vec2((ui.available_width() - width) * 0.5, 0.0),
-            egui::vec2(width, width / 18.5 * 6.4 + 24.0),
+            egui::vec2(width, width / 18.5 * 6.4 + if compact { 0.0 } else { 24.0 }),
         );
         let mut board_ui = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("composed-keyboard")
                 .max_rect(content),
         );
+        if compact {
+            // Mode buttons already expose the mapping/help. Crop the duplicate
+            // component caption, not RGB geometry or physical-name tooltips.
+            board_ui.shrink_clip_rect(content);
+        }
         let controls = egui::Rect::from_min_size(
             egui::pos2(ui.max_rect().left(), content.bottom() + 6.0),
-            egui::vec2(ui.available_width(), 66.0),
+            egui::vec2(ui.available_width(), if compact { 28.0 } else { 66.0 }),
         );
         let mut controls_ui = ui.new_child(
             egui::UiBuilder::new()
@@ -123,6 +122,7 @@ impl Editor {
                 doc,
                 layer,
                 self.preview_brightness.unwrap_or(255),
+                compact,
             );
         }
         let highlighted = self.preview.coverage().and_then(|report| {
@@ -208,6 +208,26 @@ impl Editor {
             );
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
+    }
+
+    fn show_canvas_modes(&mut self, ui: &mut egui::Ui) {
+        for mode in [
+            setup_targets::CanvasMode::Preview,
+            setup_targets::CanvasMode::SelectKeys,
+            setup_targets::CanvasMode::Inspect,
+        ] {
+            if ui
+                    .selectable_label(self.canvas_mode == mode, mode.label())
+                    .on_hover_text(format!("{} 80HE ANSI physical keys only; unsupported positions have no invented named selector.", mode.help()))
+                    .clicked()
+                {
+                    if mode == setup_targets::CanvasMode::SelectKeys {
+                        self.select_keys_mode();
+                    } else {
+                        self.canvas_mode = mode;
+                    }
+                }
+        }
     }
 
     pub(super) fn show_preview_tools_window(&mut self, context: &egui::Context) {

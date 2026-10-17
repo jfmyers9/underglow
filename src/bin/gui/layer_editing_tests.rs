@@ -52,6 +52,14 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
             h.click_at(t.rect.center(), |ctx| app.show_lighting(ctx));
             return;
         }
+        if matches!(label, "Duplicate layer" | "Delete layer" | "Rename layer")
+            && let Some(menu) = texts
+                .iter()
+                .find(|t| t.text == "Layer actions" && t.fully_visible())
+        {
+            h.click_at(menu.rect.center(), |ctx| app.show_lighting(ctx));
+            continue;
+        }
         let pane = pane.expect("selected-layer pane");
         let menu_item = texts.iter().rev().find(|t| {
             t.fully_visible()

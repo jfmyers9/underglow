@@ -249,8 +249,17 @@ class StarterTests(unittest.TestCase):
                                             capture_output=True, timeout=3)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertFalse(engine.errors)
-                self.assertEqual([m['sequence'] for m in engine.messages], [1, 2, 3])
-                self.assertEqual([m['payload']['kind'] for m in engine.messages], ['state', 'event', 'remove'])
+                # A fractional timer can wake just before the deadline and
+                # legitimately renew state before completion. Check lifecycle
+                # and contiguous delivery, not an exact timer-dependent count.
+                self.assertGreaterEqual(len(engine.messages), 3)
+                self.assertEqual([m['sequence'] for m in engine.messages],
+                                 list(range(1, len(engine.messages) + 1)))
+                self.assertEqual([m['payload']['kind'] for m in engine.messages[-2:]],
+                                 ['event', 'remove'])
+                for message in engine.messages[:-2]:
+                    self.assertEqual(message['payload'],
+                                     {'kind': 'state', 'state': 'focusing', 'ttl_ms': 15000})
 
     def test_sigterm_removes_without_completion(self):
         for language in ('python', 'typescript'):

@@ -41,11 +41,13 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             .find(|t| t.text == "Close preview tools")
             .map(|t| t.clip);
         let keyboard = keyboard_region(&frame);
+        let layer_action = matches!(label, "Duplicate layer" | "Delete layer" | "Rename layer");
         let region = match label {
             "F1" => Some(keyboard),
             // These controls intentionally live outside scrollable inspectors.
             "Preview tools" | "Preview" | "Select keys" | "Inspect" | "Save composition"
             | "Save" | "Cancel" | "Add layer" => None,
+            _ if layer_action => None, // Layer-actions popup is an explicit overlay.
             _ => tools.or(inspector),
         };
         if let Some(hit) = texts.iter().find(|t| {
@@ -67,6 +69,14 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             // a tool window can overlap an unrelated quick-test button.
             harness.click_at(hit.rect.center(), |ctx| app.show_lighting(ctx));
             return;
+        }
+        if layer_action
+            && let Some(menu) = texts
+                .iter()
+                .find(|t| t.text == "Layer actions" && t.fully_visible())
+        {
+            harness.click_at(menu.rect.center(), |ctx| app.show_lighting(ctx));
+            continue;
         }
         let pane = tools.or(inspector).expect("a scrollable workspace pane");
         harness.wheel(
@@ -220,7 +230,12 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
         let save = visible(&frame, "Save");
         let esc = key(&frame, "Esc");
         let arrow = key(&frame, "→");
-        let inspector = visible(&frame, "Layer name");
+        let inspector_label = if size == MINIMUM_SIZE {
+            "Appearance"
+        } else {
+            "Layer name"
+        };
+        let inspector = visible(&frame, inspector_label);
         for _ in 0..8 {
             harness.wheel(inspector.center(), egui::vec2(0.0, -400.0), |ctx| {
                 app.show_lighting(ctx)
@@ -234,7 +249,7 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
             !frame
                 .texts()
                 .iter()
-                .any(|t| t.text == "Layer name" && t.fully_visible()),
+                .any(|t| t.text == inspector_label && t.fully_visible()),
             "inspector actually scrolled"
         );
         assert_eq!(app.setup_editor.draft, draft);
@@ -331,6 +346,180 @@ fn workspace_compact_edits_and_resizing_keep_one_draft_and_selection() {
         incoming.try_recv().is_err(),
         "compact edits are local, not auto-saved"
     );
+}
+
+#[test]
+fn workspace_pi_appearance_and_color_are_visible_first_and_editable_at_real_sizes() {
+    use underglow::setup::{Renderer, SetupDocument};
+    use underglow::setup_library::{Starter, starter};
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE] {
+        let (mut app, incoming) = app();
+        let document =
+            starter(Starter::MatrixPi, "compact-pi".into(), "Compact Pi".into()).unwrap();
+        app.setup_editor = setup_editor::Editor::default();
+        app.setup_editor.load(Some(document.clone()));
+        app.setup_editor.selected = Some("pi-status".into());
+        let mut harness = Harness::new(size);
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        let inspector = visible(&frame, "Selected layer: Pi status");
+        let pane = frame
+            .texts()
+            .into_iter()
+            .find(|t| t.text.starts_with("Selected layer:"))
+            .unwrap()
+            .clip;
+        for label in ["Appearance", "Idle / fallback", "Solid", "Color"] {
+            visible_in(&frame, label, Some(pane));
+        }
+        if size == MINIMUM_SIZE {
+            assert!(!frame.texts().iter().any(|t| t.text == "Layer name"
+                || t.text == "Duplicate layer"
+                || t.text == "Delete layer"));
+            visible(&frame, "Layer actions");
+        }
+        let color = visible_in(&frame, "Color", Some(pane));
+        assert!(color.top() > inspector.top());
+        // The real color well immediately precedes its Color label.
+        let well = egui::pos2(color.left() - 15.0, color.center().y);
+        assert!(pane.contains(well));
+        harness.click_at(well, |ctx| app.show_lighting(ctx));
+        let popup = harness.settle(|ctx| app.show_lighting(ctx));
+        let red = popup
+            .texts()
+            .into_iter()
+            .find(|t| t.text.starts_with("R ") && t.fully_visible())
+            .expect("RGB picker is reachable without scrolling/properties");
+        let start = red.rect.center();
+        harness.run(workspace_test_ui::pointer(start, true), |ctx| {
+            app.show_lighting(ctx)
+        });
+        harness.run(
+            vec![egui::Event::PointerMoved(start + egui::vec2(40.0, 0.0))],
+            |ctx| app.show_lighting(ctx),
+        );
+        harness.run(
+            workspace_test_ui::pointer(start + egui::vec2(40.0, 0.0), false),
+            |ctx| app.show_lighting(ctx),
+        );
+        let changed: &SetupDocument = app.setup_editor.draft.as_ref().unwrap();
+        let mut expected = document.clone();
+        expected.layers[1].renderer = changed.layers[1].renderer.clone();
+        assert_eq!(changed, &expected);
+        assert!(matches!(&changed.layers[1].renderer, Renderer::Solid { color } if color[0] > 0));
+        assert_eq!(app.setup_editor.selected.as_deref(), Some("pi-status"));
+        assert!(app.setup_editor.dirty);
+        assert!(incoming.try_recv().is_err());
+    }
+}
+
+#[test]
+fn workspace_compact_actions_rename_duplicate_delete_through_the_real_menu() {
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE] {
+        let (mut app, incoming) = app();
+        let mut harness = Harness::new(size);
+        let selected = app.setup_editor.selected.clone().unwrap();
+        let before = app.setup_editor.draft.clone().unwrap();
+        // Compact has a single menu instead of duplicate permanent action rows.
+        if size == MINIMUM_SIZE {
+            click_workspace_control(&mut harness, &mut app, "Rename layer");
+            harness.run(
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            ctrl: true,
+                            ..Default::default()
+                        },
+                    },
+                    egui::Event::Text("Compact renamed".into()),
+                ],
+                |ctx| app.show_lighting(ctx),
+            );
+            assert_eq!(
+                app.setup_editor
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .layers
+                    .iter()
+                    .find(|l| l.id == selected)
+                    .unwrap()
+                    .name,
+                "Compact renamed"
+            );
+            // Clicking the tab finishes inline renaming and restores editing-first chrome.
+            click_workspace_control(&mut harness, &mut app, "Appearance");
+        }
+        click_workspace_control(&mut harness, &mut app, "Duplicate layer");
+        let duplicate = app.setup_editor.selected.clone().unwrap();
+        assert_ne!(duplicate, selected);
+        assert_eq!(
+            app.setup_editor.draft.as_ref().unwrap().layers.len(),
+            before.layers.len() + 1
+        );
+        click_workspace_control(&mut harness, &mut app, "Delete layer");
+        assert!(
+            !app.setup_editor
+                .draft
+                .as_ref()
+                .unwrap()
+                .layers
+                .iter()
+                .any(|l| l.id == duplicate)
+        );
+        assert!(
+            app.setup_editor
+                .draft
+                .as_ref()
+                .unwrap()
+                .layers
+                .iter()
+                .any(|l| l.id == selected)
+        );
+        assert!(incoming.try_recv().is_err());
+    }
+}
+
+#[test]
+fn workspace_compact_connection_notice_remains_visible_in_real_scroll_content() {
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE] {
+        let (mut app, incoming) = app();
+        app.setup_editor.selected = Some(
+            app.setup_editor.draft.as_ref().unwrap().layers[1]
+                .id
+                .clone(),
+        );
+        let mut harness = Harness::new(size);
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        let message = app.setup_editor.connection_notices[0].message.clone();
+        let pane = frame
+            .texts()
+            .into_iter()
+            .find(|t| t.text.starts_with("Selected layer:"))
+            .unwrap()
+            .clip;
+        if size == MINIMUM_SIZE {
+            harness.wheel(pane.center(), egui::vec2(0.0, -2000.0), |ctx| {
+                app.show_lighting(ctx)
+            });
+            for _ in 0..30 {
+                harness.run(vec![], |ctx| app.show_lighting(ctx));
+            }
+        }
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        assert!(
+            frame
+                .texts()
+                .iter()
+                .any(|t| t.text == message && t.fully_visible() && pane.contains(t.rect.center())),
+            "a real connection note remains readable, not only a hover tooltip"
+        );
+        assert!(incoming.try_recv().is_err());
+    }
 }
 
 #[test]

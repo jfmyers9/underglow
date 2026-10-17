@@ -400,30 +400,57 @@ fn keys_tab_and_canvas_selection_mode_share_the_same_editing_context() {
 
 #[test]
 fn mounted_small_key_hover_reveals_the_full_canonical_physical_name() {
-    let mut harness = Harness::new(DEFAULT_SIZE);
-    let (mut app, incoming) = app(document());
-    let frame = harness.settle(|ctx| app.show_lighting(ctx));
-    let layout = KeyboardLayout::for_device(&DeviceInfo::synthetic_80he());
-    let index = layout
-        .keys()
-        .iter()
-        .position(|key| Some(key.coord) == canonical_coord("ControlLeft"))
-        .unwrap();
-    let pos = rgb_keys(&frame)[index].0.center();
-    harness.run(vec![egui::Event::PointerMoved(pos)], |ctx| {
-        app.show_lighting(ctx)
-    });
-    let mut tooltip = false;
-    for _ in 0..90 {
-        let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
-        tooltip |= frame
-            .texts()
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE] {
+        let mut harness = Harness::new(size);
+        let (mut app, incoming) = app(document());
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        let layout = KeyboardLayout::for_device(&DeviceInfo::synthetic_80he());
+        let index = layout
+            .keys()
             .iter()
-            .any(|text| text.text.starts_with("ControlLeft · row"));
+            .position(|key| Some(key.coord) == canonical_coord("ControlLeft"))
+            .unwrap();
+        let pos = rgb_keys(&frame)[index].0.center();
+        harness.run(vec![egui::Event::PointerMoved(pos)], |ctx| {
+            app.show_lighting(ctx)
+        });
+        let mut tooltip = false;
+        for _ in 0..90 {
+            let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+            tooltip |= frame
+                .texts()
+                .iter()
+                .any(|text| text.text.starts_with("ControlLeft · row"));
+        }
+        assert!(
+            tooltip,
+            "abbreviated legends retain full physical-name/address tooltips"
+        );
+        assert!(incoming.try_recv().is_err());
     }
-    assert!(
-        tooltip,
-        "abbreviated legends retain full physical-name/address tooltips"
-    );
-    assert!(incoming.try_recv().is_err());
+}
+
+#[test]
+fn replacing_setups_with_reused_pi_ids_clears_pending_rename_context() {
+    use underglow::setup_library::{Starter, starter};
+    let old = starter(Starter::MatrixPi, "old".into(), "Old".into()).unwrap();
+    let mut new = starter(Starter::MatrixPi, "new".into(), "New".into()).unwrap();
+    assert_eq!(old.layers[1].id, new.layers[1].id);
+    let mut editor = Editor::default();
+    editor.load(Some(old.clone()));
+    editor.rename_focus = Some(old.layers[1].id.clone());
+    editor.rename_editing = editor.rename_focus.clone();
+    editor.load(Some(new.clone()));
+    assert!(editor.rename_focus.is_none() && editor.rename_editing.is_none());
+
+    editor.load(Some(old.clone()));
+    editor.rename_focus = Some(old.layers[1].id.clone());
+    editor.rename_editing = editor.rename_focus.clone();
+    new.revision = 1;
+    editor.acknowledge_persisted(Some(&old), new);
+    assert!(editor.rename_focus.is_none() && editor.rename_editing.is_none());
+    editor.rename_focus = Some("pi-status".into());
+    editor.rename_editing = editor.rename_focus.clone();
+    editor.discard();
+    assert!(editor.rename_focus.is_none() && editor.rename_editing.is_none());
 }

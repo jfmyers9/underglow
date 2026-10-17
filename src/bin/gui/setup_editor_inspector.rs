@@ -96,6 +96,7 @@ impl Editor {
         if ui.button("Rename layer").clicked() {
             self.selected = Some(id.into());
             self.rename_focus = Some(id.into());
+            self.rename_editing = Some(id.into());
             ui.close_menu();
         }
         if ui.button("Duplicate layer").clicked() {
@@ -194,7 +195,7 @@ impl Editor {
             });
     }
 
-    pub(super) fn show_selected_inspector(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn show_selected_inspector(&mut self, ui: &mut egui::Ui, compact: bool) {
         let Some(id) = self.selected.clone() else {
             return;
         };
@@ -206,37 +207,45 @@ impl Editor {
         };
         let mut edited = layer.clone();
         ui.push_id(&id, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Layer name");
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut edited.name)
-                        .char_limit(256)
-                        .desired_width((ui.available_width() - 6.0).max(50.0)),
-                );
-                if self.rename_focus.as_deref() == Some(id.as_str()) {
-                    field.request_focus();
-                    self.rename_focus = None;
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Duplicate layer").clicked() {
-                    let new_id = fresh_id("layer");
-                    let index = doc.layers.iter().position(|l| l.id == id).unwrap() + 1;
-                    self.error = self
-                        .apply(LayerEdit::Duplicate {
-                            id: id.clone(),
-                            new_id: new_id.clone(),
-                            index,
-                        })
-                        .err();
-                    if self.error.is_none() {
-                        self.selected = Some(new_id);
+            if !compact || self.rename_editing.as_deref() == Some(id.as_str()) {
+                ui.horizontal(|ui| {
+                    ui.label("Layer name");
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut edited.name)
+                            .char_limit(256)
+                            .desired_width((ui.available_width() - 6.0).max(50.0)),
+                    );
+                    if self.rename_focus.as_deref() == Some(id.as_str()) {
+                        field.request_focus();
+                        field.scroll_to_me(Some(egui::Align::Min));
+                        self.rename_focus = None;
                     }
-                }
-                if ui.button("Delete layer").clicked() {
-                    self.error = self.apply(LayerEdit::Remove { id: id.clone() }).err();
-                }
-            });
+                    if compact && field.lost_focus() {
+                        self.rename_editing = None;
+                    }
+                });
+            }
+            if !compact {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Duplicate layer").clicked() {
+                        let new_id = fresh_id("layer");
+                        let index = doc.layers.iter().position(|l| l.id == id).unwrap() + 1;
+                        self.error = self
+                            .apply(LayerEdit::Duplicate {
+                                id: id.clone(),
+                                new_id: new_id.clone(),
+                                index,
+                            })
+                            .err();
+                        if self.error.is_none() {
+                            self.selected = Some(new_id);
+                        }
+                    }
+                    if ui.button("Delete layer").clicked() {
+                        self.error = self.apply(LayerEdit::Remove { id: id.clone() }).err();
+                    }
+                });
+            }
             let tab = self.inspector_tabs.entry(id.clone()).or_default();
             let mut select_keys = false;
             ui.horizontal(|ui| {
@@ -248,17 +257,22 @@ impl Editor {
             if select_keys {
                 self.select_keys_mode();
             }
-            for notice in &self.connection_notices {
-                ui.small(&notice.message);
-                if ui
-                    .button(format!("Connections: {}", notice.label))
-                    .clicked()
-                {
-                    self.connection_request = Some(notice.source.clone());
+            if !compact {
+                for notice in &self.connection_notices {
+                    ui.small(&notice.message);
+                    if ui
+                        .button(format!("Connections: {}", notice.label))
+                        .clicked()
+                    {
+                        self.connection_request = Some(notice.source.clone());
+                    }
                 }
             }
             let mut groups = doc.groups.clone();
             match tab {
+                Tab::Appearance if compact => {
+                    self.behaviors.show_compact_appearance(ui, &mut edited)
+                }
                 Tab::Appearance => self.behaviors.show_appearance(ui, &mut edited),
                 Tab::Behavior => {
                     // Only real observations are offered, even while synthetic preview is selected.
@@ -280,6 +294,14 @@ impl Editor {
                         .map(|l| l.target.clone())
                         .collect();
                     self.show_target_controls(ui, &id, &mut edited.target, &mut groups, &others);
+                }
+            }
+            if compact {
+                for notice in &self.connection_notices {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&notice.message).small()).truncate(),
+                    )
+                    .on_hover_text(&notice.message);
                 }
             }
             ui.collapsing("Advanced layer details", |ui| {

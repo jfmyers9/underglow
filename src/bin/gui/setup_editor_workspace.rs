@@ -21,9 +21,9 @@ impl Editor {
         }
         let bounds = ui.available_rect_before_wrap();
         if compact {
-            let canvas_height = (bounds.height() * 0.62)
-                .clamp(270.0, 310.0)
-                .min(bounds.width().min(700.0) / 18.5 * 6.4 + 136.0);
+            // A compact single-row header/test strip leaves real room for the
+            // keyboard and the inspector; extra height is not caption chrome.
+            let canvas_height = 226.0_f32.min((bounds.height() - 146.0).max(0.0));
             let canvas =
                 egui::Rect::from_min_size(bounds.min, egui::vec2(bounds.width(), canvas_height));
             let inspector = egui::Rect::from_min_max(
@@ -31,7 +31,7 @@ impl Editor {
                 bounds.max,
             );
             pane(ui, "workspace-canvas", canvas, |ui| {
-                self.show_workspace_canvas(ui)
+                self.show_workspace_canvas(ui, true)
             });
             pane(ui, "workspace-inspector", inspector, |ui| {
                 self.show_inspector_pane(ui, true);
@@ -52,7 +52,7 @@ impl Editor {
                 self.show_layer_list(ui)
             });
             pane(ui, "workspace-canvas", canvas, |ui| {
-                self.show_workspace_canvas(ui)
+                self.show_workspace_canvas(ui, false)
             });
             pane(ui, "workspace-inspector", inspector, |ui| {
                 self.show_inspector_pane(ui, false)
@@ -70,24 +70,63 @@ impl Editor {
                     .iter()
                     .find(|l| Some(&l.id) == self.selected.as_ref())
             })
-            .map(|l| l.name.as_str())
-            .unwrap_or("No layer selected");
+            .map(|l| l.name.clone())
+            .unwrap_or_else(|| "No layer selected".into());
         if self.draft.as_ref().is_some_and(|doc| doc.layers.is_empty()) {
             ui.label("Empty composition · no hidden layers or Pi behavior. Add a layer to begin.");
             return;
         }
-        ui.add(
-            egui::Label::new(egui::RichText::new(format!("Selected layer: {name}")).strong())
-                .truncate(),
-        )
-        .on_hover_text(name);
         if compact {
-            self.show_compact_layer_actions(ui);
+            let notices = self.connection_notices.clone();
+            ui.horizontal(|ui| {
+                let reserve = if notices.is_empty() { 116.0 } else { 296.0 };
+                ui.add_sized(
+                    [(ui.available_width() - reserve).max(80.0), 24.0],
+                    egui::Label::new(
+                        egui::RichText::new(format!("Selected layer: {name}")).strong(),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(&name);
+                self.show_compact_layer_actions(ui);
+                if notices.len() == 1 {
+                    let notice = &notices[0];
+                    if ui
+                        .add_sized(
+                            [170.0, 24.0],
+                            egui::Button::new(format!("Connections: {}", notice.label)).truncate(),
+                        )
+                        .on_hover_text(&notice.message)
+                        .clicked()
+                    {
+                        self.connection_request = Some(notice.source.clone());
+                    }
+                } else if !notices.is_empty() {
+                    ui.menu_button("Connections", |ui| {
+                        for notice in &notices {
+                            if ui
+                                .button(&notice.label)
+                                .on_hover_text(&notice.message)
+                                .clicked()
+                            {
+                                self.connection_request = Some(notice.source.clone());
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                }
+            });
+        } else {
+            ui.add(
+                egui::Label::new(egui::RichText::new(format!("Selected layer: {name}")).strong())
+                    .truncate(),
+            )
+            .on_hover_text(&name);
         }
         egui::ScrollArea::vertical()
             .id_salt(("selected-layer-inspector", &self.selected))
             .max_height(ui.available_height())
             .auto_shrink([false, false])
-            .show(ui, |ui| self.show_selected_inspector(ui));
+            .show(ui, |ui| self.show_selected_inspector(ui, compact));
     }
 }

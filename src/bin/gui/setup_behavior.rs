@@ -471,7 +471,7 @@ impl BehaviorEditor {
         selected
     }
 
-    fn appearance_picker(&mut self, ui: &mut Ui, layer: &Layer) {
+    fn appearance_picker(&mut self, ui: &mut Ui, layer: &Layer, compact: bool) {
         let selected = self.selection(layer);
         if layer.variants.is_empty() {
             return;
@@ -487,7 +487,9 @@ impl BehaviorEditor {
             .find(|v| Some(&v.id) == selected.as_ref())
             .map(|v| v.name.as_str())
             .unwrap_or(base);
-        ui.label("Editing appearance");
+        if !compact {
+            ui.label("Editing appearance");
+        }
         egui::ComboBox::from_id_salt("selected-appearance")
             .width(ui.available_width())
             .truncate()
@@ -504,8 +506,16 @@ impl BehaviorEditor {
 
     /// Shared stable-ID appearance selection, without exposing trigger forms first.
     pub fn show_appearance(&mut self, ui: &mut Ui, layer: &mut Layer) {
+        self.appearance_controls(ui, layer, false);
+    }
+
+    pub fn show_compact_appearance(&mut self, ui: &mut Ui, layer: &mut Layer) {
+        self.appearance_controls(ui, layer, true);
+    }
+
+    fn appearance_controls(&mut self, ui: &mut Ui, layer: &mut Layer, compact: bool) {
         ui.push_id(("appearance-tab", layer.id.clone()), |ui| {
-            self.appearance_picker(ui, layer);
+            self.appearance_picker(ui, layer, compact);
             let selected = self.selection(layer).clone();
             ui.push_id(("selected-appearance-editor", selected.clone()), |ui| {
                 if let Some(variant) = layer
@@ -513,8 +523,15 @@ impl BehaviorEditor {
                     .iter_mut()
                     .find(|v| Some(&v.id) == selected.as_ref())
                 {
-                    ui.checkbox(&mut variant.enabled, "Appearance enabled");
-                    setup_inspector::show_renderer(ui, &mut variant.renderer);
+                    if !compact {
+                        ui.checkbox(&mut variant.enabled, "Appearance enabled");
+                    }
+                    if compact {
+                        setup_inspector::show_renderer_compact(ui, &mut variant.renderer);
+                        ui.checkbox(&mut variant.enabled, "Appearance enabled");
+                    } else {
+                        setup_inspector::show_renderer(ui, &mut variant.renderer);
+                    }
                     let mut inherit = variant.brightness.is_none();
                     if ui
                         .checkbox(&mut inherit, "Inherit layer brightness")
@@ -526,7 +543,11 @@ impl BehaviorEditor {
                         ui.add(egui::Slider::new(value, 0..=255).text("Appearance brightness"));
                     }
                 } else {
-                    setup_inspector::show_renderer(ui, &mut layer.renderer);
+                    if compact {
+                        setup_inspector::show_renderer_compact(ui, &mut layer.renderer);
+                    } else {
+                        setup_inspector::show_renderer(ui, &mut layer.renderer);
+                    }
                 }
             });
             ui.add(egui::Slider::new(&mut layer.brightness, 0..=255).text("Layer brightness"));
@@ -546,7 +567,7 @@ impl BehaviorEditor {
         events: Option<&EventBatch>,
     ) {
         ui.push_id(("behavior-tab", layer.id.clone()), |ui| {
-            self.appearance_picker(ui, layer);
+            self.appearance_picker(ui, layer, false);
             if ui.add_enabled(layer.variants.len() < MAX_BEHAVIOR_VARIANTS, egui::Button::new("Add behavior appearance")).clicked() {
                 let id = (1..).map(|i| format!("appearance-{i}")).find(|id| !layer.variants.iter().any(|v| &v.id == id)).unwrap();
                 layer.variants.push(BehaviorVariant { id: id.clone(), name: "New appearance".into(), enabled: true,

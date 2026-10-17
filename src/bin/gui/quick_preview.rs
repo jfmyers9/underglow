@@ -273,7 +273,7 @@ impl Preview {
         Ok(())
     }
 
-    /// Two bounded rows, mounted before drawing the board so a quick action and
+    /// One compact row or two desktop rows, mounted before drawing the board so a quick action and
     /// the painted RGB/explanation always refer to the same canonical capture.
     pub fn show_quick_controls(
         &mut self,
@@ -281,6 +281,7 @@ impl Preview {
         document: &SetupDocument,
         layer: Option<&Layer>,
         brightness: u8,
+        compact: bool,
     ) -> bool {
         if self.quick.active
             && self.quick.layer_id.as_deref() != layer.map(|layer| layer.id.as_str())
@@ -292,62 +293,137 @@ impl Preview {
             .map(|layer| choices(layer, &self.controls.capabilities))
             .unwrap_or_default();
         let mut advanced = false;
-        ui.horizontal(|ui| {
-            ui.set_min_height(28.0);
-            if ui.selectable_label(self.mode == Mode::Live, "Live")
-                .on_hover_text("Read-only live connection facts. Never sends source messages or enables lighting.").clicked() {
-                self.set_mode(Mode::Live);
-                self.update(Some(document), brightness);
-            }
-            if ui.selectable_label(self.quick.active, "Try behavior")
-                .on_hover_text(format!("Start a private selected-layer test. Advanced scenario channels are retained and paused; no facts are published to real sources.\n{}", choices.warnings.join("\n"))).clicked() {
-                self.begin_quick(document, layer, brightness);
-                self.set_scenario_playing(true);
-            }
-            advanced = ui.button("Preview tools").on_hover_text("Advanced simultaneous sources, leases, input demo and deterministic clock steps; key inspection.").clicked();
-        });
         let mut picked = None;
-        ui.horizontal(|ui| {
-            ui.set_min_height(28.0);
-            let short = choices.actions.len() <= 3
-                && choices.actions.iter().all(|action| action.label.chars().count() <= 16)
-                && choices.actions.iter().enumerate().all(|(index, action)|
-                    !choices.actions[..index].iter().any(|other| other.label == action.label));
-            if choices.actions.is_empty() {
-                let message = if layer.is_none() { "Select a layer to test" }
-                    else if choices.warnings.is_empty() { "Always shown · no source test needed" }
-                    else { "No declared quick tests · see tools" };
-                ui.add(egui::Label::new(egui::RichText::new(message).small()).truncate())
-                    .on_hover_text(choices.warnings.join("\n"));
-            } else if short {
-                for action in &choices.actions {
-                    if ui.selectable_label(self.quick.active && self.quick.action.as_ref() == Some(action), &action.label)
-                        .on_hover_text(action.help()).clicked() {
-                        picked = Some(action.clone());
-                    }
-                }
-            } else {
-                self.quick.picked = self.quick.picked.min(choices.actions.len() - 1);
-                egui::ComboBox::from_id_salt("quick-test-choice")
-                    .width((ui.available_width() - 112.0).max(80.0)).truncate()
-                    .selected_text(&choices.actions[self.quick.picked].detail)
-                    .show_ui(ui, |ui| {
-                        for (index, action) in choices.actions.iter().enumerate() {
-                            ui.selectable_value(&mut self.quick.picked, index,
-                                format!("{} · {}", action.source_label, action.detail)).on_hover_text(action.help());
-                        }
-                    }).response.on_hover_text(choices.actions[self.quick.picked].help());
-                if ui.button("Try").clicked() { picked = Some(choices.actions[self.quick.picked].clone()); }
-            }
-            if !choices.actions.is_empty() && ui.add_enabled(self.quick.active,
-                egui::Button::new(if self.scenario_playing() && self.quick.active { "Pause test" } else { "Play test" }))
-                .on_hover_text("Paused freezes animations and finite leases. Play advances private test time without renewing facts.").clicked() {
-                self.set_scenario_playing(!self.scenario_playing());
-            }
-        });
+        if compact {
+            ui.horizontal(|ui| {
+                ui.set_min_height(28.0);
+                self.show_quick_context(ui, document, layer, brightness, &choices);
+                picked = self.show_quick_actions(ui, &choices, layer.is_some());
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.set_min_height(28.0);
+                self.show_quick_context(ui, document, layer, brightness, &choices);
+                advanced = ui.button("Preview tools").on_hover_text("Advanced simultaneous sources, leases, input demo and deterministic clock steps; key inspection.").clicked();
+            });
+            ui.horizontal(|ui| {
+                ui.set_min_height(28.0);
+                picked = self.show_quick_actions(ui, &choices, layer.is_some());
+            });
+        }
         if let (Some(layer), Some(action)) = (layer, picked) {
             self.quick.error = self.run_quick(document, layer, &action, brightness).err();
         }
         advanced
+    }
+
+    fn show_quick_context(
+        &mut self,
+        ui: &mut egui::Ui,
+        document: &SetupDocument,
+        layer: Option<&Layer>,
+        brightness: u8,
+        choices: &Choices,
+    ) {
+        if ui
+            .selectable_label(self.mode == Mode::Live, "Live")
+            .on_hover_text(
+                "Read-only live connection facts. Never sends source messages or enables lighting.",
+            )
+            .clicked()
+        {
+            self.set_mode(Mode::Live);
+            self.update(Some(document), brightness);
+        }
+        if ui.selectable_label(self.quick.active, "Try behavior")
+                .on_hover_text(format!("Start a private selected-layer test. Advanced scenario channels are retained and paused; no facts are published to real sources.\n{}", choices.warnings.join("\n"))).clicked() {
+                self.begin_quick(document, layer, brightness);
+                self.set_scenario_playing(true);
+            }
+    }
+
+    fn show_quick_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        choices: &Choices,
+        has_layer: bool,
+    ) -> Option<Action> {
+        let mut picked = None;
+        // SelectableLabel and Button both use Button text style plus the same
+        // horizontal padding in egui 0.31. Measure the actual configured fonts,
+        // including a larger Play/Pause label, before choosing inline actions.
+        let button_width = |label: &str| {
+            egui::WidgetText::from(label)
+                .into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button)
+                .size()
+                .x
+                + ui.spacing().button_padding.x * 2.0
+        };
+        let actions_width = choices
+            .actions
+            .iter()
+            .map(|action| button_width(&action.label))
+            .sum::<f32>()
+            + button_width("Play test").max(button_width("Pause test"))
+            + ui.spacing().item_spacing.x * choices.actions.len() as f32
+            + 2.0;
+        let short = choices.actions.len() <= 3
+            && actions_width <= ui.available_width()
+            && choices.actions.iter().enumerate().all(|(index, action)| {
+                !choices.actions[..index]
+                    .iter()
+                    .any(|other| other.label == action.label)
+            });
+        if choices.actions.is_empty() {
+            let message = if !has_layer {
+                "Select a layer to test"
+            } else if choices.warnings.is_empty() {
+                "Always shown · no source test needed"
+            } else {
+                "No declared quick tests · see tools"
+            };
+            ui.add(egui::Label::new(egui::RichText::new(message).small()).truncate())
+                .on_hover_text(choices.warnings.join("\n"));
+        } else if short {
+            for action in &choices.actions {
+                if ui
+                    .selectable_label(
+                        self.quick.active && self.quick.action.as_ref() == Some(action),
+                        &action.label,
+                    )
+                    .on_hover_text(action.help())
+                    .clicked()
+                {
+                    picked = Some(action.clone());
+                }
+            }
+        } else {
+            self.quick.picked = self.quick.picked.min(choices.actions.len() - 1);
+            egui::ComboBox::from_id_salt("quick-test-choice")
+                .width((ui.available_width() - 140.0).max(80.0))
+                .truncate()
+                .selected_text(&choices.actions[self.quick.picked].detail)
+                .show_ui(ui, |ui| {
+                    for (index, action) in choices.actions.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut self.quick.picked,
+                            index,
+                            format!("{} · {}", action.source_label, action.detail),
+                        )
+                        .on_hover_text(action.help());
+                    }
+                })
+                .response
+                .on_hover_text(choices.actions[self.quick.picked].help());
+            if ui.button("Try").clicked() {
+                picked = Some(choices.actions[self.quick.picked].clone());
+            }
+        }
+        if !choices.actions.is_empty() && ui.add_enabled(self.quick.active,
+                egui::Button::new(if self.scenario_playing() && self.quick.active { "Pause test" } else { "Play test" }))
+                .on_hover_text("Paused freezes animations and finite leases. Play advances private test time without renewing facts.").clicked() {
+                self.set_scenario_playing(!self.scenario_playing());
+            }
+        picked
     }
 }
