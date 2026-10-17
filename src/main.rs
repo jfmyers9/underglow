@@ -1,6 +1,7 @@
 mod config;
 mod doctor;
 mod engine;
+mod external_rules;
 mod ingress;
 mod notifications;
 mod ownership;
@@ -687,6 +688,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn build_config_signal(
     config: &AppConfig,
 ) -> Result<Box<dyn signals::SignalProgram>, Box<dyn std::error::Error>> {
+    build_config_signal_with_sources(config, None)
+}
+
+fn build_config_signal_with_sources(
+    config: &AppConfig,
+    sources: Option<ingress::SharedSources>,
+) -> Result<Box<dyn signals::SignalProgram>, Box<dyn std::error::Error>> {
     config.validate()?;
     let base: Box<dyn signals::SignalProgram> =
         if ProfileRuntimeSignal::is_profile_runtime_config(config) {
@@ -694,7 +702,8 @@ fn build_config_signal(
         } else {
             build_signal(&config.signal_config(), config.effect)?
         };
-    notifications::wrap(base, &config.notifications, config.effect)
+    let base = notifications::wrap(base, &config.notifications, config.effect)?;
+    external_rules::wrap(base, &config.automation, sources)
 }
 
 fn run_keyboard(

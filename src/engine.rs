@@ -248,9 +248,13 @@ struct Active {
     _lease: Lease,
 }
 impl Active {
-    fn open(config: &AppConfig, path: Option<&Path>) -> Result<Self, Error> {
+    fn open(
+        config: &AppConfig,
+        path: Option<&Path>,
+        sources: crate::ingress::SharedSources,
+    ) -> Result<Self, Error> {
         let lease = Lease::acquire("hardware")?;
-        let mut signal = crate::build_config_signal(config)?;
+        let mut signal = crate::build_config_signal_with_sources(config, Some(sources))?;
         let session = Session::open(
             path.or(config.sdk_path.as_deref()),
             &config.signal_run_options(),
@@ -347,7 +351,7 @@ impl Runtime {
         }
     }
     fn start(&mut self) {
-        match Active::open(&self.config, self.sdk.as_deref()) {
+        match Active::open(&self.config, self.sdk.as_deref(), self.sources.clone()) {
             Ok(active) => {
                 self.active = Some(active);
                 self.retry_at = None;

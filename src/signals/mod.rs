@@ -50,6 +50,21 @@ pub trait SignalProgram {
         None
     }
     fn render(&self, ctx: &RenderContext<'_>) -> Frame;
+    /// Current-frame composition. Wrappers append layers instead of painting
+    /// over an already composed frame. Producers filter their own deadlines and
+    /// clear `expires`: their monotonic clock origins may differ. Never cache
+    /// these ephemeral layers across frames.
+    fn composition(&self, ctx: &RenderContext<'_>) -> (Frame, Vec<underglow::compositor::Layer>) {
+        (self.render(ctx), Vec::new())
+    }
+    // Engine diagnostics consumes this optional hook; rendering does not.
+    #[allow(dead_code)]
+    fn automation_diagnostics(
+        &self,
+        _ctx: &RenderContext<'_>,
+    ) -> Vec<underglow::automation::RuleDiagnostic> {
+        Vec::new()
+    }
     fn finished(&self) -> bool;
     fn shutdown(&mut self, interrupted: bool) -> ProgramResult;
 }

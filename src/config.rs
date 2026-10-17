@@ -25,6 +25,7 @@ pub struct AppConfig {
     #[serde(alias = "extension")]
     pub signal: Option<SignalConfig>,
     pub notifications: Vec<crate::notifications::NotificationConfig>,
+    pub automation: underglow::automation::AutomationConfig,
     pub sources: Vec<SourceConfig>,
     pub rules: Vec<RuleConfig>,
     pub scenes: BTreeMap<String, SceneConfig>,
@@ -177,6 +178,7 @@ impl Default for AppConfig {
             warn_on_close_error: true,
             signal: None,
             notifications: Vec::new(),
+            automation: underglow::automation::AutomationConfig::default(),
             sources: Vec::new(),
             rules: Vec::new(),
             scenes: BTreeMap::new(),
@@ -197,6 +199,7 @@ impl AppConfig {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         crate::notifications::validate(&self.notifications).map_err(ConfigError::Invalid)?;
+        self.automation.validate().map_err(ConfigError::Invalid)?;
         if self.schema_version != 1 {
             return Err(ConfigError::Invalid(
                 "unsupported schema_version; expected 1".into(),
@@ -315,6 +318,35 @@ pub enum ConfigError {
 mod tests {
     use super::*;
     use crate::signals::SignalKind;
+
+    #[test]
+    fn external_automation_is_separate_from_legacy_profiles_and_inert_by_default() {
+        let config: AppConfig = toml::from_str(
+            r#"
+effect = 'matrix'
+[[automation.rules]]
+id = 'pi-working'
+source = 'pi'
+mode = 'while-state'
+state = 'working'
+scene = 'agent'
+priority = -12
+[automation.scenes.agent]
+kind = 'sweep'
+color = [0, 80, 255]
+zones = ['function']
+"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert!(config.sources.is_empty());
+        assert!(config.rules.is_empty());
+        assert_eq!(config.effect, EffectKind::Matrix);
+        assert_eq!(config.automation.rules[0].priority, -12);
+        assert!(!config.runs_commands());
+        assert!(AppConfig::default().automation.rules.is_empty());
+        assert!(toml::from_str::<AppConfig>("[automation]\nunknown=true").is_err());
+    }
 
     #[test]
     fn command_detection_follows_effective_source_selection() {

@@ -183,12 +183,23 @@ impl SignalProgram for NotificationProgram {
     }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Frame {
+        let (base, layers) = self.composition(ctx);
+        compose(base, ctx.layout, &layers, self.now)
+    }
+
+    fn automation_diagnostics(
+        &self,
+        ctx: &RenderContext<'_>,
+    ) -> Vec<underglow::automation::RuleDiagnostic> {
+        self.base.automation_diagnostics(ctx)
+    }
+
+    fn composition(&self, ctx: &RenderContext<'_>) -> (Frame, Vec<Layer>) {
         // Render the current background even when every key is covered. Source
         // ticking remains independent of visibility, including hidden deadlines.
-        let base = self.base.render(ctx);
-        let layers: Vec<_> = self
-            .active_notifications()
-            .map(|notification| Layer {
+        let (base, mut layers) = self.base.composition(ctx);
+        layers.extend(self.active_notifications().map(|notification| {
+            Layer {
                 frame: notification.signal.render(ctx),
                 mask: KeyMask::Zones(
                     notification
@@ -205,10 +216,10 @@ impl SignalProgram for NotificationProgram {
                         .collect(),
                 ),
                 priority: i32::from(notification.config.priority),
-                expires: notification.expires,
-            })
-            .collect();
-        compose(base, ctx.layout, &layers, self.now)
+                expires: None,
+            }
+        }));
+        (base, layers)
     }
 
     fn finished(&self) -> bool {
@@ -352,6 +363,83 @@ mod tests {
                 key.zone,
                 key.coord
             );
+        }
+    }
+
+    #[test]
+    fn legacy_and_external_layers_share_signed_priorities_ties_and_deadline_clocks() {
+        use crate::ingress::SharedSources;
+        use underglow::automation::AutomationConfig;
+        use underglow::external::{Message, Payload};
+        for priority in [-1, 5, 6] {
+            let config: AutomationConfig = toml::from_str(&format!(
+                r#"
+[[rules]]
+id='agent'
+source='pi'
+mode='while-state'
+state='working'
+scene='blue'
+priority={priority}
+[scenes.blue]
+color=[0,0,255]
+zones=['function']
+"#
+            ))
+            .unwrap();
+            let sources = SharedSources::default();
+            sources
+                .apply(Message {
+                    schema_version: 1,
+                    source: "pi".into(),
+                    instance: "a".into(),
+                    sequence: 1,
+                    payload: Payload::State {
+                        state: "working".into(),
+                        ttl_ms: 15000,
+                    },
+                })
+                .unwrap();
+            let state = mock();
+            let mut legacy = program(&mock(), vec![(self::config("legacy", 5, 2), state.clone())]);
+            // Legacy clock intentionally far ahead of the external registry.
+            state.borrow_mut().ticks = 90;
+            event(&state, "success");
+            legacy.observe_at(Duration::from_secs(100));
+            let mut p =
+                crate::external_rules::wrap(Box::new(legacy), &config, Some(sources)).unwrap();
+            p.initialize().unwrap();
+            let info = crate::preview::preview_device();
+            let layout = KeyboardLayout::for_device(&info);
+            let ctx = RenderContext {
+                info: &info,
+                layout: &layout,
+                brightness: 96,
+                palette: PaletteName::Wooting,
+                tick: 0,
+                animation_seconds: 0.0,
+            };
+            let function = layout
+                .keys()
+                .iter()
+                .find(|key| key.zone == Zone::Function)
+                .unwrap();
+            let expected = if priority > 5 {
+                Color::new(0, 0, 96)
+            } else {
+                Color::new(90, 0, 0)
+            };
+            assert_eq!(p.render(&ctx).get_coord(function.coord), expected);
+            let diagnostic = p.automation_diagnostics(&ctx);
+            assert_eq!(diagnostic[0].visible_keys > 0, priority > 5);
+            assert!(
+                p.composition(&ctx)
+                    .1
+                    .iter()
+                    .all(|layer| layer.expires.is_none()),
+                "each producer resolves its own clock before sharing layers"
+            );
+            p.shutdown(true).unwrap();
         }
     }
 

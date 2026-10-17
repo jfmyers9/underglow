@@ -1,0 +1,828 @@
+//! Declarative external facts → scenes. No I/O, SDKs, processes, or wall clock.
+//!
+//! Call `baseline` at activation/resume, then observe snapshots and broadcast event
+//! batches on the registry's monotonic clock. One active slot per rule bounds
+//! memory; a newer occurrence replaces that rule's earlier transient scene.
+//! `on-transition` compares consecutive observed per-instance states, not a
+//! journal: producers should emit events for occurrences that must survive rapid
+//! intermediate state changes between observations. First appearance, expiry,
+//! removal, and same-state lease renewals are not transitions.
+use crate::compositor::{KeyMask, Layer, winning_layer};
+use crate::effects::EffectKind;
+use crate::external::{EventBatch, Identity, Snapshot, StateSnapshot};
+use crate::layout::Zone;
+use crate::render::{Color, Frame, PaletteName, RenderContext};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AutomationConfig {
+    pub rules: Vec<Rule>,
+    pub scenes: BTreeMap<String, Scene>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuleMode {
+    WhileState,
+    OnEvent,
+    OnTransition,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rule {
+    pub id: String,
+    pub source: String,
+    #[serde(default)]
+    pub instance: Option<String>,
+    pub mode: RuleMode,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub event: Option<String>,
+    #[serde(default)]
+    pub from_state: Option<String>,
+    pub scene: String,
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneKind {
+    #[default]
+    Solid,
+    Pulse,
+    Sweep,
+    Effect,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneZone {
+    Function,
+    Alpha,
+    Navigation,
+    Arrows,
+    System,
+}
+
+impl From<SceneZone> for Zone {
+    fn from(zone: SceneZone) -> Self {
+        match zone {
+            SceneZone::Function => Self::Function,
+            SceneZone::Alpha => Self::Alpha,
+            SceneZone::Navigation => Self::Navigation,
+            SceneZone::Arrows => Self::Arrows,
+            SceneZone::System => Self::System,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Scene {
+    pub kind: SceneKind,
+    pub color: [u8; 3],
+    pub effect: Option<EffectKind>,
+    pub palette: Option<PaletteName>,
+    pub brightness: Option<u8>,
+    /// Empty means the whole keyboard; never silently substitute other keys.
+    pub zones: Vec<SceneZone>,
+}
+
+impl Default for Scene {
+    fn default() -> Self {
+        Self {
+            kind: SceneKind::Solid,
+            color: [0, 180, 255],
+            effect: None,
+            palette: None,
+            brightness: None,
+            zones: Vec::new(),
+        }
+    }
+}
+
+fn label(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
+}
+
+fn token(value: &str) -> bool {
+    label(value)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:/".contains(&byte))
+}
+
+impl AutomationConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.rules.len() > 64 || self.scenes.len() > 64 {
+            return Err("automation supports at most 64 rules and 64 scenes".into());
+        }
+        let mut ids = BTreeSet::new();
+        for (name, scene) in &self.scenes {
+            if !label(name) || scene.zones.len() > 5 {
+                return Err("automation scene name or zones invalid".into());
+            }
+            if (scene.kind == SceneKind::Effect) != scene.effect.is_some()
+                || (scene.kind != SceneKind::Effect && scene.palette.is_some())
+            {
+                return Err(format!(
+                    "automation scene {name}: effect/palette require kind='effect' and effect is required"
+                ));
+            }
+        }
+        for rule in &self.rules {
+            if !label(&rule.id)
+                || !ids.insert(&rule.id)
+                || !token(&rule.source)
+                || rule.instance.as_deref().is_some_and(|s| !token(s))
+                || [&rule.state, &rule.event, &rule.from_state]
+                    .into_iter()
+                    .any(|s| s.as_deref().is_some_and(|s| !token(s)))
+            {
+                return Err("automation rule ids must be unique; selectors must be nonempty, bounded labels".into());
+            }
+            if !self.scenes.contains_key(&rule.scene) {
+                return Err(format!(
+                    "automation rule {}: missing scene {}",
+                    rule.id, rule.scene
+                ));
+            }
+            let valid = match rule.mode {
+                RuleMode::WhileState => {
+                    rule.event.is_none() && rule.from_state.is_none() && rule.duration_ms.is_none()
+                }
+                RuleMode::OnEvent => {
+                    rule.event.is_some() && rule.state.is_none() && rule.from_state.is_none()
+                }
+                RuleMode::OnTransition => rule.state.is_some() && rule.event.is_none(),
+            };
+            if !valid
+                || (rule.mode != RuleMode::WhileState
+                    && !rule.duration_ms.is_some_and(|d| (1..=60_000).contains(&d)))
+            {
+                return Err(format!(
+                    "automation rule {}: invalid selectors/duration_ms (transients require 1..60000)",
+                    rule.id
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Rule {
+    fn identity_matches(&self, identity: &Identity) -> bool {
+        self.source == identity.source
+            && self
+                .instance
+                .as_ref()
+                .is_none_or(|instance| *instance == identity.instance)
+    }
+
+    fn state_matches(&self, state: &StateSnapshot, now: Duration) -> bool {
+        state.expires_at > now
+            && self.identity_matches(&state.identity)
+            && self
+                .state
+                .as_ref()
+                .is_none_or(|value| *value == state.state)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Activation {
+    started: Duration,
+    expires: Option<Duration>,
+}
+
+/// Stable declaration-order diagnostics; `visible_keys` uses compositor arbitration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RuleDiagnostic {
+    pub rule_id: String,
+    pub scene: String,
+    pub matched: bool,
+    pub active: bool,
+    pub priority: i32,
+    pub expires: Option<Duration>,
+    pub targeted_keys: usize,
+    pub visible_keys: usize,
+}
+
+pub struct AutomationRuntime {
+    config: AutomationConfig,
+    previous: BTreeMap<Identity, StateSnapshot>,
+    activations: Vec<Option<Activation>>,
+    matched: Vec<bool>,
+    cursor: u64,
+    now: Duration,
+    initialized: bool,
+}
+
+impl AutomationRuntime {
+    pub fn new(config: AutomationConfig) -> Result<Self, String> {
+        config.validate()?;
+        Ok(Self {
+            activations: vec![None; config.rules.len()],
+            matched: vec![false; config.rules.len()],
+            config,
+            previous: BTreeMap::new(),
+            cursor: 0,
+            now: Duration::ZERO,
+            initialized: false,
+        })
+    }
+
+    pub fn event_cursor(&self) -> u64 {
+        self.cursor
+    }
+
+    /// Discard transient history while keeping currently leased persistent state.
+    pub fn baseline(&mut self, snapshot: &Snapshot, now: Duration) {
+        self.cursor = snapshot.event_cursor;
+        self.now = now;
+        self.initialized = true;
+        self.activations.fill(None);
+        self.matched.fill(false);
+        self.previous = Self::states(snapshot, now);
+        self.update(
+            snapshot,
+            &EventBatch {
+                cursor: self.cursor,
+                gap: false,
+                events: vec![],
+            },
+            now,
+            false,
+        );
+    }
+
+    pub fn observe(&mut self, snapshot: &Snapshot, events: &EventBatch, now: Duration) {
+        if !self.initialized {
+            self.baseline(snapshot, now);
+        } else if now >= self.now {
+            self.update(snapshot, events, now, true);
+        }
+    }
+
+    fn states(snapshot: &Snapshot, now: Duration) -> BTreeMap<Identity, StateSnapshot> {
+        snapshot
+            .states
+            .iter()
+            .filter(|s| s.expires_at > now)
+            .map(|s| (s.identity.clone(), s.clone()))
+            .collect()
+    }
+
+    fn update(
+        &mut self,
+        snapshot: &Snapshot,
+        events: &EventBatch,
+        now: Duration,
+        transitions: bool,
+    ) {
+        self.now = now;
+        for (index, rule) in self.config.rules.iter().enumerate() {
+            if self.activations[index].is_some_and(|a| a.expires.is_some_and(|e| now >= e)) {
+                self.activations[index] = None;
+            }
+            let mut occurrence = None;
+            self.matched[index] = match rule.mode {
+                RuleMode::WhileState => snapshot.states.iter().any(|s| rule.state_matches(s, now)),
+                RuleMode::OnEvent => {
+                    for event in &events.events {
+                        if event.cursor > self.cursor
+                            && event.expires_at > now
+                            && event.received_at <= now
+                            && rule.identity_matches(&event.identity)
+                            && rule.event.as_ref() == Some(&event.event)
+                        {
+                            occurrence = Some((event.received_at, event.expires_at));
+                        }
+                    }
+                    occurrence.is_some()
+                }
+                RuleMode::OnTransition => {
+                    if transitions {
+                        for state in &snapshot.states {
+                            if rule.state_matches(state, now)
+                                && state.updated_at <= now
+                                && self.previous.get(&state.identity).is_some_and(|old| {
+                                    old.expires_at > state.updated_at
+                                        && old.state != state.state
+                                        && rule
+                                            .from_state
+                                            .as_ref()
+                                            .is_none_or(|from| *from == old.state)
+                                })
+                                && occurrence.is_none_or(|(started, _)| state.updated_at > started)
+                            {
+                                occurrence = Some((state.updated_at, state.expires_at));
+                            }
+                        }
+                    }
+                    occurrence.is_some()
+                }
+            };
+            if rule.mode == RuleMode::WhileState {
+                if !self.matched[index] {
+                    self.activations[index] = None;
+                } else if self.activations[index].is_none() {
+                    self.activations[index] = Some(Activation {
+                        started: now,
+                        expires: None,
+                    });
+                }
+            } else if let Some((started, lease)) = occurrence {
+                let expires = started
+                    .saturating_add(Duration::from_millis(rule.duration_ms.unwrap()))
+                    .min(lease);
+                if expires > now {
+                    self.activations[index] = Some(Activation {
+                        started,
+                        expires: Some(expires),
+                    });
+                }
+            }
+        }
+        self.cursor = self.cursor.max(events.cursor).max(snapshot.event_cursor);
+        self.previous = Self::states(snapshot, now);
+    }
+
+    pub fn layers(&self, ctx: &RenderContext<'_>) -> Vec<Layer> {
+        self.config
+            .rules
+            .iter()
+            .zip(&self.activations)
+            .filter_map(|(rule, activation)| {
+                activation
+                    .filter(|a| a.expires.is_none_or(|e| self.now < e))
+                    .map(|activation| {
+                        let scene = &self.config.scenes[&rule.scene];
+                        Layer {
+                            frame: scene.render(ctx, self.now.saturating_sub(activation.started)),
+                            mask: scene.mask(),
+                            priority: rule.priority,
+                            expires: activation.expires,
+                        }
+                    })
+            })
+            .collect()
+    }
+
+    pub fn diagnostics(&self, ctx: &RenderContext<'_>) -> Vec<RuleDiagnostic> {
+        let layers = self.layers(ctx);
+        let mut layer_index = 0;
+        self.config
+            .rules
+            .iter()
+            .enumerate()
+            .map(|(index, rule)| {
+                let activation =
+                    self.activations[index].filter(|a| a.expires.is_none_or(|e| self.now < e));
+                let active = activation.is_some();
+                let mask = self.config.scenes[&rule.scene].mask();
+                let visible_keys = if active {
+                    let current = layer_index;
+                    layer_index += 1;
+                    ctx.layout
+                        .keys()
+                        .iter()
+                        .filter(|key| winning_layer(&layers, key, self.now) == Some(current))
+                        .count()
+                } else {
+                    0
+                };
+                RuleDiagnostic {
+                    rule_id: rule.id.clone(),
+                    scene: rule.scene.clone(),
+                    matched: self.matched[index],
+                    active,
+                    priority: rule.priority,
+                    expires: activation.and_then(|a| a.expires),
+                    targeted_keys: ctx
+                        .layout
+                        .keys()
+                        .iter()
+                        .filter(|key| mask.contains(key))
+                        .count(),
+                    visible_keys,
+                }
+            })
+            .collect()
+    }
+}
+
+impl Scene {
+    pub fn mask(&self) -> KeyMask {
+        if self.zones.is_empty() {
+            KeyMask::Whole
+        } else {
+            KeyMask::Zones(self.zones.iter().copied().map(Into::into).collect())
+        }
+    }
+
+    fn render(&self, ctx: &RenderContext<'_>, elapsed: Duration) -> Frame {
+        let mut ctx = ctx.clone();
+        ctx.brightness = ctx.brightness.min(self.brightness.unwrap_or(255));
+        ctx.palette = self.palette.unwrap_or(ctx.palette);
+        ctx.animation_seconds = elapsed.as_secs_f64();
+        if self.kind == SceneKind::Effect {
+            return self.effect.unwrap_or_default().render(&ctx);
+        }
+        let mut frame = Frame::black();
+        let [r, g, b] = self.color;
+        let color = Color::new(r, g, b).scale(ctx.brightness);
+        let mask = self.mask();
+        let mut keys: Vec<_> = ctx
+            .layout
+            .keys()
+            .iter()
+            .filter(|key| mask.contains(key))
+            .collect();
+        keys.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+        let phase = elapsed.as_secs_f64();
+        let count = keys.len();
+        for (index, key) in keys.into_iter().enumerate() {
+            let amount = match self.kind {
+                SceneKind::Pulse => {
+                    (64.0 + 191.0 * (0.5 - 0.5 * (phase * std::f64::consts::TAU / 2.0).cos())) as u8
+                }
+                SceneKind::Sweep => {
+                    let head = (phase * 10.0) as usize % count.max(1);
+                    let distance = (head + count - index) % count.max(1);
+                    if distance < 4 {
+                        255u8.saturating_sub((distance * 60) as u8)
+                    } else {
+                        0
+                    }
+                }
+                _ => 255,
+            };
+            frame.set_coord(key.coord, color.scale(amount));
+        }
+        frame
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device::{DeviceInfo, DeviceType, Layout};
+    use crate::external::{Message, Payload, Registry};
+    use crate::layout::KeyboardLayout;
+
+    fn ms(value: u64) -> Duration {
+        Duration::from_millis(value)
+    }
+
+    fn config() -> AutomationConfig {
+        toml::from_str(
+            r#"
+[[rules]]
+id = 'present'
+source = 'pi'
+mode = 'while-state'
+scene = 'idle'
+priority = -10
+[[rules]]
+id = 'working'
+source = 'pi'
+mode = 'while-state'
+state = 'working'
+scene = 'working'
+priority = 10
+[[rules]]
+id = 'finished'
+source = 'pi'
+mode = 'on-event'
+event = 'finished'
+scene = 'done'
+priority = 20
+duration_ms = 2000
+[[rules]]
+id = 'transition'
+source = 'pi'
+mode = 'on-transition'
+from_state = 'working'
+state = 'idle'
+scene = 'done'
+priority = 15
+duration_ms = 1000
+[scenes.idle]
+color = [0, 255, 255]
+brightness = 40
+zones = ['function']
+[scenes.working]
+kind = 'sweep'
+color = [0, 0, 255]
+zones = ['function']
+[scenes.done]
+kind = 'pulse'
+color = [0, 255, 0]
+zones = ['function']
+"#,
+        )
+        .unwrap()
+    }
+
+    fn publish(registry: &mut Registry, instance: &str, sequence: u64, payload: Payload, now: u64) {
+        registry
+            .apply(
+                Message {
+                    schema_version: 1,
+                    source: "pi".into(),
+                    instance: instance.into(),
+                    sequence,
+                    payload,
+                },
+                ms(now),
+            )
+            .unwrap();
+    }
+
+    fn state(
+        registry: &mut Registry,
+        instance: &str,
+        sequence: u64,
+        state: &str,
+        now: u64,
+        ttl: u64,
+    ) {
+        publish(
+            registry,
+            instance,
+            sequence,
+            Payload::State {
+                state: state.into(),
+                ttl_ms: ttl,
+            },
+            now,
+        );
+    }
+
+    fn observe(runtime: &mut AutomationRuntime, registry: &mut Registry, now: u64) {
+        registry.expire(ms(now)).unwrap();
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(runtime.event_cursor()),
+            ms(now),
+        );
+    }
+
+    fn info() -> DeviceInfo {
+        DeviceInfo {
+            connected: true,
+            model: "test".into(),
+            max_rows: 6,
+            max_columns: 17,
+            led_index_max: 0,
+            device_type: DeviceType::Keyboard80,
+            layout: Layout::Ansi,
+            v2_interface: true,
+            uses_small_packets: false,
+            uses_multi_report: false,
+        }
+    }
+
+    #[test]
+    fn while_rules_aggregate_instances_and_expire_without_heartbeat_restarts() {
+        let mut registry = Registry::default();
+        let mut runtime = AutomationRuntime::new(config()).unwrap();
+        runtime.baseline(&registry.snapshot(), ms(0));
+        state(&mut registry, "a", 1, "working", 10, 1000);
+        state(&mut registry, "b", 1, "idle", 10, 3000);
+        observe(&mut runtime, &mut registry, 10);
+        assert!(runtime.activations[0].is_some());
+        assert!(runtime.activations[1].is_some());
+        state(&mut registry, "a", 2, "working", 20, 1000);
+        observe(&mut runtime, &mut registry, 20);
+        assert_eq!(runtime.activations[1].unwrap().started, ms(10));
+        assert!(runtime.activations[3].is_none());
+        observe(&mut runtime, &mut registry, 1020);
+        assert!(runtime.activations[0].is_some());
+        assert!(runtime.activations[1].is_none());
+        observe(&mut runtime, &mut registry, 3010);
+        assert!(runtime.activations.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn events_are_once_only_and_deadlines_use_receipt_not_observation() {
+        let mut registry = Registry::default();
+        let mut runtime = AutomationRuntime::new(config()).unwrap();
+        runtime.baseline(&registry.snapshot(), ms(0));
+        publish(
+            &mut registry,
+            "a",
+            1,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 900,
+            },
+            10,
+        );
+        observe(&mut runtime, &mut registry, 500);
+        assert_eq!(runtime.activations[2].unwrap().expires, Some(ms(910)));
+        // Re-deliver the identical batch: no restart or lifetime extension.
+        runtime.observe(&registry.snapshot(), &registry.events_since(0), ms(600));
+        assert_eq!(runtime.activations[2].unwrap().started, ms(10));
+        observe(&mut runtime, &mut registry, 910);
+        assert!(runtime.activations[2].is_none());
+        publish(
+            &mut registry,
+            "a",
+            2,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 15000,
+            },
+            1000,
+        );
+        observe(&mut runtime, &mut registry, 4000);
+        assert!(
+            runtime.activations[2].is_none(),
+            "an unexpired event cannot stretch its scene deadline"
+        );
+    }
+
+    #[test]
+    fn activation_and_resume_baseline_discard_even_unexpired_events_and_transitions() {
+        let mut registry = Registry::default();
+        state(&mut registry, "a", 1, "working", 0, 15000);
+        publish(
+            &mut registry,
+            "a",
+            2,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 15000,
+            },
+            1,
+        );
+        let mut runtime = AutomationRuntime::new(config()).unwrap();
+        observe(&mut runtime, &mut registry, 2);
+        assert!(runtime.activations[1].is_some());
+        assert!(runtime.activations[2].is_none());
+        state(&mut registry, "a", 3, "idle", 10, 15000);
+        observe(&mut runtime, &mut registry, 10);
+        assert!(runtime.activations[3].is_some());
+        publish(
+            &mut registry,
+            "a",
+            4,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 15000,
+            },
+            20,
+        );
+        runtime.baseline(&registry.snapshot(), ms(30));
+        observe(&mut runtime, &mut registry, 40);
+        assert!(runtime.activations[2].is_none());
+        assert!(runtime.activations[3].is_none());
+        assert!(runtime.activations[0].is_some());
+    }
+
+    #[test]
+    fn transitions_require_changed_contiguous_instance_state_not_heartbeats() {
+        let mut registry = Registry::default();
+        let mut runtime = AutomationRuntime::new(config()).unwrap();
+        runtime.baseline(&registry.snapshot(), ms(0));
+        state(&mut registry, "a", 1, "working", 1, 1000);
+        observe(&mut runtime, &mut registry, 1);
+        state(&mut registry, "b", 1, "idle", 2, 1000);
+        observe(&mut runtime, &mut registry, 2);
+        assert!(
+            runtime.activations[3].is_none(),
+            "a different instance is not a transition"
+        );
+        state(&mut registry, "a", 2, "idle", 10, 1000);
+        observe(&mut runtime, &mut registry, 10);
+        assert_eq!(runtime.activations[3].unwrap().expires, Some(ms(1010)));
+        state(&mut registry, "a", 3, "idle", 20, 1000);
+        observe(&mut runtime, &mut registry, 20);
+        assert_eq!(runtime.activations[3].unwrap().started, ms(10));
+        observe(&mut runtime, &mut registry, 1010);
+        assert!(runtime.activations[3].is_none());
+        state(&mut registry, "a", 4, "working", 1020, 1);
+        observe(&mut runtime, &mut registry, 1020);
+        state(&mut registry, "a", 5, "idle", 1030, 1000);
+        observe(&mut runtime, &mut registry, 1030);
+        assert!(
+            runtime.activations[3].is_none(),
+            "an expired old lease is not a continuous transition"
+        );
+    }
+
+    #[test]
+    fn instance_filter_is_exact_and_other_sources_do_not_match() {
+        let mut config = config();
+        config.rules[1].instance = Some("wanted".into());
+        let mut runtime = AutomationRuntime::new(config).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), ms(0));
+        state(&mut registry, "other", 1, "working", 1, 1000);
+        observe(&mut runtime, &mut registry, 1);
+        assert!(runtime.activations[1].is_none());
+        state(&mut registry, "wanted", 1, "working", 2, 1000);
+        observe(&mut runtime, &mut registry, 2);
+        assert!(runtime.activations[1].is_some());
+    }
+
+    #[test]
+    fn aggregate_transition_selects_newest_timestamp_not_last_identity() {
+        let mut registry = Registry::default();
+        state(&mut registry, "a", 1, "working", 0, 15000);
+        state(&mut registry, "z", 1, "working", 0, 15000);
+        let mut runtime = AutomationRuntime::new(config()).unwrap();
+        runtime.baseline(&registry.snapshot(), ms(0));
+        state(&mut registry, "z", 2, "idle", 10, 15000);
+        state(&mut registry, "a", 2, "idle", 1000, 15000);
+        observe(&mut runtime, &mut registry, 1100);
+        assert_eq!(runtime.activations[3].unwrap().started, ms(1000));
+        assert_eq!(runtime.activations[3].unwrap().expires, Some(ms(2000)));
+    }
+
+    #[test]
+    fn layers_cap_brightness_preserve_base_and_report_arbitration() {
+        let mut registry = Registry::default();
+        state(&mut registry, "a", 1, "working", 0, 15000);
+        let mut config = config();
+        config.scenes.get_mut("working").unwrap().kind = SceneKind::Solid;
+        let mut runtime = AutomationRuntime::new(config).unwrap();
+        runtime.baseline(&registry.snapshot(), ms(0));
+        let info = info();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: 30,
+            palette: PaletteName::Ocean,
+            tick: 0,
+            animation_seconds: 1.0,
+        };
+        let layers = runtime.layers(&ctx);
+        let base = EffectKind::Matrix.render(&ctx);
+        let frame = crate::compositor::compose(base.clone(), &layout, &layers, ms(0));
+        for key in layout.keys() {
+            if key.zone == Zone::Function {
+                assert_eq!(frame.get_coord(key.coord), Color::new(0, 0, 30));
+            } else {
+                assert_eq!(frame.get_coord(key.coord), base.get_coord(key.coord));
+            }
+        }
+        let diagnostic = runtime.diagnostics(&ctx);
+        assert_eq!(diagnostic[0].visible_keys, 0);
+        assert!(diagnostic[1].visible_keys > 0);
+        assert_eq!(diagnostic[1].visible_keys, diagnostic[1].targeted_keys);
+        for scene in [
+            SceneKind::Solid,
+            SceneKind::Pulse,
+            SceneKind::Sweep,
+            SceneKind::Effect,
+        ] {
+            let s = Scene {
+                kind: scene,
+                effect: (scene == SceneKind::Effect).then_some(EffectKind::Matrix),
+                color: [255, 255, 255],
+                ..Scene::default()
+            };
+            assert!(
+                s.render(&ctx, ms(500))
+                    .as_bytes()
+                    .iter()
+                    .all(|channel| *channel <= 30)
+            );
+        }
+    }
+
+    #[test]
+    fn configuration_rejects_unknown_fields_missing_scenes_and_invalid_bounds() {
+        assert!(toml::from_str::<AutomationConfig>("unknown = true").is_err());
+        assert!(toml::from_str::<AutomationConfig>("[scenes.test]\nzones=['space']").is_err());
+        assert!(toml::from_str::<AutomationConfig>("[scenes.test]\ncolor=[256,0,0]").is_err());
+        assert!(toml::from_str::<AutomationConfig>("[scenes.test]\nunknown = true").is_err());
+        for mutate in [
+            |c: &mut AutomationConfig| c.rules[0].scene = "missing".into(),
+            |c: &mut AutomationConfig| c.rules[0].duration_ms = Some(1),
+            |c: &mut AutomationConfig| c.rules[2].duration_ms = Some(0),
+            |c: &mut AutomationConfig| c.rules[2].duration_ms = Some(60001),
+            |c: &mut AutomationConfig| c.rules[2].state = Some("working".into()),
+            |c: &mut AutomationConfig| c.rules[1].id = "present".into(),
+            |c: &mut AutomationConfig| c.scenes.get_mut("idle").unwrap().kind = SceneKind::Effect,
+        ] {
+            let mut config = config();
+            mutate(&mut config);
+            assert!(config.validate().is_err());
+        }
+        assert!(AutomationConfig::default().validate().is_ok());
+        assert!(config().validate().is_ok());
+    }
+}
