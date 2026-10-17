@@ -1,4 +1,4 @@
-//! Generic single-source scenario input. Only writes the private Scenario.
+//! Generic independent source/session input. Only writes the private Scenario.
 use eframe::egui;
 use underglow::scenarios::Scenario;
 use underglow::source_capabilities::CapabilityRegistry;
@@ -25,7 +25,6 @@ impl Default for Controls {
 
 impl Controls {
     pub fn show(&mut self, ui: &mut egui::Ui, scenario: &mut Scenario) {
-        let previous = self.source.clone();
         if self.capabilities.descriptor(&self.source).is_none() {
             self.source = self
                 .capabilities
@@ -49,9 +48,6 @@ impl Controls {
                     );
                 }
             });
-        if previous != self.source {
-            scenario.reset();
-        }
         let Some(descriptor) = self.capabilities.descriptor(&self.source) else {
             ui.small("Supply source capabilities to offer scenario states/events.");
             return;
@@ -113,22 +109,98 @@ impl Controls {
                     .map(|e| e.to_string());
             }
         });
-        ui.small("Time advances locally: leases expire without renewal. Removal drops state, not still-leased events; it never means finished/success.");
+        ui.small("Changing source or identity keeps other channels. Removal drops only this session's state, not still-leased events; it never means finished/success.");
         ui.small(format!(
             "Scenario time: {:.2}s",
             scenario.now().as_secs_f64()
         ));
-        for state in scenario.snapshot().states {
-            ui.label(format!(
-                "{}/{}: {} · expires at {:.2}s",
-                state.identity.source,
-                state.identity.instance,
-                state.state,
-                state.expires_at.as_secs_f64()
-            ));
-        }
+        ui.label("Simulated facts (not process health)");
+        egui::ScrollArea::vertical()
+            .max_height(180.0)
+            .show(ui, |ui| {
+                for state in scenario.snapshot().states {
+                    ui.horizontal(|ui| {
+                        if ui.button("Edit session").clicked() {
+                            self.source = state.identity.source.clone();
+                            self.instance = state.identity.instance.clone();
+                        }
+                        ui.label(format!(
+                            "{}/{}: {} · lease until {:.3}s ({:.3}s remaining)",
+                            state.identity.source,
+                            state.identity.instance,
+                            state.state,
+                            state.expires_at.as_secs_f64(),
+                            state
+                                .expires_at
+                                .saturating_sub(scenario.now())
+                                .as_secs_f64()
+                        ));
+                    });
+                }
+                for event in scenario.events_since(0).events {
+                    ui.horizontal(|ui| {
+                        if ui.button("Edit session").clicked() {
+                            self.source = event.identity.source.clone();
+                            self.instance = event.identity.instance.clone();
+                        }
+                        ui.label(format!(
+                            "{}/{}: event {} · at {:.3}s · retained until {:.3}s",
+                            event.identity.source,
+                            event.identity.instance,
+                            event.event,
+                            event.received_at.as_secs_f64(),
+                            event.expires_at.as_secs_f64()
+                        ));
+                    });
+                }
+            });
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switching_sources_and_instances_never_clears_or_renews_other_channels() {
+        let mut controls = Controls::default();
+        let mut descriptor = underglow::source_capabilities::pi_descriptor();
+        descriptor.source = "ci".into();
+        descriptor.display_name = "CI".into();
+        controls.capabilities.insert(descriptor).unwrap();
+        let mut scenario = Scenario::default();
+        scenario.publish_state("pi", "a", "working", 500).unwrap();
+        scenario.publish_state("pi", "b", "idle", 600).unwrap();
+        scenario.publish_state("ci", "a", "busy", 700).unwrap();
+        scenario.publish_event("pi", "a", "finished", 1000).unwrap();
+        let before = (
+            scenario.snapshot(),
+            scenario.events_since(0),
+            scenario.generation(),
+        );
+        let ctx = egui::Context::default();
+        // Render headlessly: initializing metadata, switching registered sources,
+        // and editing identities all used to clear the shared synthetic context.
+        for (source, instance) in [("", "a"), ("pi", "b"), ("ci", "a"), ("pi", "a")] {
+            controls.source = source.into();
+            controls.instance = instance.into();
+            let _ = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| controls.show(ui, &mut scenario));
+            });
+            assert_eq!(
+                (
+                    scenario.snapshot(),
+                    scenario.events_since(0),
+                    scenario.generation()
+                ),
+                before
+            );
+        }
+        scenario.remove("pi", "a").unwrap();
+        assert_eq!(scenario.snapshot().states.len(), 2);
+        assert_eq!(scenario.events_since(0), before.1);
     }
 }

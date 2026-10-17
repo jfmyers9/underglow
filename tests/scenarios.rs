@@ -131,3 +131,43 @@ fn invalid_messages_capacity_clocks_and_sequences_are_atomic_and_repairable() {
     );
     assert_eq!(scenario.snapshot(), before);
 }
+
+#[test]
+fn all_channels_share_protocol_capacity_and_bounded_event_retention() {
+    let mut scenario = Scenario::new(Limits {
+        max_sources: 2,
+        max_active_instances: 2,
+        max_tracked_instances: 2,
+        max_events: 2,
+        ..Limits::default()
+    })
+    .unwrap();
+    scenario.publish_state("pi", "a", "working", 1000).unwrap();
+    scenario.publish_state("ci", "b", "busy", 1000).unwrap();
+    let before = scenario.snapshot();
+    assert!(scenario.publish_state("pi", "c", "working", 1000).is_err());
+    assert!(
+        scenario
+            .publish_state("other", "a", "working", 1000)
+            .is_err()
+    );
+    assert_eq!(scenario.snapshot(), before);
+    for (source, instance, event) in [
+        ("pi", "a", "finished"),
+        ("ci", "b", "failed"),
+        ("pi", "a", "finished"),
+    ] {
+        scenario
+            .publish_event(source, instance, event, 1000)
+            .unwrap();
+    }
+    let batch = scenario.events_since(0);
+    assert!(batch.gap);
+    assert_eq!(batch.events.len(), 2);
+    assert_eq!(batch.events[0].identity.source, "ci");
+    assert_eq!(batch.events[1].identity.source, "pi");
+    assert!(scenario.events_since(batch.cursor).events.is_empty());
+    scenario.advance_to(ms(1000)).unwrap();
+    assert!(scenario.events_since(0).events.is_empty());
+    assert!(scenario.snapshot().states.is_empty());
+}

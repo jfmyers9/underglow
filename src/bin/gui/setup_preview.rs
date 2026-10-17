@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use underglow::external::{EventBatch, Snapshot};
+use underglow::external::{Error as SourceError, EventBatch, Snapshot};
 use underglow::layer_runtime::CompiledSetup;
 use underglow::render::{Frame, PaletteName, RenderContext};
 use underglow::scenarios::Scenario;
@@ -19,6 +19,10 @@ use underglow::source_capabilities::CapabilityRegistry;
 
 #[path = "scenario_controls.rs"]
 mod scenario_controls;
+
+#[cfg(test)]
+#[path = "scenario_clock_tests.rs"]
+mod clock_tests;
 
 const LIMIT: usize = 512 * 1024;
 const STALE: Duration = Duration::from_millis(750);
@@ -196,6 +200,13 @@ pub struct Preview {
     pub scenario: Scenario,
     controls: scenario_controls::Controls,
     scenario_tick: Option<Instant>,
+    scenario_playing: bool,
+    step_ms: u64,
+    evaluation_now: Duration,
+    evaluation_elapsed: Duration,
+    evaluation_brightness: u8,
+    evaluation_snapshot: Snapshot,
+    evaluation_events: EventBatch,
     last_scenario_generation: u64,
     previous_mode: Mode,
     started: Instant,
@@ -216,6 +227,21 @@ impl Default for Preview {
             scenario: Scenario::default(),
             controls: scenario_controls::Controls::default(),
             scenario_tick: None,
+            scenario_playing: false,
+            step_ms: 100,
+            evaluation_now: Duration::ZERO,
+            evaluation_elapsed: Duration::ZERO,
+            evaluation_brightness: 255,
+            evaluation_snapshot: Snapshot {
+                revision: 0,
+                event_cursor: 0,
+                states: vec![],
+            },
+            evaluation_events: EventBatch {
+                cursor: 0,
+                gap: false,
+                events: vec![],
+            },
             last_scenario_generation: 0,
             previous_mode: Mode::Live,
             started: Instant::now(),
@@ -244,8 +270,50 @@ impl Preview {
 
     pub fn reset_scenario(&mut self) {
         self.scenario.reset();
+        self.scenario_playing = false;
         self.scenario_tick = None;
         self.baseline = true;
+    }
+
+    pub fn scenario_playing(&self) -> bool {
+        self.scenario_playing
+    }
+
+    /// Play follows wall time from this point, never catching up paused time.
+    /// Pause freezes at the last evaluated scenario instant.
+    pub fn set_scenario_playing(&mut self, playing: bool) {
+        self.scenario_playing = playing && self.mode == Mode::Scenario;
+        self.scenario_tick = self.scenario_playing.then(Instant::now);
+    }
+
+    /// Manual steps auto-pause, discarding unevaluated wall-clock drift. An
+    /// invalid step changes neither facts/time nor the play/pause state.
+    pub fn advance_scenario_by(&mut self, delta: Duration) -> Result<(), SourceError> {
+        self.scenario.advance_by(delta)?;
+        self.set_scenario_playing(false);
+        Ok(())
+    }
+
+    /// Clock and effective facts from the last evaluation, not the real-only
+    /// transport sample. Consumers must not use these as a live event cursor.
+    #[allow(dead_code)] // Shared with the composition explanation pane.
+    pub fn evaluation_now(&self) -> Duration {
+        self.evaluation_now
+    }
+
+    #[allow(dead_code)]
+    pub fn evaluation_elapsed(&self) -> Duration {
+        self.evaluation_elapsed
+    }
+
+    #[allow(dead_code)]
+    pub fn evaluation_brightness(&self) -> u8 {
+        self.evaluation_brightness
+    }
+
+    #[allow(dead_code)]
+    pub fn evaluation_facts(&self) -> (&Snapshot, &EventBatch) {
+        (&self.evaluation_snapshot, &self.evaluation_events)
     }
 
     /// Pure controls: no engine intent or command channel is available here.
@@ -273,6 +341,34 @@ impl Preview {
             }
             Mode::Scenario => {
                 ui.strong("Scenario · isolated source facts · no hardware output");
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button(if self.scenario_playing() {
+                            "Pause"
+                        } else {
+                            "Play"
+                        })
+                        .clicked()
+                    {
+                        self.set_scenario_playing(!self.scenario_playing());
+                    }
+                    for (label, ms) in [("+100 ms", 100), ("+1 s", 1000)] {
+                        if ui.button(label).clicked() {
+                            self.error = self
+                                .advance_scenario_by(Duration::from_millis(ms))
+                                .err()
+                                .map(|e| e.to_string());
+                        }
+                    }
+                    ui.add(egui::DragValue::new(&mut self.step_ms));
+                    if ui.button("Advance ms").clicked() {
+                        self.error = self
+                            .advance_scenario_by(Duration::from_millis(self.step_ms))
+                            .err()
+                            .map(|e| e.to_string());
+                    }
+                });
+                ui.small("Paused freezes leases and animations. Steps auto-pause; only reset moves time backwards.");
                 ui.horizontal(|ui| {
                     if ui.button("Reset scenario").clicked() {
                         self.reset_scenario();
@@ -308,16 +404,7 @@ impl Preview {
 
     pub fn update(&mut self, document: Option<&SetupDocument>, brightness: u8) {
         let tick = Instant::now();
-        if self.mode == Mode::Scenario {
-            if let Some(previous) = self.scenario_tick
-                && let Err(error) = self.scenario.advance_by(tick.duration_since(previous))
-            {
-                self.error = Some(error.to_string());
-            }
-            self.scenario_tick = Some(tick);
-        } else {
-            self.scenario_tick = None;
-        }
+        self.advance_playback_at(tick);
         if document.map(|d| &d.id) != self.document.as_ref().map(|d| &d.id) {
             self.started = Instant::now();
             self.last_tick = None;
@@ -328,9 +415,26 @@ impl Preview {
         self.update_at(document, brightness, self.started.elapsed());
     }
 
+    fn advance_playback_at(&mut self, tick: Instant) {
+        if self.mode == Mode::Scenario && self.scenario_playing {
+            if let Some(previous) = self.scenario_tick
+                && let Err(error) = self
+                    .scenario
+                    .advance_by(tick.saturating_duration_since(previous))
+            {
+                self.error = Some(error.to_string());
+                self.set_scenario_playing(false);
+                return;
+            }
+            self.scenario_tick = Some(tick);
+        } else {
+            self.scenario_tick = None;
+        }
+    }
+
     fn update_at(&mut self, document: Option<&SetupDocument>, brightness: u8, elapsed: Duration) {
         if self.previous_mode == Mode::Scenario && self.mode != Mode::Scenario {
-            self.scenario.reset();
+            self.reset_scenario();
         }
         let snapshot = self
             .sample
@@ -403,6 +507,16 @@ impl Preview {
                 }
             }
         }
+        let elapsed = if self.mode == Mode::Scenario {
+            now
+        } else {
+            elapsed
+        };
+        self.evaluation_now = now;
+        self.evaluation_elapsed = elapsed;
+        self.evaluation_brightness = brightness;
+        self.evaluation_snapshot = facts.clone();
+        self.evaluation_events = events.clone();
         let Some(runtime) = &mut self.runtime else {
             self.frame = Frame::black();
             return;
@@ -422,6 +536,8 @@ impl Preview {
         self.last_scenario_generation = self.scenario.generation();
         self.last_source_now = now;
         self.last_generation = generation;
+        // The exact same clock drives source leases, condition deadlines, and
+        // all animation (including Always layers) in isolated scenarios.
         let tick = (elapsed.as_secs_f64() * 30.0) as u32;
         if self.mode == Mode::InputDemo {
             if self.last_tick != Some(tick) {
@@ -662,6 +778,10 @@ mod tests {
             "Done custom",
             "Scenario · isolated source facts · no hardware output",
             "Reset scenario",
+            "Play",
+            "+100 ms",
+            "+1 s",
+            "Advance ms",
             "Return to Live",
         ] {
             assert!(

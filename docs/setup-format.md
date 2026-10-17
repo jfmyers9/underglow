@@ -287,19 +287,27 @@ success). Custom descriptors offer their own vocabulary. Disconnected means
 remove/expire presence, never an invented `disconnected` state.
 
 Choose a session identity (default `scenario-session`), TTL, and a state or event.
-Change identity and publish another state to test independent session leases;
-any-instance conditions aggregate sessions, exact conditions select one. The
-initial controls edit one source at a time; choosing another source clears the
-previous scenario. State does not renew automatically: local monotonic time
-continues running, so short TTLs demonstrate expiry. Events neither renew state
+Change source or identity and publish another state to compose independent
+channels; the picker never clears other channels. **Edit session** selects a
+listed state/event identity for further edits or removal. Any-instance conditions
+aggregate sessions, exact conditions select one. The bounded simulated-facts list
+shows state leases and retained event occurrences, not invented process health.
+State does not renew automatically. Events neither renew state
 nor imply successful completion. Removal drops state but preserves leased events
 according to the existing evaluator semantics. Descriptor TTL ranges describe
 real producer output; test TTLs use the registry's bounded 1..300000 ms range.
 Invalid identifiers/TTLs are rejected without changing synthetic facts, leaving
 the input editable for repair.
 
-The Scenario badge remains visible. **Reset scenario** clears synthetic facts,
-sequences, event cursors and deadlines. **Return to Live** does the same and
+The clock starts **paused**. **Play** advances local monotonic time; **Pause**
+freezes at the last evaluated instant, including source expiry, transient
+deadlines, and every animation. **+100 ms**, **+1 s**, or **Advance ms** step all
+channels synchronously without sleeping. A successful step auto-pauses and drops
+unevaluated wall-clock drift. Resuming never catches up paused time. Steps cannot
+move time backwards; only reset returns to zero.
+
+The Scenario badge remains visible. **Reset scenario** pauses and clears synthetic
+facts, sequences, event cursors and deadlines. **Return to Live** does the same and
 baselines the latest real snapshot without replaying historical completions.
 Save/Discard/reload also baseline event history. Real `LiveSample` snapshots and
 event batches are retained unchanged and never mixed into Scenario. Isolated
@@ -317,7 +325,11 @@ identities, independent of live producers.
 Manual typed messages use schema 1 and the same protocol bounds. Time is injected
 and cannot go backwards; errors do not consume sequences or mutate facts. Each
 preview owns its own registry and compiled runtime. This library supports multiple
-independent sources/sessions for deterministic tests and future richer controls.
+independent sources/sessions for deterministic tests and the scenario controls.
+
+Preview's `evaluation_now`, `evaluation_elapsed`, `evaluation_brightness`, and
+`evaluation_facts` expose the last rendered evaluation inputs; `sample()` always
+remains the unchanged real-only transport, even while Scenario is selected.
 
 ## Atomic engine edits
 
