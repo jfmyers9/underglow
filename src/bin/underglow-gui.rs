@@ -1529,8 +1529,10 @@ mod tests {
             directory: "/sibling tools".into(),
             state_dir: Some("/private/state".into()),
         };
-        let mut registry = ConnectionRegistry::default();
-        registry.revision = 19;
+        let mut registry = ConnectionRegistry {
+            revision: 19,
+            ..Default::default()
+        };
         registry.connections[0].producer = Some(ConnectorConfig {
             id: "local".into(),
             source: "pi".into(),
