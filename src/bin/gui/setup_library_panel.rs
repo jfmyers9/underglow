@@ -23,6 +23,7 @@ pub enum Intent {
 
 #[derive(Default)]
 pub struct Panel {
+    /// Visibility of the host's setup-browser window, independent of destination.
     pub open: bool,
     pub report: Option<Report>,
     selected: Option<String>,
@@ -90,9 +91,9 @@ impl Panel {
                 ui.strong("Saved setups");
                 if ui.add_enabled(!busy, egui::Button::new("Refresh library")).clicked() { intent = Some(Intent::Refresh); }
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Setup name");
-                ui.text_edit_singleline(&mut self.name);
+                ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(180.0));
                 if ui.add_enabled(has_draft && paused && !busy && !self.name.trim().is_empty(), egui::Button::new("Save current setup")).clicked() {
                     intent = Some(Intent::SaveCurrent(self.name.trim().into()));
                 }
@@ -107,7 +108,7 @@ impl Panel {
             });
             if let Some(report) = &self.report {
                 let selected_name = report.setups.iter().find(|entry| Some(&entry.id) == self.selected.as_ref()).map(|entry| entry.name.as_str()).unwrap_or("Select saved setup");
-                egui::ComboBox::from_id_salt("saved-setup-picker").selected_text(selected_name).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("saved-setup-picker").width(ui.available_width().min(400.0)).truncate().selected_text(selected_name).show_ui(ui, |ui| {
                     for entry in &report.setups {
                         let label = format!("{} · {} layers{}", entry.name, entry.layers, if Some(&entry.id) == report.current_id.as_ref() { " · current" } else { "" });
                         if ui.selectable_value(&mut self.selected, Some(entry.id.clone()), label).changed() {
@@ -120,7 +121,7 @@ impl Panel {
                     let current = report.current_id.as_ref() == Some(&id);
                     let mut mutation = None;
                     ui.horizontal_wrapped(|ui| {
-                        if ui.add_enabled(Self::can_switch(dirty, paused, busy) && !current, egui::Button::new("Switch setup (paused)")).clicked() { mutation = Some(LibraryMutation::Switch { id: id.clone(), expected_setup_revision: setup_revision }); }
+                        if ui.add_enabled(Self::can_switch(dirty, paused, busy) && !current, egui::Button::new("Open setup (paused)")).clicked() { mutation = Some(LibraryMutation::Switch { id: id.clone(), expected_setup_revision: setup_revision }); }
                         if ui.add_enabled(!busy && !self.name.trim().is_empty(), egui::Button::new("Duplicate saved setup")).clicked() { mutation = Some(LibraryMutation::Duplicate { id: id.clone(), new_id: fresh_id(), name: self.name.trim().into() }); }
                         if ui.add_enabled(!busy && !self.name.trim().is_empty() && (!current || (!dirty && paused)), egui::Button::new("Rename saved setup")).clicked() { mutation = Some(LibraryMutation::Rename { id: id.clone(), name: self.name.trim().into() }); }
                         if ui.add_enabled(!busy && !current, egui::Button::new("Delete saved setup")).clicked() { self.confirm_delete = true; }
@@ -215,7 +216,7 @@ mod tests {
                 .shapes
                 .iter()
                 .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text() == "Switch setup (paused)" => {
+                    egui::Shape::Text(text) if text.galley.text() == "Open setup (paused)" => {
                         Some(text.pos + text.galley.size() * 0.5)
                     }
                     _ => None,

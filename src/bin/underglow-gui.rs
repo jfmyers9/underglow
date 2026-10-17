@@ -11,6 +11,9 @@ mod connectors;
 mod devpreview;
 #[path = "gui/preview.rs"]
 mod gui_preview;
+#[cfg(test)]
+#[path = "gui/navigation_tests.rs"]
+mod navigation_tests;
 #[path = "gui/setup_behavior.rs"]
 mod setup_behavior;
 #[path = "gui/setup_coverage.rs"]
@@ -651,7 +654,7 @@ impl MenuBar {
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Page {
     #[default]
-    Layers,
+    Editor,
     Connections,
 }
 
@@ -682,6 +685,7 @@ struct Controller {
     trust_config: bool,
     last_poll: Instant,
     settings_open: bool,
+    diagnostics_open: bool,
     dev_supervised: bool,
     dev_simulation: bool,
     keyboard_preview: gui_preview::KeyboardPreview,
@@ -762,13 +766,14 @@ impl Controller {
             trust_config: false,
             last_poll: Instant::now() - Duration::from_secs(5),
             settings_open: false,
+            diagnostics_open: false,
             dev_supervised: std::env::var_os("WOOTING_DEV_SUPERVISED").is_some(),
             dev_simulation: std::env::var_os("WOOTING_DEV_SIMULATION").is_some(),
             keyboard_preview: gui_preview::KeyboardPreview::default(),
             live_preview,
             connector_panel: connectors::Panel::default(),
             connections_panel: connections_screen::Panel::default(),
-            page: Page::Layers,
+            page: Page::Editor,
             last_connections: Instant::now() - Duration::from_secs(10),
             setup_editor: setup_editor::Editor::default(),
             setup_library: setup_library_panel::Panel::default(),
@@ -1158,7 +1163,7 @@ impl Controller {
             }
             Some(connections_screen::Request::OpenLayer(id)) => {
                 self.setup_editor.selected = Some(id);
-                self.page = Page::Layers;
+                self.page = Page::Editor;
             }
             Some(connections_screen::Request::RepairBinding(repair)) => {
                 let result = self
@@ -1460,12 +1465,69 @@ impl Controller {
                     if self.dev_supervised { ui.small("The development watcher manages process lifetime. Use Ctrl-C in its terminal to stop the session."); }
                 });
                 ui.small("For a login-managed engine, use Stop managed service; stopping it directly may cause it to restart. Stopping a service keeps login enabled.");
-                ui.collapsing("Diagnostics", |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.diagnostics).code_editor().interactive(false).desired_rows(10).desired_width(f32::INFINITY));
-                });
             });
         });
         self.settings_open = open;
+    }
+
+    fn show_setup_browser(&mut self, context: &egui::Context) {
+        let mut open = self.setup_library.open;
+        let bounds = context.screen_rect().shrink(16.0);
+        egui::Window::new("Setup browser")
+            .open(&mut open)
+            .collapsible(false)
+            .default_pos(bounds.min + egui::vec2(16.0, 16.0))
+            .default_width(520.0)
+            .max_width(bounds.width())
+            .max_height(bounds.height() - 40.0)
+            .constrain_to(bounds)
+            .show(context, |ui| {
+                if ui.button("Close setup browser").clicked() {
+                    self.setup_library.open = false;
+                }
+                ui.small("Browsing does not change your draft or keyboard lighting. Open a saved setup explicitly while paused, after saving or discarding edits.");
+                // Keep dismissal reachable even when a picker scrolls its selection into view.
+                egui::ScrollArea::vertical()
+                    .id_salt("setup-browser-body")
+                    .max_height(ui.available_height())
+                    .show(ui, |ui| self.show_setup_library(ui));
+            });
+        self.setup_library.open &= open;
+    }
+
+    fn show_diagnostics(&mut self, context: &egui::Context) {
+        let mut open = self.diagnostics_open;
+        let bounds = context.screen_rect().shrink(16.0);
+        egui::Window::new("Diagnostics")
+            .open(&mut open)
+            .default_width(520.0)
+            .max_width(bounds.width())
+            .max_height(bounds.height() - 40.0)
+            .constrain_to(bounds)
+            .vscroll(true)
+            .show(context, |ui| {
+                if ui.button("Close diagnostics").clicked() {
+                    self.diagnostics_open = false;
+                }
+                if let Some(request) = self.connector_panel.show(ui, self.connected, self.pending) {
+                    match request {
+                        connectors::Request::Refresh => self.control(&["diagnostics"]),
+                        connectors::Request::Preview(args) => {
+                            self.dispatch(Action::DiagnosticsPreview(args))
+                        }
+                    }
+                }
+                ui.collapsing("Engine protocol response", |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.diagnostics)
+                            .code_editor()
+                            .interactive(false)
+                            .desired_rows(10)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            });
+        self.diagnostics_open &= open;
     }
 
     /// Paint only: separated from transport polling for hardware-free UI tests.
@@ -1474,10 +1536,29 @@ impl Controller {
                 ui.horizontal(|ui| {
                     brand::wordmark(ui, false);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Settings").clicked() { self.settings_open = !self.settings_open; }
+                        if ui.button("Settings").clicked() { self.settings_open = true; }
+                        if ui.button("Diagnostics").clicked() { self.diagnostics_open = true; }
                     });
                 });
                 brand::divider(ui);
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.page, Page::Editor, "Editor");
+                    if ui.selectable_value(&mut self.page, Page::Connections, "Connections").clicked()
+                        && self.last_connections.elapsed() >= Duration::from_secs(5) {
+                        self.refresh_connections();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let title = self.setup_editor.draft.as_ref().map(|doc| doc.name.as_str())
+                        .unwrap_or_else(|| effect_description(&self.preset).0);
+                    let width = (ui.available_width() - 160.0).clamp(120.0, 400.0);
+                    if ui.add_sized([width, 28.0], egui::Button::new(format!("Setup: {title} ▾")).truncate())
+                        .on_hover_text(format!("{title} — open setup browser")).clicked() {
+                        self.setup_library.open = true;
+                    }
+                    ui.label(if self.setup_editor.dirty { "Unsaved changes" }
+                        else if self.setup_editor.draft.is_some() { "Saved" } else { "Legacy profile" });
+                });
                 ui.add_space(8.0);
                 let enabled = self.connected && self.status.as_ref().is_some_and(|s| s.enabled);
                 let state = if self.dev_simulation { "Development simulation · hardware disabled" } else if !self.connected { "Engine offline" } else {
@@ -1488,7 +1569,7 @@ impl Controller {
                 };
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("Keyboard lighting").size(30.0).strong());
+                        ui.label(egui::RichText::new("Keyboard lighting").size(20.0).strong());
                         ui.label(egui::RichText::new(state).color(brand::state_color(self.connected, self.dev_simulation, self.status.as_ref().map(|s| s.state.as_str()))));
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1503,21 +1584,13 @@ impl Controller {
                     });
                 });
                 ui.add_space(12.0);
+                if enabled && self.setup_editor.dirty && !self.dev_simulation {
+                    ui.small("Keyboard uses the saved setup; unsaved changes are preview-only.");
+                }
                 if let Some(error) = self.status.as_ref().and_then(|s| s.last_error.as_ref()) {
                     ui.colored_label(brand::WARNING, if self.connected { error.clone() } else { format!("Last seen: {error}") });
                 }
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.page, Page::Layers, "Layers");
-                if ui.selectable_label(self.setup_library.open, "Saved setups").clicked() {
-                    self.setup_library.open = !self.setup_library.open;
-                    self.page = Page::Layers;
-                }
-                if ui.selectable_value(&mut self.page, Page::Connections, "Connections").clicked()
-                    && self.last_connections.elapsed() >= Duration::from_secs(5) {
-                    self.refresh_connections();
-                }
-            });
-            egui::ScrollArea::vertical().id_salt(match self.page { Page::Layers => "layers", Page::Connections => "connections" }).auto_shrink([false, false]).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt(match self.page { Page::Editor => "editor", Page::Connections => "connections" }).auto_shrink([false, false]).show(ui, |ui| {
                 if self.page == Page::Connections {
                     self.show_connections(ui);
                     return;
@@ -1526,7 +1599,6 @@ impl Controller {
                     ui.colored_label(brand::WARNING, warning);
                 }
                 if !self.setup_checked { ui.small("Loading canonical setup from engine…"); }
-                if self.setup_library.open { self.show_setup_library(ui); }
                 if self.setup_editor.draft.is_some() {
                     ui.label(&self.message);
                     self.show_setup_editor(ui);
@@ -1645,17 +1717,17 @@ impl Controller {
                 });
                 }
                 ui.add_space(4.0);
-                if let Some(request) = self.connector_panel.show(ui, self.connected, self.pending) {
-                    match request {
-                        connectors::Request::Refresh => self.control(&["diagnostics"]),
-                        connectors::Request::Preview(args) => self.dispatch(Action::DiagnosticsPreview(args)),
-                    }
-                }
                 ui.label(egui::RichText::new(if self.dev_supervised { "Development session · save source to rebuild · Ctrl-C stops owned processes" } else { "Pause returns control to your keyboard. Closing this window keeps your lighting running." }).small().color(MUTED));
             });
         });
         if self.settings_open {
             self.show_settings(context);
+        }
+        if self.diagnostics_open {
+            self.show_diagnostics(context);
+        }
+        if self.setup_library.open {
+            self.show_setup_browser(context);
         }
     }
 }
@@ -1942,8 +2014,8 @@ mod tests {
             app.connected,
             "source health failure cannot disconnect lighting control"
         );
-        click(&mut app, "Layers");
-        assert!(app.page == Page::Layers);
+        click(&mut app, "Editor");
+        assert!(app.page == Page::Editor);
         assert_eq!(app.setup_editor.draft, draft);
         assert!(app.setup_editor.dirty);
         assert_eq!(app.setup_editor.base_revision, base_revision);
@@ -1955,7 +2027,7 @@ mod tests {
         );
     }
 
-    fn setup_document() -> underglow::setup::SetupDocument {
+    pub(super) fn setup_document() -> underglow::setup::SetupDocument {
         underglow::setup::SetupDocument::from_toml(include_str!("../../examples/layer-setup.toml"))
             .unwrap()
     }
@@ -2495,7 +2567,7 @@ mod tests {
         }
     }
 
-    fn controller_fixture() -> (Controller, Receiver<Action>) {
+    pub(super) fn controller_fixture() -> (Controller, Receiver<Action>) {
         let (requests, incoming) = mpsc::channel();
         let (_outgoing, replies) = mpsc::channel();
         let app = Controller {
@@ -2525,6 +2597,7 @@ mod tests {
             trust_config: false,
             last_poll: Instant::now(),
             settings_open: false,
+            diagnostics_open: false,
             dev_supervised: false,
             dev_simulation: false,
             keyboard_preview: gui_preview::KeyboardPreview::default(),
@@ -2534,7 +2607,7 @@ mod tests {
             connections_panel: connections_screen::Panel::default(),
             setup_library: setup_library_panel::Panel::default(),
             setup_sharing: sharing_panel::Panel::default(),
-            page: Page::Layers,
+            page: Page::Editor,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
             setup_checked: true,
@@ -3272,6 +3345,7 @@ mod tests {
             trust_config: false,
             last_poll: Instant::now() - Duration::from_secs(10),
             settings_open: false,
+            diagnostics_open: false,
             dev_supervised: false,
             dev_simulation: false,
             keyboard_preview: gui_preview::KeyboardPreview::default(),
@@ -3281,7 +3355,7 @@ mod tests {
             connections_panel: connections_screen::Panel::default(),
             setup_library: setup_library_panel::Panel::default(),
             setup_sharing: sharing_panel::Panel::default(),
-            page: Page::Layers,
+            page: Page::Editor,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
             setup_checked: true,

@@ -32,6 +32,16 @@ registers login startup automatically.
 
 ## Controls
 
+**Editor** and **Connections** are separate destinations. The **Setup** selector
+opens a **Setup browser** window, not an extra editor section. Browsing a saved
+item does not load it; opening a different setup is an explicit paused action
+blocked while the current draft has unsaved edits. Navigation and closing the
+browser preserve the draft, selected layer and preview context. Setup identity,
+**Saved / Unsaved changes**, and **Keyboard lighting** state stay in the fixed
+header outside the destination's scrolling content. **Settings** and
+**Diagnostics** open secondary windows; sharing remains a secondary section in
+the setup browser.
+
 ### Layer composition (canonical setups)
 
 The GUI loads `control setup show` through its background subprocess worker.
@@ -117,10 +127,10 @@ acknowledgment; persist a dirty composition before replacing the profile.
 
 ### Connections and source health
 
-Use the separate **Connections** tab to inspect registered sources without
+Use the separate **Connections** destination to inspect registered sources without
 leaving or replacing the current layer draft. Registry/producer health refreshes
 through the bounded control worker while this page is visible; live facts reuse
-the preview's read-only source worker. Neither tab changes physical activation.
+the preview's read-only source worker. Neither destination changes physical activation.
 
 - Each source retains its human name, stable ID, declared state/event vocabulary,
   instance selectors, TTLs, and expected renewal cadence. Observed values do not
@@ -217,7 +227,8 @@ The Settings page is headed **App settings**. In its **Startup** section,
 only; **Disable login** removes the registration and stops the managed service.
 
 The collapsed **Advanced engine controls** section contains **Refresh status**,
-managed-service start/stop controls, **Stop standalone engine**, and diagnostics.
+managed-service start/stop controls and **Stop standalone engine**. Connector
+diagnostics and the engine protocol response are in the **Diagnostics** window.
 Starting the managed service launches it now; stopping it does not remove login opt-in.
 Use **Stop standalone engine** only for an unmanaged engine; service managers may
 restart a process stopped directly. These operations are never automatic.

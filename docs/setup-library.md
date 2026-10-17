@@ -1,8 +1,10 @@
 # Saved setups
 
-Open **Saved setups** in the Layers toolbar. Name and **Save current setup**
+Open the **Setup** selector above the Editor or Connections destination to open
+the **Setup browser** window. Opening, closing, and browsing saved items leave
+the current draft and lighting unchanged. Name and **Save current setup**
 while lighting is paused. Duplicate a saved setup to give it a new document ID,
-then switch to that copy to customize it. The original remains unchanged.
+then **Open setup (paused)** to customize it. The original remains unchanged.
 Switching is disabled until you Save or Discard any editor draft, and requires
 Pause. Nothing in the library resumes lighting; Resume remains explicit.
 
