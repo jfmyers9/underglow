@@ -1,6 +1,7 @@
 mod config;
 mod doctor;
 mod engine;
+mod ingress;
 mod notifications;
 mod ownership;
 mod preview;
@@ -49,6 +50,8 @@ enum Command {
     Engine(engine::EngineOptions),
     /// Control a running engine over its user-private Unix socket; emits JSON.
     Control(engine::ControlOptions),
+    /// Publish external facts without changing engine controls or acquiring hardware.
+    External(ingress::ExternalOptions),
     /// Check SDK access and restoration (opens/resets RGB; opt in to an animation).
     Doctor(doctor::DoctorOptions),
     /// Play an interactive keyboard toy; stop to restore normal lighting.
@@ -311,7 +314,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let interrupted = install_ctrlc_handler()?;
 
     let needs_hardware = match &cli.command {
-        Command::Engine(_) | Command::Control(_) | Command::Preview { .. } => false,
+        Command::Engine(_)
+        | Command::Control(_)
+        | Command::External(_)
+        | Command::Preview { .. } => false,
         Command::Run {
             dry_run, preview, ..
         } => !dry_run && !preview,
@@ -329,6 +335,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Engine(options) => engine::run(options, cli.sdk_path, &interrupted)?,
         Command::Control(options) => engine::control(options)?,
+        Command::External(options) => ingress::external(options)?,
         Command::Doctor(options) => doctor::run(options, cli.sdk_path.as_deref(), &interrupted)?,
         Command::Toy { command } => toys::run(command, cli.sdk_path.as_deref(), &interrupted)?,
         Command::Info => {

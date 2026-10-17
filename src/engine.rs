@@ -274,6 +274,7 @@ impl Drop for Active {
     }
 }
 struct Runtime {
+    sources: crate::ingress::SharedSources,
     dir: PathBuf,
     saved: Saved,
     config: AppConfig,
@@ -570,8 +571,11 @@ pub fn run(
     let _socket = SocketFile(path.clone());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
+    let sources = crate::ingress::SharedSources::default();
+    let mut ingress = crate::ingress::Server::bind(&dir, sources.clone())?;
     save(&dir, &saved)?;
     let mut runtime = Runtime {
+        sources,
         dir,
         saved,
         config,
@@ -592,6 +596,9 @@ pub fn run(
     );
     let mut stop = false;
     while !stop && !interrupted.load(Ordering::SeqCst) {
+        // Expiry and ingress stay live while lighting is paused, without touching SDKs.
+        runtime.sources.expire()?;
+        ingress.poll()?;
         // Bounded work per loop prevents a flood of local requests starving frames.
         for _ in 0..8 {
             let (mut stream, _) = match listener.accept() {
@@ -826,6 +833,7 @@ mod tests {
 
     fn runtime(text: String, dir: PathBuf) -> Runtime {
         Runtime {
+            sources: crate::ingress::SharedSources::default(),
             config: validate(&text).unwrap(),
             saved: Saved {
                 schema_version: 1,
