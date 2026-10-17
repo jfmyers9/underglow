@@ -25,6 +25,7 @@ pub struct AppConfig {
     #[serde(alias = "extension")]
     pub signal: Option<SignalConfig>,
     pub notifications: Vec<crate::notifications::NotificationConfig>,
+    pub connectors: Vec<crate::managed_connectors::ConnectorConfig>,
     pub automation: underglow::automation::AutomationConfig,
     pub sources: Vec<SourceConfig>,
     pub rules: Vec<RuleConfig>,
@@ -178,6 +179,7 @@ impl Default for AppConfig {
             warn_on_close_error: true,
             signal: None,
             notifications: Vec::new(),
+            connectors: Vec::new(),
             automation: underglow::automation::AutomationConfig::default(),
             sources: Vec::new(),
             rules: Vec::new(),
@@ -198,6 +200,7 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        crate::managed_connectors::validate(&self.connectors).map_err(ConfigError::Invalid)?;
         crate::notifications::validate(&self.notifications).map_err(ConfigError::Invalid)?;
         self.automation.validate().map_err(ConfigError::Invalid)?;
         if self.schema_version != 1 {

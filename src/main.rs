@@ -4,6 +4,7 @@ mod doctor;
 mod engine;
 mod external_rules;
 mod ingress;
+mod managed_connectors;
 mod notifications;
 mod ownership;
 mod preview;

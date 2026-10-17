@@ -39,10 +39,15 @@ enum ControlCommand {
     Status,
     /// Read-only source freshness and actual/potential rule visibility. Never resumes lighting.
     Diagnostics,
+    /// Manage explicitly trusted connector executables, independently of lighting.
+    Connectors {
+        #[command(subcommand)]
+        command: ConnectorCommand,
+    },
     Pause,
     Resume,
     Stop,
-    /// Selecting a trusted file can execute its configured commands when enabled.
+    /// Reviewed profiles can run enabled/trusted connectors even while lighting is paused.
     Select {
         #[arg(long, required_unless_present = "preset", conflicts_with = "preset")]
         config: Option<PathBuf>,
@@ -70,6 +75,17 @@ enum ControlCommand {
         ripple_palette: bool,
     },
 }
+#[derive(Debug, Subcommand)]
+enum ConnectorCommand {
+    Status,
+    /// Enable an already trusted connector; does not resume lighting.
+    Enable {
+        id: String,
+    },
+    Disable {
+        id: String,
+    },
+}
 #[derive(Serialize, Deserialize)]
 struct Request {
     schema_version: u32,
@@ -81,6 +97,13 @@ struct Request {
 enum Action {
     Status,
     Diagnostics,
+    Connectors,
+    ConnectorEnable {
+        id: String,
+    },
+    ConnectorDisable {
+        id: String,
+    },
     Pause,
     Resume,
     Stop,
@@ -126,6 +149,7 @@ struct Response {
     ok: bool,
     error: Option<String>,
     status: Status,
+    connectors: Vec<crate::managed_connectors::Health>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diagnostics: Option<serde_json::Value>,
 }
@@ -284,6 +308,7 @@ impl Drop for Active {
 }
 struct Runtime {
     sources: crate::ingress::SharedSources,
+    connectors: Option<crate::managed_connectors::Supervisor>,
     dir: PathBuf,
     saved: Saved,
     config: AppConfig,
@@ -424,7 +449,34 @@ impl Runtime {
     }
     fn action(&mut self, action: Action) -> ProgramResult {
         match action {
-            Action::Status | Action::Diagnostics => {}
+            Action::Status | Action::Diagnostics | Action::Connectors => {}
+            Action::ConnectorEnable { ref id } | Action::ConnectorDisable { ref id } => {
+                let enabled = matches!(action, Action::ConnectorEnable { .. });
+                let mut value: toml::Value = toml::from_str(&self.saved.config)?;
+                let table = value
+                    .get_mut("connectors")
+                    .and_then(toml::Value::as_array_mut)
+                    .and_then(|items| {
+                        items.iter_mut().find(|item| {
+                            item.get("id").and_then(toml::Value::as_str) == Some(id.as_str())
+                        })
+                    })
+                    .and_then(toml::Value::as_table_mut)
+                    .ok_or("unknown managed connector id")?;
+                table.insert("enabled".into(), toml::Value::Boolean(enabled));
+                let config = toml::to_string(&value)?;
+                let parsed = validate(&config)?;
+                let candidate = Saved {
+                    config,
+                    ..self.saved.clone()
+                };
+                save(&self.dir, &candidate)?;
+                self.saved = candidate;
+                self.config = parsed;
+                if let Some(connectors) = &self.connectors {
+                    connectors.replace(self.config.connectors.clone());
+                }
+            }
             Action::Pause | Action::Stop => self.pause()?,
             Action::Resume => {
                 if crate::sdk::hardware_disabled() {
@@ -452,6 +504,9 @@ impl Runtime {
                 let cleanup = self.release();
                 self.saved = candidate;
                 self.config = parsed;
+                if let Some(connectors) = &self.connectors {
+                    connectors.replace(self.config.connectors.clone());
+                }
                 self.retry_attempt = 0;
                 self.retry_at = None;
                 if let Err(error) = cleanup {
@@ -618,8 +673,13 @@ pub fn run(
     let sources = crate::ingress::SharedSources::default();
     let mut ingress = crate::ingress::Server::bind(&dir, sources.clone())?;
     save(&dir, &saved)?;
+    let connectors = Some(crate::managed_connectors::Supervisor::start(
+        config.connectors.clone(),
+        sources.clone(),
+    )?);
     let mut runtime = Runtime {
         sources,
+        connectors,
         dir,
         saved,
         config,
@@ -675,6 +735,11 @@ pub fn run(
                 ok: result.is_ok(),
                 error: result.err().map(|e| e.to_string()),
                 status: runtime.status(),
+                connectors: runtime
+                    .connectors
+                    .as_ref()
+                    .map(|c| c.status())
+                    .unwrap_or_default(),
                 diagnostics,
             };
             // A disconnected UI cannot terminate the engine or undo an applied operation.
@@ -688,7 +753,14 @@ pub fn run(
         std::thread::sleep(Duration::from_millis(5));
     }
     // SIGTERM preserves enabled intent; an explicit pause/stop persists disabled.
-    runtime.release()
+    let released = runtime.release();
+    let stopped = runtime
+        .connectors
+        .as_mut()
+        .map(|c| c.shutdown())
+        .unwrap_or(Ok(()));
+    released?;
+    stopped
 }
 pub fn control(options: ControlOptions) -> ProgramResult {
     let result = (|| -> Result<serde_json::Value, Error> {
@@ -696,6 +768,11 @@ pub fn control(options: ControlOptions) -> ProgramResult {
         let action = match options.command {
             ControlCommand::Status => Action::Status,
             ControlCommand::Diagnostics => Action::Diagnostics,
+            ControlCommand::Connectors { command } => match command {
+                ConnectorCommand::Status => Action::Connectors,
+                ConnectorCommand::Enable { id } => Action::ConnectorEnable { id },
+                ConnectorCommand::Disable { id } => Action::ConnectorDisable { id },
+            },
             ControlCommand::Pause => Action::Pause,
             ControlCommand::Resume => Action::Resume,
             ControlCommand::Stop => Action::Stop,
@@ -886,6 +963,7 @@ mod tests {
     fn runtime(text: String, dir: PathBuf) -> Runtime {
         Runtime {
             sources: crate::ingress::SharedSources::default(),
+            connectors: None,
             config: validate(&text).unwrap(),
             saved: Saved {
                 schema_version: 1,
