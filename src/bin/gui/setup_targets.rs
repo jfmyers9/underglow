@@ -346,19 +346,48 @@ struct GroupDraft {
 
 /// Full compositor output, using the same physical keyboard geometry as editing.
 /// Black is a real pixel, never interpreted as transparency or a missing overlay.
-pub fn composition_preview(ui: &mut egui::Ui, frame: &underglow::render::Frame) {
+pub fn composition_preview(
+    ui: &mut egui::Ui,
+    frame: &underglow::render::Frame,
+    selected: Option<MatrixCoord>,
+) -> Option<MatrixCoord> {
     let layout = KeyboardLayout::for_device(&DeviceInfo::synthetic_80he());
     let width = ui.available_width().clamp(100.0, 700.0);
     let unit = width / 18.5;
     let (board, _) = ui.allocate_exact_size(Vec2::new(width, unit * 6.4), Sense::hover());
     let keys = canvas_keys(&layout, board.min + Vec2::splat(unit * 0.25), unit);
+    let mut clicked = None;
     for (key, position) in keys.iter().zip(layout.keys()) {
+        let response = ui.interact(
+            key.rect,
+            ui.id()
+                .with(("explain-key", key.coord.row, key.coord.column)),
+            Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                format!("Inspect {}", key_label(key.coord)),
+            )
+        });
+        if response.clicked() {
+            clicked = Some(key.coord);
+        }
         let color = frame.get_coord(position.coord);
         ui.painter().rect_filled(
             key.rect,
             3,
             Color32::from_rgb(color.red, color.green, color.blue),
         );
+        if selected == Some(key.coord) {
+            ui.painter().rect_stroke(
+                key.rect,
+                3,
+                Stroke::new(2.0, Color32::YELLOW),
+                StrokeKind::Inside,
+            );
+        }
         if let Some(name) = &key.name {
             ui.painter().text(
                 key.rect.center(),
@@ -369,6 +398,15 @@ pub fn composition_preview(ui: &mut egui::Ui, frame: &underglow::render::Frame) 
             );
         }
     }
+    clicked
+}
+
+/// Reuse the physical-name resolver; unnamed cells remain honest coordinates.
+pub fn key_label(coord: MatrixCoord) -> String {
+    names()
+        .into_iter()
+        .find(|name| canonical_coord(name) == Some(coord))
+        .unwrap_or_else(|| format!("row {} / column {}", coord.row, coord.column))
 }
 
 /// Keep one instance per stable layer ID (or reset it when changing layers).

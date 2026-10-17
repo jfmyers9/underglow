@@ -15,6 +15,8 @@ mod gui_preview;
 mod setup_behavior;
 #[path = "gui/setup_editor.rs"]
 mod setup_editor;
+#[path = "gui/setup_explanation.rs"]
+mod setup_explanation;
 #[path = "gui/setup_inspector.rs"]
 mod setup_inspector;
 #[path = "gui/setup_preview.rs"]

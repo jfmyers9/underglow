@@ -1,5 +1,5 @@
 //! Hardware-free layer draft and stable-ID operations. Transport belongs to the host.
-use super::{setup_behavior, setup_inspector, setup_preview, setup_targets};
+use super::{setup_behavior, setup_explanation, setup_inspector, setup_preview, setup_targets};
 use eframe::egui;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +27,30 @@ mod tests {
             "renderer":{"kind":"solid","color":[1,2,3]}, "brightness":81
         })).unwrap()];
         doc
+    }
+
+    #[test]
+    fn composed_key_click_inspects_f3_without_editing_or_retargeting() {
+        let ctx = egui::Context::default();
+        let mut editor = Editor::default();
+        let original = document();
+        editor.load(Some(original.clone()));
+        // First F3 belongs to composed output, second to the target editor.
+        click(&ctx, &mut editor, "F3", 0);
+        let coord = underglow::key_targets::canonical_coord("F3").unwrap();
+        assert_eq!(editor.explained_key, Some(coord));
+        assert_eq!(editor.draft.as_ref(), Some(&original));
+        assert!(!editor.dirty);
+        let selected = editor.selected.clone();
+        let report = setup_explanation::report(&editor.preview, coord).unwrap();
+        assert_eq!(report.color, editor.preview.frame().get_coord(coord));
+        let (output, intent) = run(&ctx, &mut editor, vec![]);
+        assert!(
+            intent.is_none(),
+            "inspection has no physical activation intent"
+        );
+        assert_eq!(editor.selected, selected);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text().starts_with("Why F3?"))));
     }
 
     #[test]
@@ -478,6 +502,7 @@ pub struct Editor {
     /// Last acknowledged applied composition, independent from local edits.
     pub applied: Option<SetupDocument>,
     pub preview: setup_preview::Preview,
+    explained_key: Option<underglow::layout::MatrixCoord>,
     pub can_save: bool,
     pub preview_brightness: Option<u8>,
     /// Last engine revision, never a count of local keystrokes.
@@ -734,7 +759,12 @@ impl Editor {
         if let Some(error) = &self.preview.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
-        setup_targets::composition_preview(ui, self.preview.frame());
+        if let Some(coord) =
+            setup_targets::composition_preview(ui, self.preview.frame(), self.explained_key)
+        {
+            self.explained_key = Some(coord);
+        }
+        setup_explanation::show(ui, &self.preview, self.explained_key);
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
         if doc.layers.is_empty() {

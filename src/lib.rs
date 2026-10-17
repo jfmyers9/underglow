@@ -6,6 +6,7 @@ pub mod compositor;
 pub mod connection_registry;
 pub mod device;
 pub mod effects;
+pub mod explanations;
 pub mod external;
 pub mod focus;
 pub mod key_targets;

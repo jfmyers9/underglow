@@ -79,6 +79,18 @@ draft. The fixed Pause/Resume control remains separate and explicit.
   distinct from the target-editing canvas. Sources are read-only; **Isolated input demo**
   uses isolated synthetic inputs. Neither editing nor preview opens an SDK,
   starts input producers, or changes physical lighting. Resume remains explicit.
+- Click a key in the **composed preview** to inspect **Why this key?**, without
+  changing a layer's target or draft. The report shows rendered RGB, the winning
+  logical layer, contributions underneath, disabled/non-targeting/inactive layers,
+  every appearance's cached condition match and occurrence deadline, and current
+  evaluated source-state leases. Higher stack layers obscure lower ones even
+  when their pixel is black. Reordering and source expiry use the same compositor
+  arbitration as the displayed preview, not inferred color comparisons.
+  Live facts, isolated input demo (no source facts), and simulated Scenario facts
+  are labeled separately; none describes actual physical output. Missing current
+  state does not distinguish an expired/removed source from one never observed.
+  Inactive event/transition explanations do not invent trigger history.
+  Invalid drafts disable explanations while any last-valid preview is retained.
 
 Profiles without canonical setups use the clearly labeled **Legacy compatibility
 view** below, including migration warnings when supplied by the engine. Expand

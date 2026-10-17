@@ -60,7 +60,98 @@ pub struct CompiledSetup {
     input_available: bool,
 }
 
+/// Cached evaluator evidence, including appearances that lost internal priority.
+#[derive(Clone, Debug)]
+pub struct AppearanceCondition<'a> {
+    pub variant_id: Option<&'a str>,
+    pub name: &'a str,
+    pub enabled: bool,
+    pub activation: &'a Activation,
+    pub matched: bool,
+    /// Condition eligibility before layer/appearance enablement and input gating.
+    pub active: bool,
+    pub started: Option<Duration>,
+    pub expires: Option<Duration>,
+}
+
+pub struct LayerInspection<'a> {
+    pub definition: &'a Layer,
+    pub covers: bool,
+    pub conditions: Vec<AppearanceCondition<'a>>,
+}
+
 impl CompiledSetup {
+    /// Read-only evidence from this compiled document and its existing evaluators.
+    /// Does not observe facts, replay events, or create another evaluator.
+    pub fn inspect_key(
+        &self,
+        ctx: &RenderContext<'_>,
+        coord: MatrixCoord,
+    ) -> Vec<LayerInspection<'_>> {
+        let base = self.conditions.diagnostics(ctx);
+        self.layers
+            .iter()
+            .map(|layer| {
+                let variants = layer.variant_conditions.diagnostics(ctx);
+                let condition = |id,
+                                 name,
+                                 enabled,
+                                 activation,
+                                 runtime: &AutomationRuntime,
+                                 diagnostics: &[crate::automation::RuleDiagnostic],
+                                 variant_id| {
+                    let timing = runtime.activation_timing(id);
+                    AppearanceCondition {
+                        variant_id,
+                        name,
+                        enabled,
+                        activation,
+                        matched: matches!(activation, Activation::Always {})
+                            || diagnostics.iter().any(|d| d.rule_id == id && d.matched),
+                        active: activation_active(id, activation, runtime),
+                        started: timing.map(|(start, _)| start),
+                        expires: timing.and_then(|(_, end)| end),
+                    }
+                };
+                let definition = &layer.definition;
+                let mut conditions = vec![condition(
+                    &definition.id,
+                    "Base / fallback",
+                    true,
+                    &definition.activation,
+                    &self.conditions,
+                    &base,
+                    None,
+                )];
+                conditions.extend(definition.variants.iter().map(|v| {
+                    condition(
+                        &v.id,
+                        &v.name,
+                        v.enabled,
+                        &v.activation,
+                        &layer.variant_conditions,
+                        &variants,
+                        Some(v.id.as_str()),
+                    )
+                }));
+                LayerInspection {
+                    definition,
+                    covers: ctx
+                        .layout
+                        .keys()
+                        .iter()
+                        .find(|key| key.coord == coord)
+                        .is_some_and(|key| {
+                            matches!(definition.target, Target::Whole {})
+                                || layer.coordinates.contains(&coord)
+                                || layer.zones.contains(&key.zone)
+                        }),
+                    conditions,
+                }
+            })
+            .collect()
+    }
+
     /// Validates all data and resource conflicts before any live acquisition.
     pub fn compile(document: &SetupDocument) -> Result<Self, String> {
         document.validate()?;
