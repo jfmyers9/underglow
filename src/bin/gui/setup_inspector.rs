@@ -5,7 +5,7 @@ use clap::ValueEnum;
 use eframe::egui::{self, Ui};
 use underglow::catalog::{self, PaletteControl, RendererKind, Visualization};
 use underglow::render::PaletteName;
-use underglow::setup::{Layer, Renderer};
+use underglow::setup::{BlendMode, Layer, Renderer};
 
 // Scene primitives are not catalog visualizations: these are their only extra
 // capabilities (color; Pulse/Sweep also period), never a copied effect catalog.
@@ -168,13 +168,21 @@ fn color_control(ui: &mut Ui, label: &str, color: &mut [u8; 3]) {
 /// Returns true iff this frame changed appearance or per-layer brightness.
 /// Stable layer ID scopes all widget state; names and document order are untouched.
 pub fn show(ui: &mut Ui, layer: &mut Layer) -> bool {
-    let before = (layer.renderer.clone(), layer.brightness);
+    let before = layer.clone();
     ui.push_id(("layer-appearance", &layer.id), |ui| {
         show_renderer(ui, &mut layer.renderer);
         ui.add(egui::Slider::new(&mut layer.brightness, 0..=255).text("Layer brightness"));
         ui.small("Only this layer's visual intensity. Global brightness and safety limits remain independent.");
+        ui.add(egui::Slider::new(&mut layer.opacity, 0..=255).text("Opacity")
+            .custom_formatter(|v, _| format!("{:.1}%", v * 100.0 / 255.0)));
+        egui::ComboBox::from_id_salt("blend-mode").selected_text(format!("{:?}", layer.blend)).show_ui(ui, |ui| {
+            ui.selectable_value(&mut layer.blend, BlendMode::Normal, "Normal (alpha replacement)");
+            ui.selectable_value(&mut layer.blend, BlendMode::Add, "Add (saturating)");
+            ui.selectable_value(&mut layer.blend, BlendMode::Multiply, "Multiply");
+        });
+        ui.small("Opacity and blend apply to every appearance in this logical layer. Zero opacity is transparent; black is a color, not transparency.");
     });
-    before != (layer.renderer.clone(), layer.brightness)
+    before != *layer
 }
 
 pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {
@@ -279,6 +287,8 @@ mod tests {
 
     fn layer(id: &str) -> Layer {
         Layer {
+            opacity: 255,
+            blend: Default::default(),
             id: id.into(),
             name: "Same display name".into(),
             variants: Vec::new(),
@@ -432,6 +442,35 @@ mod tests {
         let (_, shapes) = click(ctx, layer, pos);
         let pos = text_pos(&shapes, next).unwrap_or_else(|| panic!("missing choice {next}"));
         click(ctx, layer, pos).0
+    }
+
+    #[test]
+    fn headless_opacity_and_blend_change_only_selected_logical_settings() {
+        let mut document =
+            SetupDocument::from_toml(include_str!("../../../examples/layer-setup.toml")).unwrap();
+        let before = document.clone();
+        let ctx = Context::default();
+        let layer = &mut document.layers[0];
+        run(&ctx, layer, vec![]);
+        let (_, shapes) = run(&ctx, layer, vec![]);
+        let y = text_pos(&shapes, "Opacity").unwrap().y;
+        assert!(text_pos(&shapes, "100.0%").is_some());
+        assert!(click(&ctx, layer, Pos2::new(60.0, y)).0);
+        assert!(layer.opacity > 0 && layer.opacity < 255);
+        assert!(select(&ctx, layer, "Normal", "Add (saturating)"));
+        assert_eq!(layer.blend, BlendMode::Add);
+        let edited = layer.clone();
+        layer.opacity = before.layers[0].opacity;
+        layer.blend = before.layers[0].blend;
+        assert_eq!(
+            document, before,
+            "all identities, renderer settings, groups, targets, variants and other layers are unchanged"
+        );
+        document.layers[0] = edited;
+        assert_eq!(
+            SetupDocument::from_toml(&document.to_toml().unwrap()).unwrap(),
+            document
+        );
     }
 
     #[test]

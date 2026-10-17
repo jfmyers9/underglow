@@ -14,15 +14,43 @@ IDs are explicit, stable tokens, independent of names, file paths, or position.
 Layer IDs must be unique within a setup. Names need not be unique.
 
 `layers` is ordered **bottom to top**. A background is an ordinary always-on,
-whole-keyboard layer. Higher enabled, active layers replace lower ones only on
-their target keys. Black is opaque, not transparency. Uncovered keys are black
+whole-keyboard layer. Higher enabled, active layers blend over lower ones only on
+their target keys. Default normal/255 replaces exactly as before. Black is a color,
+not transparency; opacity zero is transparent. Uncovered keys are black
 while the engine owns lighting. Pause releases lighting back to the keyboard.
 An empty layer stack is valid and does not create an implicit background.
 
 ## Layer fields
 
 Each layer has `id`, `name`, `renderer`, `target`, and optional `enabled` (true),
-`brightness` (255), and `activation` (always). Brightness uses 0..255 channels.
+`brightness` (255), `opacity` (255), `blend` (`"normal"`), and `activation` (always).
+Brightness and opacity independently use integers 0..255. Unknown blend modes,
+out-of-range opacity and unsupported fields are rejected, including on disabled
+layers. Older documents without these fields render unchanged.
+
+### Blend contract
+
+`blend` is one of `"normal"`, `"add"`, `"multiply"` (case-sensitive strings).
+Composition is bottom-to-top, channel-linear integer RGB, **not gamma-corrected**.
+For destination `d`, source `s`, opacity `a`, define `R(n) = floor((n+127)/255)`:
+
+* Normal: `R(d*(255-a) + s*a)` (alpha replacement).
+* Add: `min(255, d + R(s*a))` (saturating addition).
+* Multiply: `R(d*(255-a) + R(d*s)*a)` (rounded multiply, then alpha interpolation).
+
+Every mode at opacity 0 leaves the destination unchanged. Normal at 255 is exact
+replacement, including opaque black; at 128 black dims the advancing underlying
+effect, rather than freezing it. Add black is neutral; multiply black at 255
+produces black. Multiply over an uncovered black destination remains black.
+Targets and activation eligibility apply before blending; lower animations and
+facts continue advancing even when obscured. The low-level compositor preserves
+signed priority ordering and first-declaration-on-top for equal priorities.
+Canonical setups give higher stack indices higher priority.
+
+Logical-layer opacity/blend are shared by every behavior variant; they are not
+renderer brightness or per-appearance brightness overrides. Save/Discard,
+library persistence and import/export retain these declarative fields without
+granting executable connector trust or activating hardware.
 
 Renderer tables use `kind`:
 
@@ -215,13 +243,20 @@ layers still undergo document validation. Physical names and analog renderers
 require an 80HE ANSI layout, checked again against the live device.
 
 The runtime reuses the catalog effects, reactive/ripple simulations, focus timer
-and renderer, and shared opaque compositor. `composition(ctx, elapsed)` exposes
+and renderer, and shared blending compositor. `composition(ctx, elapsed)` exposes
 ordered active contributions with masks and stack-index priorities;
-`compositor::winning_layer` resolves per-key overlap. `render(ctx, elapsed)`
+`compositor::winning_layer` identifies the top nonzero-opacity eligible layer
+(not necessarily the only contributor). `contributing_layers` reports structural
+contributors after opaque normal replacement. RGB coincidences, saturation and
+rounding do not claim structural obscuration. `render(ctx, elapsed)`
 produces one fresh RGB frame, with uncovered keys and non-key cells black.
 Global `ctx.brightness` is a safety multiplier: effective brightness is
 `layer.brightness * ctx.brightness / 255`, applied once. Layer palette/speed
-settings (or catalog palette defaults) are authoritative.
+settings (or catalog palette defaults) are authoritative. After blending, final
+RGB channels are clamped to `ctx.brightness` by the same `compose_capped` helper
+for live output and coverage/preview capture. This is a ceiling, not a second
+multiplier: additive layers cannot exceed global safety brightness and default
+normal frames are not double-dimmed.
 
 Pass **unscaled monotonic elapsed** time to `render`/`composition`, not the
 legacy global speed-adjusted `ctx.animation_seconds`. Each decorative layer
@@ -349,7 +384,8 @@ Operations are `create {layer,index}`, `update {id,patch}`, `remove {id}`,
 `duplicate {id,new_id,index}`, `enable {id,enabled}`, and `reorder {ids}`.
 Indices and reorder IDs are **bottom to top**; reorder must include every ID
 exactly once. Duplicate requires a caller-supplied fresh ID. Patches accept
-`name`, `renderer`, `brightness`, `target`, and `activation`, never identity.
+`name`, `renderer`, `brightness`, `opacity`, `blend`, `target`, `activation`, and
+`variants`, never identity.
 Replacing a renderer supplies its complete typed settings, not a partial
 renderer object. One transaction supports 1..128 operations; stdin is bounded
 to 256 KiB. The outer application config remains bounded to 256 KiB too.

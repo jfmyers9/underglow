@@ -1,6 +1,7 @@
 //! Pure optimistic setup edits. No persistence, hardware, or producer lifecycle.
 use crate::setup::{
-    Activation, BehaviorVariant, Layer, MAX_DOCUMENT_BYTES, Renderer, SetupDocument, Target,
+    Activation, BehaviorVariant, BlendMode, Layer, MAX_DOCUMENT_BYTES, Renderer, SetupDocument,
+    Target,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -8,6 +9,8 @@ use std::collections::BTreeSet;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayerPatch {
+    pub opacity: Option<u8>,
+    pub blend: Option<BlendMode>,
     pub name: Option<String>,
     pub renderer: Option<Renderer>,
     pub brightness: Option<u8>,
@@ -93,6 +96,12 @@ pub fn apply_edits(
             LayerEdit::Update { id, patch } => {
                 let index = position(id, &candidate)?;
                 let layer = &mut candidate.layers[index];
+                if let Some(value) = patch.opacity {
+                    layer.opacity = value;
+                }
+                if let Some(value) = patch.blend {
+                    layer.blend = value;
+                }
                 if let Some(value) = &patch.name {
                     layer.name = value.clone();
                 }
@@ -179,6 +188,34 @@ mod tests {
 
     fn doc() -> SetupDocument {
         SetupDocument::from_toml(include_str!("../examples/layer-setup.toml")).unwrap()
+    }
+
+    #[test]
+    fn blend_patch_preserves_other_fields_and_invalid_transaction_is_atomic() {
+        let original = doc();
+        let patch = LayerPatch {
+            opacity: Some(128),
+            blend: Some(BlendMode::Multiply),
+            ..Default::default()
+        };
+        let edits = vec![LayerEdit::Update {
+            id: original.layers[0].id.clone(),
+            patch,
+        }];
+        let mut expected = original.clone();
+        expected.layers[0].opacity = 128;
+        expected.layers[0].blend = BlendMode::Multiply;
+        expected.revision += 1;
+        assert_eq!(apply_edits(&original, 0, &edits).unwrap(), expected);
+        let mut invalid = edits;
+        invalid.push(LayerEdit::Remove {
+            id: "missing".into(),
+        });
+        assert!(apply_edits(&original, 0, &invalid).is_err());
+        for json in [r#"{"opacity":256}"#, r#"{"blend":"screen"}"#] {
+            assert!(serde_json::from_str::<LayerPatch>(json).is_err());
+        }
+        assert_eq!(original, doc());
     }
 
     #[test]

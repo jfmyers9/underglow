@@ -90,6 +90,8 @@ pub fn starter(starter: Starter, id: String, name: String) -> Result<SetupDocume
     };
     if starter != Starter::Blank {
         document.layers.push(Layer {
+            opacity: 255,
+            blend: Default::default(),
             id: "background".into(),
             name: "Background".into(),
             enabled: true,

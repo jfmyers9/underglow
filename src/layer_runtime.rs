@@ -1,4 +1,4 @@
-//! Canonical layers compiled into the shared renderers and opaque compositor.
+//! Canonical layers compiled into the shared renderers and blending compositor.
 //! No I/O, clocks, SDKs, producers or executable connector definitions live here.
 //! A preview owns its own instance and supplies synthetic input/facts explicitly.
 use crate::automation::{AutomationConfig, AutomationRuntime, Rule, RuleMode, Scene};
@@ -410,11 +410,18 @@ impl CompiledSetup {
     /// ctx supplies geometry and display tick; elapsed is UNSCALED setup time.
     /// Global brightness multiplies layer brightness once; palette/speed are
     /// canonical per-layer settings, independent of the legacy global clock.
-    /// Uncovered keys and non-key cells are black. Higher stack index wins,
-    /// including black pixels. No pixels from previous frames are retained.
+    /// Uncovered keys and non-key cells are black. Higher stack index blends over
+    /// lower layers. Final channels respect the global ceiling after blending.
+    /// No pixels from previous frames are retained.
     pub fn render(&self, ctx: &RenderContext<'_>, elapsed: Duration) -> Frame {
         let layers = self.composition(ctx, elapsed);
-        compositor::compose(Frame::black(), ctx.layout, &layers, Duration::ZERO)
+        compositor::compose_capped(
+            Frame::black(),
+            ctx.layout,
+            &layers,
+            Duration::ZERO,
+            ctx.brightness,
+        )
     }
 
     pub fn selected_appearance(&self, layer_id: &str) -> Option<SelectedAppearance<'_>> {
@@ -474,8 +481,9 @@ impl CompiledSetup {
                     .keys()
                     .iter()
                     .filter(|key| {
-                        compositor::winning_layer(&contributions, key, Duration::ZERO)
-                            .is_some_and(|winner| contributions[winner].priority == index as i32)
+                        compositor::contributing_layers(&contributions, key, Duration::ZERO)
+                            .iter()
+                            .any(|&i| contributions[i].priority == index as i32)
                     })
                     .count();
                 crate::automation::RuleDiagnostic {
@@ -507,6 +515,8 @@ impl CompiledSetup {
                 }
                 let mask = layer.target_mask(ctx);
                 Some(compositor::Layer {
+                    opacity: layer.definition.opacity,
+                    blend: layer.definition.blend,
                     frame: render_appearance(
                         appearance.renderer,
                         simulation,
@@ -826,6 +836,8 @@ mod tests {
 
     fn layer(id: &str, renderer: Renderer, target: Target) -> Layer {
         Layer {
+            opacity: 255,
+            blend: Default::default(),
             id: id.into(),
             name: id.into(),
             enabled: true,

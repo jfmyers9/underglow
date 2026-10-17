@@ -10,7 +10,7 @@ pub fn show(ui: &mut egui::Ui, report: Option<&CoverageReport>, selected: Option
             return;
         };
         ui.small(format!("{} · evaluated at {:?}", report.mode.label(), report.evaluated_at));
-        ui.small("Scenario/live preview only — not device feedback. Counts are LED positions. Bottom → top; black is opaque. Highlight the selected layer above; edit targets or reorder the stack below to resolve conflicts.");
+        ui.small("Scenario/live preview only — not device feedback. Counts are LED positions, including shared/blended contributors. Bottom → top; normal at 100% replaces, including black. Highlight the selected layer above; edit targets, opacity/blend or stack order below.");
         egui::ScrollArea::vertical().id_salt("coverage-rows").max_height(210.0).show(ui, |ui| {
             for layer in &report.layers {
                 ui.push_id(&layer.id, |ui| {
@@ -20,12 +20,13 @@ pub fn show(ui: &mut egui::Ui, report: Option<&CoverageReport>, selected: Option
                         CoverageStatus::InputUnavailable => "input unavailable",
                         CoverageStatus::Noncovering => "noncovering",
                         CoverageStatus::Visible => "visible",
-                        CoverageStatus::PartiallyObscured => "partly obscured",
+                        CoverageStatus::PartiallyObscured => "shared/blended or partly obscured",
+                        CoverageStatus::Transparent => "transparent (0% opacity)",
                         CoverageStatus::FullyObscured => "fully obscured",
                     };
-                    let label = format!("{}#{} {} · {} · target {} / visible {} / obscured {} / overlapping {}",
+                    let label = format!("{}#{} {} · {} · target {} / visible {} / shared {} / obscured {} / overlapping {}",
                         if selected == Some(&layer.id) { "Selected · " } else { "" },
-                        layer.index + 1, layer.name, badge, layer.targeted.len(), layer.visible.len(),
+                        layer.index + 1, layer.name, badge, layer.targeted.len(), layer.visible.len(), layer.blended.len(),
                         layer.obscured.len(), layer.overlapping.len());
                     ui.label(label).on_hover_text(&layer.reason);
                     if !layer.obscured_by.is_empty() {

@@ -204,6 +204,8 @@ impl SignalProgram for NotificationProgram {
         let (base, mut layers) = self.base.composition(ctx);
         layers.extend(self.active_notifications().map(|notification| {
             Layer {
+                opacity: 255,
+                blend: Default::default(),
                 frame: notification.signal.render(ctx),
                 mask: KeyMask::Zones(
                     notification

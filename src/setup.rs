@@ -1,12 +1,14 @@
 //! Canonical, declarative lighting setups. Parsing/validation never performs I/O,
 //! loads an SDK, or grants trust to executable connectors.
 //!
-//! Layers are stored **bottom to top**. Higher enabled, active layers replace
-//! lower layers on their target keys, including black pixels. Keys uncovered by
+//! Layers are stored **bottom to top**. Higher enabled, active layers blend over
+//! lower layers on their target keys (default: opaque normal replacement).
+//! Zero opacity is transparent; black is a color. Keys uncovered by
 //! all layers are black while the engine owns lighting; pause releases ownership.
 //! Activation is separate from rendering so future logical behaviors can select
 //! between appearance variants without adding connector-specific renderers.
 use crate::catalog::{self, PaletteControl, RendererKind};
+pub use crate::compositor::BlendMode;
 use crate::effects::EffectKind;
 use crate::key_targets::canonical_coord;
 use crate::layout::Zone;
@@ -42,6 +44,11 @@ pub struct SetupDocument {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layer {
+    /// Independent of renderer brightness; variants inherit both blend settings.
+    #[serde(default = "opaque")]
+    pub opacity: u8,
+    #[serde(default)]
+    pub blend: BlendMode,
     pub id: String,
     pub name: String,
     #[serde(default = "enabled")]
@@ -75,6 +82,9 @@ pub struct BehaviorVariant {
 
 fn enabled() -> bool {
     true
+}
+fn opaque() -> u8 {
+    255
 }
 fn brightness() -> u8 {
     crate::DEFAULT_BRIGHTNESS
@@ -506,6 +516,58 @@ mod tests {
             },
             renderer: Renderer::Solid { color: [1, 2, 3] },
             brightness: None,
+        }
+    }
+
+    #[test]
+    fn blend_defaults_roundtrip_and_strict_invalid_data_leave_current_setup_intact() {
+        let original = example();
+        assert!(
+            original
+                .layers
+                .iter()
+                .all(|l| l.opacity == 255 && l.blend == BlendMode::Normal)
+        );
+        let mut doc = original.clone();
+        for blend in [BlendMode::Normal, BlendMode::Add, BlendMode::Multiply] {
+            for opacity in [0, 128, 255] {
+                doc.layers[0].opacity = opacity;
+                doc.layers[0].blend = blend;
+                assert_eq!(
+                    SetupDocument::from_toml(&doc.to_toml().unwrap()).unwrap(),
+                    doc
+                );
+                assert_eq!(
+                    serde_json::from_str::<SetupDocument>(&serde_json::to_string(&doc).unwrap())
+                        .unwrap(),
+                    doc
+                );
+            }
+        }
+        for (field, bad) in [
+            ("opacity", serde_json::json!(256)),
+            ("opacity", serde_json::json!(-1)),
+            ("opacity", serde_json::json!(0.5)),
+            ("blend", serde_json::json!("screen")),
+            ("blend", serde_json::json!({"kind":"normal","ignored":true})),
+            ("unsupported_blend_parameter", serde_json::json!(10)),
+        ] {
+            let mut json = serde_json::to_value(&original).unwrap();
+            json["layers"][0]["enabled"] = serde_json::json!(false);
+            json["layers"][0][field] = bad;
+            assert!(serde_json::from_value::<SetupDocument>(json).is_err());
+            assert_eq!(original, example());
+        }
+        let mut current = original.clone();
+        for setting in [
+            "opacity = 256",
+            "opacity = -1",
+            "blend = \"screen\"",
+            "blend_strength = 10",
+        ] {
+            let invalid = EXAMPLE.replacen("[[layers]]", &format!("[[layers]]\n{setting}"), 1);
+            assert!(current.replace_from_toml(&invalid).is_err());
+            assert_eq!(current, original, "rejected imports are atomic");
         }
     }
 

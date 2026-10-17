@@ -61,15 +61,19 @@ pub fn show(ui: &mut egui::Ui, preview: &Preview, coord: Option<MatrixCoord>) {
         }
         ui.small("Preview only — not actual physical output. Engine ownership/paused status is separate.");
         if let Some(winner) = report.winning_layer {
-            ui.label(format!("Winning layer #{}: {}", winner + 1, report.layers[winner].name));
+            ui.label(format!("Top eligible contribution #{}: {}", winner + 1, report.layers[winner].name));
         } else {
             ui.label("No active targeting layer: uncovered black.");
         }
-        ui.small("Bottom → top; higher active layers are opaque, including black.");
+        ui.small("Bottom → top; normal at 100% replaces (including black). Partial opacity/add/multiply retain underlying contributions. Final RGB respects the global brightness ceiling.");
         egui::ScrollArea::vertical().id_salt("key-explanation").max_height(260.0).show(ui, |ui| {
             for layer in &report.layers {
                 ui.push_id(&layer.id, |ui| {
                     ui.label(format!("#{} {} — {}", layer.index + 1, layer.name, layer.reason));
+                    ui.small(format!("{:?} · opacity {:.1}% · structurally visible={}", layer.blend, f32::from(layer.opacity) * 100.0 / 255.0, layer.visible));
+                    if let Some(rgb) = layer.composed_color {
+                        ui.small(format!("After blending RGB {}, {}, {} (before final safety cap)", rgb.red, rgb.green, rgb.blue));
+                    }
                     if let Some(renderer) = &layer.selected_renderer {
                         ui.small(format!("Selected renderer {:?} · appearance brightness {:?}/255", renderer, layer.selected_brightness));
                     }

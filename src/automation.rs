@@ -522,6 +522,8 @@ impl AutomationRuntime {
                         let scene = &self.config.scenes[&rule.scene];
                         let mask = &self.masks[&rule.scene];
                         Layer {
+                            opacity: 255,
+                            blend: Default::default(),
                             frame: scene.render_masked(
                                 ctx,
                                 self.now.saturating_sub(activation.started),

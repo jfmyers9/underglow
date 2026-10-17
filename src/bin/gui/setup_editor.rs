@@ -200,6 +200,8 @@ mod tests {
                 id: id.clone(),
                 patch: LayerPatch {
                     name: Some("Renamed".into()),
+                    opacity: Some(128),
+                    blend: Some(underglow::setup::BlendMode::Add),
                     renderer: setup_inspector::default_renderer("matrix"),
                     ..Default::default()
                 },
@@ -212,6 +214,8 @@ mod tests {
             })
             .unwrap();
         let edited = editor.draft.as_ref().unwrap().layers[0].clone();
+        assert_eq!(edited.opacity, 128);
+        assert_eq!(edited.blend, underglow::setup::BlendMode::Add);
         assert_eq!(edited.variants, original.layers[0].variants);
         assert_eq!(edited.target, original.layers[0].target);
         assert_eq!(edited.activation, original.layers[0].activation);
@@ -810,6 +814,8 @@ impl Editor {
         self.apply(LayerEdit::Create {
             index,
             layer: Layer {
+                opacity: 255,
+                blend: Default::default(),
                 id: id.clone(),
                 name: "New layer".into(),
                 enabled: true,
@@ -1077,6 +1083,8 @@ impl Editor {
                 let mut current = self.draft.clone().unwrap();
                 current.groups = groups;
                 let patch = LayerPatch {
+                    opacity: (edited.opacity != layer.opacity).then_some(edited.opacity),
+                    blend: (edited.blend != layer.blend).then_some(edited.blend),
                     name: (edited.name != layer.name).then_some(edited.name),
                     renderer: (edited.renderer != layer.renderer).then_some(edited.renderer),
                     brightness: (edited.brightness != layer.brightness)

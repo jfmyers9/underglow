@@ -69,6 +69,12 @@ pub struct ConditionExplanation {
 }
 #[derive(Clone, Debug)]
 pub struct LayerExplanation {
+    pub opacity: u8,
+    pub blend: compositor::BlendMode,
+    /// Structural contribution, irrespective of RGB coincidences or rounding.
+    pub visible: bool,
+    /// Accumulated RGB immediately after this contribution, before the final cap.
+    pub composed_color: Option<Color>,
     pub index: usize,
     pub id: String,
     pub name: String,
@@ -91,13 +97,15 @@ pub struct KeyExplanation {
     pub evaluated_at: Duration,
     pub global_brightness: u8,
     pub color: Color,
-    /// Index in the complete canonical bottom-to-top stack, NOT filtered overlays.
+    /// Top eligible contribution, not necessarily the only visible layer. Index
+    /// in the complete canonical bottom-to-top stack, NOT filtered overlays.
     pub winning_layer: Option<usize>,
     pub layers: Vec<LayerExplanation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoverageStatus {
+    Transparent,
     Disabled,
     Inactive,
     InputUnavailable,
@@ -130,13 +138,15 @@ pub struct LayerCoverage {
     pub reason: String,
     pub selected_variant: Option<String>,
     pub targeted: Vec<MatrixCoord>,
-    /// Actual opaque contributions, independent of their RGB (including black).
+    /// Nonzero-opacity contributions, independent of their RGB (including black).
     pub contributing: Vec<MatrixCoord>,
     pub visible: Vec<MatrixCoord>,
+    /// Visible positions shared with higher partial/add/multiply contributions.
+    pub blended: Vec<MatrixCoord>,
     pub obscured: Vec<MatrixCoord>,
     /// Target intersections, including currently inactive/disabled layers.
     pub overlapping: Vec<MatrixCoord>,
-    /// Unique canonical stack indices of the actual winners hiding this layer.
+    /// Canonical stack indices of opaque normal layers fully hiding positions.
     pub obscured_by: Vec<usize>,
     pub conditions: Vec<ConditionExplanation>,
     pub deadline: Option<CoverageDeadline>,
@@ -146,6 +156,8 @@ pub struct LayerCoverage {
 pub struct KeyCoverage {
     pub coord: MatrixCoord,
     pub winning_layer: Option<usize>,
+    /// Canonical stack indices, bottom to top; not merely the top eligible layer.
+    pub contributing_layers: Vec<usize>,
 }
 
 /// One renderer capture shared by whole-keyboard and selected-key explanations.
@@ -157,7 +169,7 @@ pub struct CoverageReport {
     pub layers: Vec<LayerCoverage>,
     pub keys: Vec<KeyCoverage>,
     pub frame: Frame,
-    /// Unblended contributions retained for inspection; no opacity is implemented.
+    /// Unblended contributions retained for inspection without re-rendering.
     pub contributions: Vec<compositor::Layer>,
 }
 
@@ -186,6 +198,14 @@ pub fn analyze_coverage(
         .iter()
         .map(|key| KeyCoverage {
             coord: key.coord,
+            contributing_layers: compositor::contributing_layers(
+                &contributions,
+                key,
+                Duration::ZERO,
+            )
+            .iter()
+            .map(|&i| contributions[i].priority as usize)
+            .collect(),
             winning_layer: compositor::winning_layer(&contributions, key, Duration::ZERO)
                 .map(|winner| contributions[winner].priority as usize),
         })
@@ -247,6 +267,8 @@ pub fn analyze_coverage(
                 name: definition.name.clone(),
                 status: if !definition.enabled {
                     CoverageStatus::Disabled
+                } else if definition.opacity == 0 {
+                    CoverageStatus::Transparent
                 } else if selected.is_none() && conditions.iter().any(|c| c.enabled && c.active) {
                     CoverageStatus::InputUnavailable
                 } else if selected.is_none() {
@@ -259,6 +281,7 @@ pub fn analyze_coverage(
                 targeted: vec![],
                 contributing: vec![],
                 visible: vec![],
+                blended: vec![],
                 obscured: vec![],
                 overlapping: vec![],
                 obscured_by: vec![],
@@ -282,17 +305,20 @@ pub fn analyze_coverage(
             }
         }
         for contribution in &contributions {
-            if !contribution.mask.contains(key) {
+            if !contribution.mask.contains(key) || contribution.opacity == 0 {
                 continue;
             }
             let index = contribution.priority as usize;
             let layer = &mut layers[index];
             layer.contributing.push(key.coord);
-            if result.winning_layer == Some(index) {
+            if result.contributing_layers.contains(&index) {
                 layer.visible.push(key.coord);
+                if result.winning_layer != Some(index) {
+                    layer.blended.push(key.coord);
+                }
             } else {
                 layer.obscured.push(key.coord);
-                if let Some(winner) = result.winning_layer
+                if let Some(winner) = result.contributing_layers.first().copied()
                     && !layer.obscured_by.contains(&winner)
                 {
                     layer.obscured_by.push(winner);
@@ -304,13 +330,16 @@ pub fn analyze_coverage(
         if !layer.contributing.is_empty() {
             layer.status = if layer.visible.is_empty() {
                 CoverageStatus::FullyObscured
-            } else if layer.obscured.is_empty() {
+            } else if layer.obscured.is_empty() && layer.blended.is_empty() {
                 CoverageStatus::Visible
             } else {
                 CoverageStatus::PartiallyObscured
             };
         }
         layer.reason = match layer.status {
+            CoverageStatus::Transparent => {
+                "Zero opacity: transparent, does not obscure lower layers".into()
+            }
             CoverageStatus::Disabled => "Disabled layer".into(),
             CoverageStatus::Inactive => layer
                 .conditions
@@ -324,19 +353,21 @@ pub fn analyze_coverage(
             }
             CoverageStatus::Noncovering => "No LED positions in this layout are targeted".into(),
             CoverageStatus::Visible => {
-                "All contributing positions visible (black is opaque)".into()
+                "All contributing positions visible (RGB may depend on lower layers)".into()
             }
             CoverageStatus::PartiallyObscured => {
-                "Partially obscured by higher active layers".into()
+                "Shared/blended with higher layers, or partially obscured by opaque normal layers"
+                    .into()
             }
             CoverageStatus::FullyObscured => "Fully obscured by higher active layers".into(),
         };
     }
-    let frame = compositor::compose(
+    let frame = compositor::compose_capped(
         Frame::black(),
         context.render.layout,
         &contributions,
         Duration::ZERO,
+        context.render.brightness,
     );
     CoverageReport {
         mode: context.mode,
@@ -373,7 +404,22 @@ fn explain_key_from_layers(
         .find(|k| k.coord == coord)?;
     let winner = compositor::winning_layer(contributions, key, Duration::ZERO);
     let winning_layer = winner.map(|i| contributions[i].priority as usize);
-    let color = winner.map_or(Color::BLACK, |i| contributions[i].frame.get_coord(coord));
+    let visible = compositor::contributing_layers(contributions, key, Duration::ZERO);
+    let mut color = Color::BLACK;
+    let mut steps = vec![None; contributions.len()];
+    for i in compositor::ordered_layers(contributions, Duration::ZERO) {
+        let layer = &contributions[i];
+        if layer.mask.contains(key) {
+            color = compositor::blend_color(
+                color,
+                layer.frame.get_coord(coord),
+                layer.opacity,
+                layer.blend,
+            );
+            steps[i] = Some(color);
+        }
+    }
+    let color = compositor::cap_color(color, context.render.brightness);
     let layers = runtime
         .inspect_key(context.render, coord)
         .into_iter()
@@ -381,28 +427,45 @@ fn explain_key_from_layers(
         .map(|(index, inspection)| {
             let definition = inspection.definition;
             let selected = runtime.selected_appearance(&definition.id);
-            let contribution = contributions
+            let source_index = contributions
                 .iter()
-                .find(|layer| layer.priority == index as i32 && layer.mask.contains(key))
-                .map(|layer| layer.frame.get_coord(coord));
+                .position(|layer| layer.priority == index as i32 && layer.mask.contains(key));
+            let contribution = source_index.map(|i| contributions[i].frame.get_coord(coord));
+            let is_visible = source_index.is_some_and(|i| visible.contains(&i));
             let active = selected.is_some();
-            let obscured_by = contribution
-                .and(winning_layer)
-                .filter(|winner| *winner != index);
+            let obscured_by = contribution.and_then(|_| {
+                (definition.opacity != 0 && !is_visible)
+                    .then(|| visible.first().map(|&i| contributions[i].priority as usize))
+                    .flatten()
+            });
             let reason = if !definition.enabled {
                 "Disabled layer".into()
             } else if !inspection.covers {
                 "Does not target this key".into()
             } else if !active {
                 "Inactive: no eligible appearance, or input unavailable".into()
+            } else if definition.opacity == 0 {
+                "Transparent: zero opacity, lower layers remain visible".into()
             } else if let Some(winner) = obscured_by {
                 format!("Obscured by higher stack layer #{}", winner + 1)
-            } else if contribution == Some(Color::BLACK) {
-                "Wins with opaque black (not transparency)".into()
+            } else if definition.opacity == 255
+                && definition.blend == compositor::BlendMode::Normal
+                && contribution == Some(Color::BLACK)
+            {
+                "Contributes opaque black (not transparency)".into()
             } else {
-                "Wins: highest active targeting stack layer".into()
+                format!(
+                    "Contributes with {:?} blend at {}/255 opacity; {} visible contribution(s)",
+                    definition.blend,
+                    definition.opacity,
+                    visible.len()
+                )
             };
             LayerExplanation {
+                opacity: definition.opacity,
+                blend: definition.blend,
+                visible: is_visible,
+                composed_color: source_index.and_then(|i| steps[i]),
                 index,
                 id: definition.id.clone(),
                 name: definition.name.clone(),
@@ -670,12 +733,9 @@ mod tests {
                 assert_eq!(layer.targeted.contains(&key.coord), detail.covers);
                 assert_eq!(
                     layer.contributing.contains(&key.coord),
-                    detail.contribution.is_some()
+                    detail.contribution.is_some() && detail.opacity != 0
                 );
-                assert_eq!(
-                    layer.visible.contains(&key.coord),
-                    expected == Some(layer.index)
-                );
+                assert_eq!(layer.visible.contains(&key.coord), detail.visible);
                 assert_eq!(
                     layer.obscured.contains(&key.coord),
                     detail.obscured_by.is_some()
@@ -691,6 +751,185 @@ mod tests {
         assert_eq!(runtime.event_cursor(), cursor);
         assert_eq!(registry.snapshot(), snapshot);
         result
+    }
+
+    #[test]
+    fn partial_transient_variant_expires_to_current_underlying_animation() {
+        let mut doc = document();
+        doc.layers.truncate(2);
+        doc.layers[0].renderer = Renderer::Pulse {
+            color: [200, 100, 50],
+            period_ms: 1000,
+        };
+        doc.layers[1].opacity = 128;
+        doc.layers[1].variants.retain(|v| v.id == "finished");
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(
+            &mut registry,
+            "pi",
+            "session",
+            1,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 100,
+            },
+            20,
+        );
+        for now in [20, 119, 120] {
+            runtime.observe(
+                &registry.snapshot(),
+                &registry.events_since(0),
+                Duration::from_millis(now),
+            );
+            let captured = coverage(&runtime, &registry, now);
+            if now < 120 {
+                assert_eq!(
+                    captured.layers[1].selected_variant.as_deref(),
+                    Some("finished")
+                );
+                assert_eq!(captured.layers[0].status, CoverageStatus::PartiallyObscured);
+                assert_eq!(
+                    captured.layers[1].deadline.unwrap().at,
+                    Duration::from_millis(120)
+                );
+                assert!(
+                    captured
+                        .contributions
+                        .iter()
+                        .all(|layer| layer.priority != 1 || layer.opacity == 128)
+                );
+            } else {
+                assert_eq!(captured.layers[1].status, CoverageStatus::Inactive);
+                assert_eq!(captured.layers[0].status, CoverageStatus::Visible);
+                doc.layers.truncate(1);
+                let underlying = CompiledSetup::compile(&doc).unwrap();
+                assert_eq!(captured.frame, coverage(&underlying, &registry, now).frame);
+                assert_ne!(captured.frame, coverage(&underlying, &registry, 20).frame);
+            }
+        }
+    }
+
+    #[test]
+    fn old_documents_match_exact_opaque_winner_pixels_without_double_brightness() {
+        let doc = SetupDocument::from_toml(include_str!("../examples/layer-setup.toml")).unwrap();
+        let runtime = CompiledSetup::compile(&doc).unwrap();
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let snapshot = Registry::default().snapshot();
+        for brightness in [0, 73, 255] {
+            for ms in [0, 231, 1000] {
+                let elapsed = Duration::from_millis(ms);
+                let render = RenderContext {
+                    animation_seconds: elapsed.as_secs_f64(),
+                    info: &info,
+                    layout: &layout,
+                    brightness,
+                    palette: PaletteName::Wooting,
+                    tick: 0,
+                };
+                let context = ExplanationContext {
+                    render: &render,
+                    elapsed,
+                    snapshot: &snapshot,
+                    now: elapsed,
+                    mode: ExplanationMode::Live,
+                };
+                let capture = analyze_coverage(&runtime, &context);
+                assert_eq!(capture.frame, runtime.render(&render, elapsed));
+                for key in layout.keys() {
+                    let old_pixel =
+                        compositor::winning_layer(&capture.contributions, key, Duration::ZERO)
+                            .map_or(Color::BLACK, |i| {
+                                capture.contributions[i].frame.get_coord(key.coord)
+                            });
+                    assert_eq!(capture.frame.get_coord(key.coord), old_pixel);
+                    assert_eq!(
+                        capture
+                            .explain_key(&runtime, &context, key.coord)
+                            .unwrap()
+                            .color,
+                        old_pixel
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn blending_endpoints_advancing_effect_and_global_cap_match_capture_and_explanations() {
+        use crate::setup::BlendMode;
+        let mut doc = document();
+        doc.layers.truncate(2);
+        doc.layers[0].renderer = Renderer::Pulse {
+            color: [255, 128, 64],
+            period_ms: 1000,
+        };
+        doc.layers[1].renderer = Renderer::Solid { color: [255, 0, 0] };
+        doc.layers[1].activation = Activation::Always {};
+        doc.layers[1].variants.clear();
+        let registry = Registry::default();
+        let coord = canonical_coord("F3").unwrap();
+        for blend in [BlendMode::Normal, BlendMode::Add, BlendMode::Multiply] {
+            doc.layers[1].blend = blend;
+            for opacity in [0, 128, 255] {
+                doc.layers[1].opacity = opacity;
+                let runtime = CompiledSetup::compile(&doc).unwrap();
+                let early = coverage(&runtime, &registry, 0);
+                let late = coverage(&runtime, &registry, 500);
+                // coverage() cross-checks every key's live render, cached explanation,
+                // structural visibility and unmodified evaluator/registry state.
+                assert!(late.frame.as_bytes().iter().all(|&v| v <= 173));
+                let report = report(&runtime, &registry, 500);
+                assert_eq!(report.layers[1].opacity, opacity);
+                assert_eq!(report.layers[1].blend, blend);
+                if opacity == 0 {
+                    assert_eq!(late.layers[1].status, CoverageStatus::Transparent);
+                    assert!(late.layers[1].contributing.is_empty());
+                    assert_eq!(late.layers[0].status, CoverageStatus::Visible);
+                    assert_eq!(report.winning_layer, Some(0));
+                } else if blend != BlendMode::Normal || opacity != 255 {
+                    assert!(report.layers[0].visible && report.layers[1].visible);
+                    assert!(report.layers[0].obscured_by.is_none());
+                    assert_eq!(late.layers[0].status, CoverageStatus::PartiallyObscured);
+                    assert!(late.layers[0].blended.contains(&coord));
+                }
+                if opacity < 255 || blend != BlendMode::Normal {
+                    assert_ne!(
+                        early.frame.get_coord(coord),
+                        late.frame.get_coord(coord),
+                        "underlying effect advances through {blend:?}/{opacity}"
+                    );
+                } else {
+                    assert_eq!(late.frame.get_coord(coord), Color::new(173, 0, 0));
+                    assert_eq!(report.layers[0].obscured_by, Some(1));
+                }
+            }
+        }
+        // Addition exceeds the global ceiling before the final cap, but not after it.
+        doc.layers[0].renderer = Renderer::Solid { color: [255; 3] };
+        doc.layers[1].renderer = Renderer::Solid { color: [255; 3] };
+        doc.layers[1].blend = BlendMode::Add;
+        let runtime = CompiledSetup::compile(&doc).unwrap();
+        assert_eq!(
+            coverage(&runtime, &registry, 0).frame.get_coord(coord),
+            Color::new(173, 173, 173)
+        );
+        assert_eq!(
+            report(&runtime, &registry, 0).layers[1].composed_color,
+            Some(Color::new(255, 255, 255))
+        );
+        doc.layers[1].renderer = Renderer::Solid { color: [0; 3] };
+        doc.layers[1].blend = BlendMode::Normal;
+        for (opacity, expected) in [(0, 173), (128, 86), (255, 0)] {
+            doc.layers[1].opacity = opacity;
+            let runtime = CompiledSetup::compile(&doc).unwrap();
+            assert_eq!(
+                coverage(&runtime, &registry, 0).frame.get_coord(coord),
+                Color::new(expected, expected, expected)
+            );
+        }
     }
 
     #[test]

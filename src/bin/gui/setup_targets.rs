@@ -841,6 +841,8 @@ mod tests {
             Frame::black(),
             &layout,
             &[Layer {
+                opacity: 255,
+                blend: Default::default(),
                 frame: overlay,
                 mask: mask.clone(),
                 priority: 1,
