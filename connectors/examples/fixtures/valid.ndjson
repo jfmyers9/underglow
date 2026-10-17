@@ -1,0 +1,6 @@
+{"schema_version":1,"source":"focus","instance":"fixture-a","sequence":1,"payload":{"kind":"state","state":"focusing","ttl_ms":15000}}
+{"schema_version":1,"source":"focus","instance":"fixture-b","sequence":1,"payload":{"kind":"state","state":"focusing","ttl_ms":15000}}
+{"schema_version":1,"source":"focus","instance":"fixture-a","sequence":2,"payload":{"kind":"state","state":"focusing","ttl_ms":15000}}
+{"schema_version":1,"source":"focus","instance":"fixture-a","sequence":3,"payload":{"kind":"event","event":"done","ttl_ms":2000}}
+{"schema_version":1,"source":"focus","instance":"fixture-a","sequence":4,"payload":{"kind":"remove"}}
+{"schema_version":1,"source":"focus","instance":"fixture-b","sequence":2,"payload":{"kind":"remove"}}

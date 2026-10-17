@@ -1,0 +1,4 @@
+{"schema_version":1,"source":"__SOURCE__","instance":"fixture-session","sequence":1,"payload":{"kind":"state","state":"focusing","ttl_ms":15000}}
+{"schema_version":1,"source":"__SOURCE__","instance":"fixture-session","sequence":2,"payload":{"kind":"state","state":"focusing","ttl_ms":15000}}
+{"schema_version":1,"source":"__SOURCE__","instance":"fixture-session","sequence":3,"payload":{"kind":"event","event":"done","ttl_ms":2000}}
+{"schema_version":1,"source":"__SOURCE__","instance":"fixture-session","sequence":4,"payload":{"kind":"remove"}}

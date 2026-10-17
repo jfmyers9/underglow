@@ -1,0 +1,2 @@
+{"schema_version":1,"source":"focus","instance":"fixture-a","sequence":7,"payload":{"kind":"state","state":"focusing","ttl_ms":15000}}
+{"schema_version":1,"source":"focus","instance":"fixture-a","sequence":7,"payload":{"kind":"event","event":"done","ttl_ms":2000}}
