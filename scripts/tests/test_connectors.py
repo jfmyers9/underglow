@@ -15,6 +15,11 @@ import threading
 import time
 import unittest
 
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
+
 ROOT = Path(__file__).resolve().parents[2]
 SCAFFOLD = ROOT / 'scripts/scaffold-connector.py'
 CHECK = ROOT / 'scripts/check-connector.py'
@@ -145,10 +150,13 @@ class StarterTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
 
-    def generate(self, language, name='focus'):
+    def generate(self, language, name='focus', capabilities=False):
         destination = self.directory / language
-        result = subprocess.run([sys.executable, str(SCAFFOLD), '--language', language,
-                                 '--name', name, '--output', str(destination)], capture_output=True)
+        command = [sys.executable, str(SCAFFOLD), '--language', language,
+                   '--name', name, '--output', str(destination)]
+        if capabilities:
+            command.append('--capabilities')
+        result = subprocess.run(command, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return destination
 
@@ -186,6 +194,7 @@ class StarterTests(unittest.TestCase):
         for language in ('python', 'typescript'):
             with self.subTest(language=language):
                 destination = self.generate(language, 'custom:focus/task-1')
+                self.assertFalse((destination / 'capabilities.toml').exists())
                 result = subprocess.run([sys.executable, str(CHECK), str(destination / 'fixture.ndjson')],
                                         capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -201,6 +210,33 @@ class StarterTests(unittest.TestCase):
                     identity = messages[0]['instance']
                     self.assertNotIn(identity, identities)
                     identities.add(identity)
+
+    @unittest.skipUnless(tomllib, 'Python 3.11+ required for TOML test parsing')
+    def test_optional_capability_manifest_matches_both_generated_producers(self):
+        for language in ('python', 'typescript'):
+            with self.subTest(language=language):
+                destination = self.generate(language, 'custom:focus/task-1', capabilities=True)
+                manifest = tomllib.loads((destination / 'capabilities.toml').read_text())
+                self.assertEqual(manifest['schema_version'], 1)
+                self.assertEqual(manifest['source'], 'custom:focus/task-1')
+                self.assertEqual(set(manifest), {'schema_version', 'source', 'display_name',
+                                                'instances', 'lifecycle', 'states', 'events'})
+                self.assertEqual(manifest['instances'], {'semantics': 'session', 'selectors': ['any', 'exact']})
+                result = subprocess.run(self.command(language, destination) + ['--stdout', '--duration-seconds', '0'],
+                                        capture_output=True, timeout=3)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                messages = [json.loads(line) for line in result.stdout.splitlines()]
+                for message in messages:
+                    payload = message['payload']
+                    if payload['kind'] == 'remove':
+                        continue
+                    kind = payload['kind']
+                    self.assertEqual(payload[kind], manifest[kind + 's'][0]['id'])
+                    ttl = manifest['lifecycle'][kind + '_ttl']
+                    self.assertLessEqual(ttl['min_ms'], payload['ttl_ms'])
+                    self.assertGreaterEqual(ttl['max_ms'], payload['ttl_ms'])
+                self.assertLess(manifest['lifecycle']['renewal_interval_ms'],
+                                manifest['lifecycle']['state_ttl']['min_ms'])
 
     def test_generated_examples_publish_to_real_temporary_sockets(self):
         for language in ('python', 'typescript'):

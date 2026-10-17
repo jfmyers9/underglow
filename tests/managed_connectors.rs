@@ -679,8 +679,26 @@ fn descriptor_only_edits_preserve_pid_and_missing_bindings_remain_repairable() {
         original["pid"]
     );
     fs::remove_file(occupied).unwrap();
-    registry["connections"][1]["descriptor"]["display_name"] = serde_json::json!("Friendly source");
+    let local: underglow::connection_registry::ConnectionRegistry =
+        serde_json::from_value(registry.clone()).unwrap();
+    let mut descriptor = local.connection("focus").unwrap().descriptor.clone();
+    descriptor.display_name = "Friendly source".into();
+    let descriptor = underglow::capability_manifest::parse(
+        &serde_json::to_vec(&descriptor).unwrap(),
+        underglow::capability_manifest::ManifestFormat::Json,
+    )
+    .unwrap();
+    assert!(
+        underglow::capability_manifest::import_descriptor(&local, 0, descriptor.clone(), false)
+            .is_err()
+    );
+    let candidate =
+        underglow::capability_manifest::import_descriptor(&local, 0, descriptor, true).unwrap();
+    assert_eq!(candidate.managed_configs(), local.managed_configs());
+    registry = serde_json::to_value(&candidate).unwrap();
     h.connections_input(&registry.to_string(), "0", true);
+    // A stale metadata import cannot alter either the registry or producer.
+    h.connections_input(&registry.to_string(), "0", false);
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(
         h.wait_health("focus", |v| v["healthy"] == true)["pid"],
@@ -702,6 +720,44 @@ fn descriptor_only_edits_preserve_pid_and_missing_bindings_remain_repairable() {
         shown["setup"]["document"]["layers"][1]["activation"]["source"],
         "missing"
     );
+    let draft: underglow::setup::SetupDocument =
+        serde_json::from_value(shown["setup"]["document"].clone()).unwrap();
+    let binding = underglow::binding_repair::bindings(&draft)
+        .into_iter()
+        .find(|b| b.source == "missing")
+        .unwrap();
+    let repair = underglow::binding_repair::BindingRepair {
+        setup_id: draft.id.clone(),
+        key: binding.key,
+        expected_activation: binding.activation.clone(),
+        source: "focus".into(),
+        instance: None,
+    };
+    let (repaired, _) =
+        underglow::binding_repair::repair_binding(&draft, &candidate, &repair).unwrap();
+    let mut expected = draft.clone();
+    expected.layers[1].activation = underglow::setup::Activation::WhileState {
+        source: "focus".into(),
+        instance: None,
+        state: None,
+    };
+    assert_eq!(
+        repaired, expected,
+        "binding repair preserves all visual behavior"
+    );
+    // Explicitly save only now; local repair itself never writes engine state.
+    h.request(serde_json::json!({"schema_version":1,"action":"setup-replace","expected_revision":draft.revision,"document":repaired}));
+    let report = h.cli(&["control", "connections", "show"]);
+    assert_eq!(
+        report["connections"]["missing_sources"],
+        serde_json::json!([])
+    );
+    assert_eq!(report["status"]["state"], "paused");
+    assert_eq!(
+        h.wait_health("focus", |v| v["healthy"] == true)["pid"],
+        original["pid"]
+    );
+    assert!(!h.dir.join("runtime/hardware.lock").exists());
 }
 
 #[test]

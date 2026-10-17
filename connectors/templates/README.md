@@ -16,6 +16,13 @@ a 15-second lease; normal completion emits `done`, then removes state. Ctrl-C or
 SIGTERM attempts removal without emitting completion. Errors terminate promptly;
 this small starter does not implement Pi's reconnect/backoff behavior.
 
+If generated with `--capabilities`, `capabilities.toml` is inert metadata for
+the GUI **Connections → Import custom capability manifest** workflow. It
+declares `focusing` and `done`, not task success. Import it to configure a layer
+with the generic behavior forms, without Rust changes. Update this manifest
+alongside any fact/lifecycle changes to the producer. Import never installs,
+trusts, enables or runs this program; review executable trust separately.
+
 Keep stdout exclusively NDJSON in `--stdout` mode; diagnostics belong on stderr.
 This mode emits the same messages for a supervised process reader, without socket
 ACKs. A consumer must apply its own bounds and trust policy. No service is installed

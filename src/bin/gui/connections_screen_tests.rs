@@ -321,6 +321,55 @@ fn control_transport_failure_does_not_hide_independently_fresh_facts() {
     assert!(text.contains("Application state: Fresh"));
     assert!(text.contains("health is last known, not current"));
 }
+
+#[test]
+fn metadata_import_acknowledgment_never_closes_or_acknowledges_a_private_producer_draft() {
+    let mut panel = Panel::default();
+    panel.receive_report(Ok(report()));
+    let mut registry = panel.registry().unwrap().clone();
+    registry
+        .connections
+        .iter_mut()
+        .find(|c| c.descriptor.source == "custom")
+        .unwrap()
+        .producer
+        .as_mut()
+        .unwrap()
+        .enabled = false;
+    panel.report.as_mut().unwrap().registry = registry.clone();
+    panel.producer_editor().open(&registry, "custom");
+    let view = View {
+        sample: None,
+        setup: None,
+        runtime: None,
+        connected: true,
+        busy: false,
+    };
+    assert!(draw(&mut panel, view).contains("Private draft"));
+    let mut descriptor = registry.connection("custom").unwrap().descriptor.clone();
+    descriptor.display_name = "Changed display name".into();
+    let candidate = underglow::capability_manifest::import_descriptor(
+        &registry,
+        registry.revision,
+        descriptor,
+        true,
+    )
+    .unwrap();
+    let saved = registry.replace(registry.revision, &candidate).unwrap();
+    panel.metadata_write = true; // Explicit importer intent, not producer-save intent.
+    panel.receive_replacement(
+        &candidate,
+        Ok(
+            serde_json::json!({"ok":true,"connections":{"registry":saved,"runtime_index":{}}})
+                .to_string(),
+        ),
+    );
+    assert_eq!(panel.registry(), Some(&saved));
+    let text = draw(&mut panel, view);
+    assert!(text.contains("Private draft"));
+    assert!(text.contains("Registry changed"));
+    assert!(!text.contains("SECRET"));
+}
 #[test]
 fn history_is_bounded_deduplicated_and_cleared_on_engine_generation_change() {
     let mut panel = Panel::default();

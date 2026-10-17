@@ -92,6 +92,57 @@ source is not a reason to delete a layer. Replacements never resume lighting.
 
 ## Editor hooks and runtime health
 
+### Custom capability manifests
+
+In Connections, refresh and expand **Import custom capability manifest**. Paste
+TOML/JSON or enter a local regular-file path, choose its format, and validate.
+The input is exactly one strict v1 `SourceDescriptor` (64 KiB, within the
+256 KiB connection-registry bound), never a registry or executable definition.
+Unknown fields, unsupported schema versions, invalid capabilities and oversized
+input are rejected before any write. File input rejects symlinks and devices.
+See the [starter kit](connectors.md#use-the-source-in-the-gui-without-rust-changes).
+
+Review source ID, states/events and lifecycle, then explicitly import. A new
+source is external-only with no producer. An existing source requires the
+**Replace existing source metadata ONLY** acknowledgment; its entire producer
+configuration, trust/enable intent, env and working directory are unchanged.
+Descriptor-only replacement preserves a managed producer's current PID.
+`command`, `argv`, `env`, `working_dir`, `trusted`, `enabled`, and code fields
+are rejected in manifest input, not interpreted as authorization. Code trust
+remains exclusively in the separate private producer editor.
+
+Imports validate a cloned registry and use the existing revision/CAS write.
+Stale/rejected imports retain the last saved registry and reviewed input; refresh,
+validate and acknowledge any collision again. Unrelated connections and drafts
+are not overwritten. Metadata refreshes never resume lighting or save setups.
+
+### Repair missing or changed layer inputs
+
+Missing connections remain visible as placeholders in Connections, including
+references in disabled layers and disabled variants. Every affected appearance
+has **Repair input binding…** as well as its Open Layer link. Choose a configured
+connection explicitly, then explicitly choose **Any instance** or **Exact
+instance**. Instance IDs are producer-session identities, not portable aliases.
+
+**Rebind in draft (not yet saved)** changes only that layer/variant's source and
+instance selector. Appearance, targets, durations, fact tokens, ordering, IDs,
+groups, and all unrelated bindings survive. Undeclared state/event tokens and
+unsupported selectors produce warnings, never automatic remapping. Similar
+names on different sources do not establish semantic equivalence. A stale repair
+dialog is rejected if its original binding or composition has changed.
+
+Repair is a local composition draft edit, clearly marked **not yet saved**.
+Review it in Layers and explicitly Save (or Discard). It neither edits producer
+configuration nor grants trust, starts a process, emits facts or resumes lighting.
+Restore the original source's manifest instead if no rebind is desired.
+
+Library entry points for setup-sharing/editors are `capability_manifest::{parse,
+read_file, import_descriptor}` and `binding_repair::{bindings, repair_binding}`.
+`BindingKey` addresses one stable layer/default or variant; `BindingRepair`
+carries the original activation and composition ID for stale-dialog protection.
+Candidates keep their original revision until the existing engine CAS accepts
+an explicit save. Never export the private registry through these helpers.
+
 ### GUI managed producers
 
 Open **Connections**, refresh the machine registry, then **Configure producer**

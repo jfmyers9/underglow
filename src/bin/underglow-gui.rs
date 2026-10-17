@@ -1065,6 +1065,14 @@ impl Controller {
                 self.setup_editor.selected = Some(id);
                 self.page = Page::Layers;
             }
+            Some(connections_screen::Request::RepairBinding(repair)) => {
+                let result = self
+                    .connections_panel
+                    .registry()
+                    .ok_or_else(|| "Refresh Connections before repairing a binding".into())
+                    .and_then(|registry| self.setup_editor.repair_sources(registry, &repair));
+                self.connections_panel.binding_repaired(result);
+            }
             None => {}
         }
     }

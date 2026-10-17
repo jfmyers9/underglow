@@ -1,4 +1,12 @@
-//! Connections page. The host supplies facts and applies explicit intents; no I/O here.
+//! Connections page. The host supplies facts and applies explicit intents. Only
+//! the explicit manifest-file read performs bounded local data I/O.
+#[path = "binding_editor.rs"]
+mod binding_editor;
+#[path = "manifest_editor.rs"]
+mod manifest_editor;
+#[cfg(test)]
+#[path = "metadata_test_ui.rs"]
+mod metadata_test_ui;
 #[path = "producer_editor.rs"]
 pub mod producer_editor;
 use eframe::egui;
@@ -60,6 +68,7 @@ pub struct View<'a> {
 pub enum Request {
     Refresh,
     OpenLayer(String),
+    RepairBinding(underglow::binding_repair::BindingRepair),
     Replace {
         revision: u64,
         registry: ConnectionRegistry,
@@ -70,6 +79,10 @@ pub enum Request {
 pub struct Panel {
     report: Option<Report>,
     producer_editor: producer_editor::Editor,
+    manifest_editor: manifest_editor::Editor,
+    metadata_write: bool,
+    binding_editor: Option<binding_editor::Editor>,
+    binding_notice: Option<String>,
     captured: Option<Instant>,
     error: Option<String>,
     generation: Option<(u64, u64)>,
@@ -78,6 +91,15 @@ pub struct Panel {
 }
 
 impl Panel {
+    pub fn binding_repaired(&mut self, result: Result<(), String>) {
+        self.binding_notice = Some(match result {
+            Ok(()) => {
+                self.binding_editor = None;
+                "Binding repaired in composition draft — not yet saved. Open Layers to review and explicitly Save. Repair does not resume lighting.".into()
+            }
+            Err(error) => format!("Binding repair not applied: {error}"),
+        });
+    }
     /// Machine-local data: do not log or copy this into setup/manifest exports.
     pub fn registry(&self) -> Option<&ConnectionRegistry> {
         self.report.as_ref().map(|report| &report.registry)
@@ -93,6 +115,7 @@ impl Panel {
         submitted: &ConnectionRegistry,
         result: Result<String, String>,
     ) {
+        let metadata_write = std::mem::take(&mut self.metadata_write);
         let previous = self.report.take();
         let previous_captured = self.captured;
         self.receive_report(result);
@@ -103,7 +126,11 @@ impl Panel {
                 self.registry() == Some(&expected)
             })
         {
-            self.producer_editor.accept_saved(submitted);
+            // Metadata import must not acknowledge/close an unrelated private
+            // producer draft that happens to match an unchanged definition.
+            if !metadata_write {
+                self.producer_editor.accept_saved(submitted);
+            }
         } else {
             self.report = previous;
             self.captured = previous_captured;
@@ -197,6 +224,9 @@ impl Panel {
         }
         let mut request = None;
         ui.heading("Connections");
+        if let Some(notice) = &self.binding_notice {
+            ui.label(notice);
+        }
         ui.label("Connectors provide facts. Layers turn those facts into visuals.");
         ui.small(
             "Inspection never starts producers. Explicit controls below change process intent, never resume lighting.",
@@ -315,8 +345,43 @@ impl Panel {
                     for binding in bound {
                         if ui.button(binding.label()).clicked() { request = Some(Request::OpenLayer(binding.layer_id.into())); }
                         ui.label(binding.explanation(&view, &current));
+                        ui.push_id((binding.layer_id, binding.variant.map(|v| v.0)), |ui| {
+                            if ui.add_enabled(self.report.is_some(), egui::Button::new("Repair input binding…")).clicked()
+                                && let Some(setup) = view.setup
+                            {
+                                self.binding_editor = Some(binding_editor::Editor::new(setup,
+                                    underglow::binding_repair::BindingKey {
+                                        layer_id: binding.layer_id.into(), variant_id: binding.variant.map(|v| v.0.into()),
+                                    }, binding.activation));
+                                self.binding_notice = None;
+                            }
+                        });
                     }
                 });
+            });
+        }
+        if let (Some(editor), Some(report), Some(setup)) =
+            (&mut self.binding_editor, &self.report, view.setup)
+        {
+            let (repair, close) = editor.show(ui, &report.registry, setup);
+            if let Some(repair) = repair {
+                request = Some(Request::RepairBinding(repair));
+            }
+            if close {
+                self.binding_editor = None;
+            }
+        }
+        if let Some(report) = &self.report
+            && let Some(replacement) = self.manifest_editor.show(
+                ui,
+                &report.registry,
+                view.connected && !view.busy && self.error.is_none(),
+            )
+        {
+            self.metadata_write = true;
+            request = Some(Request::Replace {
+                revision: replacement.revision,
+                registry: replacement.registry,
             });
         }
         if let Some(report) = &self.report
@@ -326,6 +391,7 @@ impl Panel {
                 view.connected && !view.busy && self.error.is_none(),
             )
         {
+            self.metadata_write = false;
             request = Some(Request::Replace {
                 revision: replacement.revision,
                 registry: replacement.registry,
@@ -449,34 +515,30 @@ struct Binding<'a> {
     activation: &'a Activation,
 }
 fn bindings(setup: &SetupDocument) -> Vec<Binding<'_>> {
-    setup
-        .layers
-        .iter()
-        .flat_map(|layer| {
-            std::iter::once((&layer.activation, None, layer.enabled))
-                .chain(layer.variants.iter().map(|v| {
-                    (
-                        &v.activation,
-                        Some((v.id.as_str(), v.name.as_str())),
-                        layer.enabled && v.enabled,
-                    )
-                }))
-                .filter_map(|(activation, variant, enabled)| {
-                    let source = match activation {
-                        Activation::Always {} => return None,
-                        Activation::WhileState { source, .. }
-                        | Activation::OnEvent { source, .. }
-                        | Activation::OnTransition { source, .. } => source,
-                    };
-                    Some(Binding {
-                        source,
-                        layer_id: &layer.id,
-                        layer_name: &layer.name,
-                        variant,
-                        enabled,
-                        activation,
-                    })
-                })
+    underglow::binding_repair::bindings(setup)
+        .into_iter()
+        .map(|binding| {
+            let layer = setup
+                .layers
+                .iter()
+                .find(|l| l.id == binding.key.layer_id)
+                .expect("binding layer");
+            let variant = binding.key.variant_id.as_ref().map(|id| {
+                let v = layer
+                    .variants
+                    .iter()
+                    .find(|v| &v.id == id)
+                    .expect("binding variant");
+                (v.id.as_str(), v.name.as_str())
+            });
+            Binding {
+                source: binding.source,
+                layer_id: &layer.id,
+                layer_name: binding.layer_name,
+                variant,
+                enabled: binding.enabled,
+                activation: binding.activation,
+            }
         })
         .collect()
 }

@@ -10,7 +10,7 @@ starter below demonstrates an independent, timed **focus** source.
 From the repository root, using Python 3 on macOS or Linux:
 
 ```sh
-python3 scripts/scaffold-connector.py --language python --name focus --output /tmp/my-focus
+python3 scripts/scaffold-connector.py --language python --name focus --capabilities --output /tmp/my-focus
 python3 /tmp/my-focus/connector.py --stdout --duration-seconds 2 > /tmp/focus.ndjson
 python3 scripts/check-connector.py /tmp/focus.ndjson
 ```
@@ -29,6 +29,33 @@ including empty directories and symlinks. A source name must be 1–128 ASCII
 letters, digits, or `-_.:/`; it is a label, not a filesystem path.
 Generated files are a single readable producer, a fixture, and a README. No
 service is installed or enabled. Templates live in [`connectors/templates/`](../connectors/templates/).
+
+### Use the source in the GUI without Rust changes
+
+Add `--capabilities` to either scaffold command to generate `capabilities.toml`.
+This optional strict v1 [manifest](source-capabilities.md) declares only the
+starter's actual `focusing` state and `done` event, session identity, selectors,
+TTL and renewal semantics. It declares no success, focus-window, idle or Pi
+vocabulary. When adapting the producer, edit its manifest to match its facts.
+
+1. Open **Connections**, refresh, and expand **Import custom capability manifest**.
+   Select TOML and enter the generated file path (or paste its contents), then
+   validate and **Import metadata into Connections**. A source-ID collision
+   requires explicit metadata-only replacement acknowledgment.
+2. The source now appears in generic layer behavior forms with its declared
+   states/events. Choose the source, activation, target and appearance, preview
+   locally, and explicitly save the composition. No Rust registration is needed.
+3. To run the connector, separately review the generated executable. Configure
+   its exact argv in Connections, save the reviewed disabled producer, then
+   explicitly enable it (see [Connections](connections.md)). Or explicitly run
+   it with the private socket path above. Importing a manifest never runs code.
+4. Lighting stays paused until the separate **Resume** action. Producer enable,
+   metadata import, binding repair and preview never resume it.
+
+Manifest import is bounded, declarative data only. Never share a private full
+connection-registry export as a manifest: it can contain secrets and executable
+authorization. The metadata importer rejects all such fields rather than
+silently stripping or trusting them.
 
 Both producers expose the same arguments:
 

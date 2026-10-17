@@ -1,6 +1,8 @@
 //! Hardware-independent effect rendering.
 pub mod animation;
 pub mod automation;
+pub mod binding_repair;
+pub mod capability_manifest;
 pub mod catalog;
 pub mod compositor;
 pub mod connection_registry;

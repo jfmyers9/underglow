@@ -12,6 +12,8 @@ def main():
     parser.add_argument('--language', choices=('python', 'typescript'), required=True)
     parser.add_argument('--name', required=True, help='source identifier (1–128 ASCII token characters)')
     parser.add_argument('--output', type=Path, required=True, help='new directory; must not exist')
+    parser.add_argument('--capabilities', action='store_true',
+                        help='include an inert capabilities.toml for Connections import')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_.:/-]{1,128}', args.name):
         parser.error('name must contain 1–128 ASCII letters, digits, or -_.:/')
@@ -22,6 +24,8 @@ def main():
         'fixture.ndjson': (templates / 'fixture.ndjson').read_text(),
         'README.md': (templates / 'README.md').read_text(),
     }
+    if args.capabilities:
+        files['capabilities.toml'] = (templates / 'capabilities.toml').read_text()
     # mkdir is the overwrite guard, including existing empty directories and symlinks.
     try:
         args.output.mkdir(parents=True, exist_ok=False)

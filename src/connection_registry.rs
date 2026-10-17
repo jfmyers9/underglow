@@ -1,5 +1,5 @@
 //! Machine-local connections, never lighting setup data. Parsing and exports are inert.
-use crate::setup::{Activation, SetupDocument};
+use crate::setup::SetupDocument;
 use crate::source_capabilities::{self, CapabilityRegistry, SourceDescriptor};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -219,19 +219,9 @@ impl ConnectionRegistry {
     /// Missing bindings are repairable warnings; never drop or alter layers.
     pub fn missing_sources(&self, setup: &SetupDocument) -> Vec<String> {
         let mut missing = BTreeSet::new();
-        for layer in &setup.layers {
-            for activation in std::iter::once(&layer.activation)
-                .chain(layer.variants.iter().map(|variant| &variant.activation))
-            {
-                let source = match activation {
-                    Activation::Always {} => continue,
-                    Activation::WhileState { source, .. }
-                    | Activation::OnEvent { source, .. }
-                    | Activation::OnTransition { source, .. } => source,
-                };
-                if self.connection(source).is_none() {
-                    missing.insert(source.clone());
-                }
+        for binding in crate::binding_repair::bindings(setup) {
+            if self.connection(binding.source).is_none() {
+                missing.insert(binding.source.to_owned());
             }
         }
         missing.into_iter().collect()

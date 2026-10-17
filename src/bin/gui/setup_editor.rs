@@ -54,6 +54,41 @@ mod tests {
     }
 
     #[test]
+    fn connections_repair_is_only_a_scoped_unsaved_draft_edit_and_rejects_stale_dialogs() {
+        let original = document();
+        let binding = underglow::binding_repair::bindings(&original)
+            .into_iter()
+            .find(|b| b.key.variant_id.as_deref() == Some("working"))
+            .unwrap();
+        let repair = underglow::binding_repair::BindingRepair {
+            setup_id: original.id.clone(),
+            key: binding.key,
+            expected_activation: binding.activation.clone(),
+            source: "pi".into(),
+            instance: Some("new-session".into()),
+        };
+        let mut editor = Editor::default();
+        editor.load(Some(original.clone()));
+        editor.repair_sources(&Default::default(), &repair).unwrap();
+        assert!(editor.dirty);
+        assert_eq!(editor.applied.as_ref(), Some(&original));
+        assert_eq!(editor.base_revision, original.revision);
+        let changed = editor.draft.clone();
+        assert!(editor.repair_sources(&Default::default(), &repair).is_err());
+        assert_eq!(editor.draft, changed);
+        let mut expected = original.clone();
+        expected.layers[0].variants[0].activation = Activation::WhileState {
+            source: "pi".into(),
+            instance: Some("new-session".into()),
+            state: Some("working".into()),
+        };
+        assert_eq!(editor.draft.as_ref(), Some(&expected));
+        editor.discard();
+        assert_eq!(editor.draft.as_ref(), Some(&original));
+        assert!(!editor.dirty);
+    }
+
+    #[test]
     fn scoped_draft_edits_preserve_all_unrelated_data_and_variants() {
         let original = document();
         let id = original.layers[0].id.clone();
@@ -530,6 +565,23 @@ fn fresh_id(prefix: &str) -> String {
 }
 
 impl Editor {
+    /// Explicit Connections repair changes only a local draft; never saves,
+    /// starts a producer, sends real facts, or resumes physical lighting.
+    pub fn repair_sources(
+        &mut self,
+        registry: &underglow::connection_registry::ConnectionRegistry,
+        repair: &underglow::binding_repair::BindingRepair,
+    ) -> Result<(), String> {
+        let current = self.draft.as_ref().ok_or("No composition draft loaded")?;
+        let (candidate, _) = underglow::binding_repair::repair_binding(current, registry, repair)?;
+        self.draft = Some(candidate);
+        self.dirty = true;
+        self.selected = Some(repair.key.layer_id.clone());
+        self.error = None;
+        self.preview.rebaseline();
+        Ok(())
+    }
+
     /// Declarative metadata from Connections; never starts a producer or grants trust.
     pub fn set_capabilities(&mut self, registry: CapabilityRegistry) {
         self.preview.set_capabilities(registry.clone());
