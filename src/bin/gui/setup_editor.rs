@@ -4,6 +4,12 @@ use super::{
     setup_targets,
 };
 use eframe::egui;
+#[path = "setup_editor_canvas.rs"]
+mod canvas;
+#[path = "setup_editor_inspector.rs"]
+mod inspector;
+#[path = "setup_editor_workspace.rs"]
+mod workspace;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use underglow::setup::{Activation, Layer, SetupDocument, Target, TargetZone};
@@ -87,6 +93,7 @@ mod tests {
         editor.load(Some(original.clone()));
         editor.selected = Some(original.layers[0].id.clone());
         editor.preview.set_mode(setup_preview::Mode::Scenario);
+        click(&ctx, &mut editor, "Preview tools", 0);
         run(&ctx, &mut editor, vec![]);
         let generation = editor.preview.scenario.generation();
         let frame = editor.preview.frame().clone();
@@ -145,6 +152,7 @@ mod tests {
         let selected = editor.selected.clone();
         let report = setup_explanation::report(&editor.preview, coord).unwrap();
         assert_eq!(report.color, editor.preview.frame().get_coord(coord));
+        click(&ctx, &mut editor, "Preview tools", 0);
         let (output, intent) = run(&ctx, &mut editor, vec![]);
         assert!(
             intent.is_none(),
@@ -272,7 +280,7 @@ mod tests {
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(940.0, 1800.0),
+                    egui::vec2(940.0, 850.0),
                 )),
                 events,
                 ..Default::default()
@@ -291,7 +299,12 @@ mod tests {
             .shapes
             .iter()
             .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == label => {
+                egui::Shape::Text(text)
+                    if text.galley.text() == label
+                        && shape
+                            .clip_rect
+                            .contains(text.pos + text.galley.size() * 0.5) =>
+                {
                     Some(text.pos + text.galley.size() * 0.5)
                 }
                 _ => None,
@@ -319,9 +332,50 @@ mod tests {
     }
 
     fn click(ctx: &egui::Context, editor: &mut Editor, label: &str, nth: usize) {
-        run(ctx, editor, vec![]);
-        let (output, _) = run(ctx, editor, vec![]);
-        click_at(ctx, editor, text_position(&output, label, nth));
+        if matches!(label, "New blank composition" | "Add Pi template") {
+            click(ctx, editor, "More", 0);
+        }
+        // Reveal the requested control in its real bounded inspector, not a taller window.
+        for step in 0..65 {
+            run(ctx, editor, vec![]);
+            let (output, _) = run(ctx, editor, vec![]);
+            let hit = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        let pos = text.pos + text.galley.size() * 0.5;
+                        (shape.clip_rect.contains(pos) && pos.y < 850.0).then_some(pos)
+                    }
+                    _ => None,
+                })
+                .nth(nth);
+            if let Some(pos) = hit {
+                click_at(ctx, editor, pos);
+                return;
+            }
+            let delta = if step == 32 { 20000.0 } else { -220.0 };
+            run(
+                ctx,
+                editor,
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(
+                        if editor.preview_tools_open {
+                            450.0
+                        } else {
+                            900.0
+                        },
+                        450.0,
+                    )),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, delta),
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        panic!("missing reachable {label} #{nth}");
     }
 
     #[test]
@@ -374,7 +428,7 @@ mod tests {
                 color: [0, 255, 255]
             }
         );
-        click(&ctx, &mut editor, "Layer composition", 0); // close color popup
+        click(&ctx, &mut editor, "Composition preview", 0); // close color popup
         click(&ctx, &mut editor, "Arrow keys (4 physical)", 0);
         click(&ctx, &mut editor, "Add layer", 0);
         click(&ctx, &mut editor, "Aurora", 0);
@@ -614,7 +668,7 @@ mod tests {
             ],
         );
         assert_eq!(editor.draft.as_ref().unwrap().layers[1].name, "Top renamed");
-        click(&ctx, &mut editor, "Enabled", 1);
+        click(&ctx, &mut editor, "Enabled", 0); // topmost layer is displayed first
         assert!(!editor.draft.as_ref().unwrap().layers[1].enabled);
         assert_eq!(editor.draft.as_ref().unwrap().layers[0], unrelated);
         click(&ctx, &mut editor, "Duplicate layer", 0);
@@ -624,7 +678,7 @@ mod tests {
         let mut copy = before.layers[2].clone();
         copy.id = top.clone();
         assert_eq!(copy, before.layers[1]);
-        click(&ctx, &mut editor, "Toward bottom", 2);
+        click(&ctx, &mut editor, "Toward bottom", 0);
         assert_eq!(editor.draft.as_ref().unwrap().layers[1].id, copy_id);
         assert_eq!(editor.selected.as_deref(), Some(copy_id.as_str()));
         click(&ctx, &mut editor, "Delete layer", 0);
@@ -655,6 +709,7 @@ pub struct Editor {
     capabilities: Option<CapabilityRegistry>,
     error: Option<String>,
     confirm_blank: bool,
+    preview_tools_open: bool,
 }
 
 fn fresh_id(prefix: &str) -> String {
@@ -855,48 +910,70 @@ impl Editor {
         Ok(())
     }
 
+    /// Single persistence-control hook; the host may mount this outside the workspace.
+    pub fn show_save_controls(&mut self, ui: &mut egui::Ui) -> Option<Intent> {
+        let mut intent = None;
+        if ui
+            .add_enabled(
+                self.dirty && self.can_save,
+                egui::Button::new("Save composition"),
+            )
+            .clicked()
+            && let Some(doc) = &self.draft
+        {
+            match doc.validate() {
+                Ok(()) => {
+                    intent = Some(Intent::Apply {
+                        revision: self.base_revision,
+                        document: doc.clone(),
+                    })
+                }
+                Err(error) => self.error = Some(error),
+            }
+        }
+        if ui
+            .add_enabled(self.dirty, egui::Button::new("Discard draft"))
+            .clicked()
+        {
+            self.discard();
+        }
+
+        intent
+    }
+
     /// No source polling, engine requests, SDK ownership or preview producers.
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<Intent> {
         let mut intent = None;
-        ui.heading("Layer composition");
-        ui.small("Hardware-free draft preview. Save while paused; Resume lighting separately.");
-        if !self.can_save {
-            ui.small("Pause lighting before Save. Offline drafts remain editable.");
-        }
+        // Workspace-specific density uses the production fonts/colors, not a test-only style.
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+        ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.button("New blank composition").clicked() {
-                self.confirm_blank = true;
-            }
+            intent = self.show_save_controls(ui);
             if self.draft.is_some() && ui.button("Add layer").clicked() {
                 self.error = self.add().err();
             }
-            if self.draft.is_some() && ui.button("Add Pi template").clicked() {
-                self.error = self.add_pi_template().err();
-            }
-            if ui
-                .add_enabled(
-                    self.dirty && self.can_save,
-                    egui::Button::new("Save composition"),
-                )
-                .clicked()
-                && let Some(doc) = &self.draft
-            {
-                match doc.validate() {
-                    Ok(()) => {
-                        intent = Some(Intent::Apply {
-                            revision: self.base_revision,
-                            document: doc.clone(),
-                        })
-                    }
-                    Err(error) => self.error = Some(error),
+            ui.menu_button("More", |ui| {
+                if ui.button("New blank composition").clicked() {
+                    self.confirm_blank = true;
+                    ui.close_menu();
                 }
-            }
-            if ui
-                .add_enabled(self.dirty, egui::Button::new("Discard draft"))
-                .clicked()
-            {
-                self.discard();
-            }
+                if self.draft.is_some() && ui.button("Add Pi template").clicked() {
+                    self.error = self.add_pi_template().err();
+                    ui.close_menu();
+                }
+                ui.small(format!(
+                    "Engine revision {} · {}",
+                    self.base_revision,
+                    if self.dirty {
+                        "Unapplied draft"
+                    } else {
+                        "Persisted"
+                    }
+                ));
+                if !self.can_save {
+                    ui.small("Pause lighting before Save. Offline drafts remain editable.");
+                }
+            });
         });
         if self.confirm_blank {
             ui.horizontal_wrapped(|ui| {
@@ -911,210 +988,24 @@ impl Editor {
             });
         }
         if let Some(error) = &self.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
+            ui.add(
+                egui::Label::new(egui::RichText::new(error).color(egui::Color32::LIGHT_RED))
+                    .truncate(),
+            )
+            .on_hover_text(error);
         }
-        let Some(doc) = self.draft.clone() else {
+        if self.draft.is_some() {
+            self.preview
+                .update(self.draft.as_ref(), self.preview_brightness.unwrap_or(255));
+            self.show_workspace(ui);
+        } else {
             ui.label(
                 "No canonical setup loaded. Legacy compatibility controls are separate below.",
             );
-            return intent;
-        };
-        ui.label(format!(
-            "{} · engine revision {} · {}",
-            doc.name,
-            self.base_revision,
-            if self.dirty {
-                "Unapplied draft"
-            } else {
-                "Persisted"
-            }
-        ));
-        ui.small("Stack order: bottom → top. Later layers cover earlier layers on their targets.");
-        self.preview.show_controls(ui);
-        self.preview
-            .update(self.draft.as_ref(), self.preview_brightness.unwrap_or(255));
-        if self.preview.mode == setup_preview::Mode::Live
-            && self
-                .preview
-                .runtime()
-                .is_some_and(|runtime| runtime.requirements().analog_input)
-        {
-            ui.small("Input-driven layers are hidden here. Choose Isolated input demo to simulate keystrokes.");
         }
-        if let Some(error) = &self.preview.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
+        if self.preview_tools_open {
+            self.show_preview_tools_window(ui.ctx());
         }
-        ui.checkbox(
-            &mut self.highlight_coverage,
-            "Highlight selected layer coverage",
-        );
-        if self.highlight_coverage {
-            ui.small("Outlines: green = visible, red × = obscured, blue = targeted but inactive. Yellow = inspected key. RGB fills are unchanged.");
-        }
-        let coverage = self.preview.coverage();
-        let highlighted = coverage.and_then(|report| {
-            report.layers.iter().find(|layer| {
-                self.highlight_coverage && self.selected.as_deref() == Some(layer.id.as_str())
-            })
-        });
-        if let Some(coord) = setup_targets::composition_preview(
-            ui,
-            self.preview.frame(),
-            self.explained_key,
-            highlighted,
-        ) {
-            self.explained_key = Some(coord);
-        }
-        setup_explanation::show(ui, &self.preview, self.explained_key);
-        setup_coverage::show(ui, coverage, self.selected.as_deref());
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(33));
-        if doc.layers.is_empty() {
-            ui.label("Empty composition · no hidden layers or Pi behavior. Add a layer to begin.");
-        }
-        let mut operation = None;
-        egui::ScrollArea::vertical()
-            .id_salt("layer-list")
-            .max_height(210.0)
-            .show(ui, |ui| {
-                for (index, layer) in doc.layers.iter().enumerate() {
-                    ui.push_id(&layer.id, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            let mut enabled = layer.enabled;
-                            if ui.checkbox(&mut enabled, "Enabled").changed() {
-                                operation = Some(LayerEdit::Enable {
-                                    id: layer.id.clone(),
-                                    enabled,
-                                });
-                            }
-                            if ui
-                                .selectable_label(
-                                    self.selected.as_ref() == Some(&layer.id),
-                                    format!("{} · {}", index + 1, layer.name),
-                                )
-                                .clicked()
-                            {
-                                self.selected = Some(layer.id.clone());
-                            }
-                            for (label, offset) in [("Toward bottom", -1_isize), ("Toward top", 1)]
-                            {
-                                let next = index
-                                    .checked_add_signed(offset)
-                                    .filter(|next| *next < doc.layers.len());
-                                if ui
-                                    .add_enabled(next.is_some(), egui::Button::new(label))
-                                    .clicked()
-                                {
-                                    let mut ids: Vec<_> =
-                                        doc.layers.iter().map(|layer| layer.id.clone()).collect();
-                                    ids.swap(index, next.unwrap());
-                                    operation = Some(LayerEdit::Reorder { ids });
-                                }
-                            }
-                        })
-                    });
-                }
-            });
-        if let Some(edit) = operation {
-            self.error = self.apply(edit).err();
-        }
-        let Some(id) = self.selected.clone() else {
-            return intent;
-        };
-        // Resolve again after reorder/enable, always by stable ID, never list index.
-        let Some(doc) = self.draft.clone() else {
-            return intent;
-        };
-        let Some(layer) = doc.layers.iter().find(|layer| layer.id == id) else {
-            return intent;
-        };
-        let mut edited = layer.clone();
-        ui.separator();
-        ui.push_id(&id, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Layer name");
-                ui.add(egui::TextEdit::singleline(&mut edited.name).char_limit(256));
-                if ui.button("Duplicate layer").clicked() {
-                    let new_id = fresh_id("layer");
-                    let index = doc.layers.iter().position(|layer| layer.id == id).unwrap() + 1;
-                    self.error = self
-                        .apply(LayerEdit::Duplicate {
-                            id: id.clone(),
-                            new_id: new_id.clone(),
-                            index,
-                        })
-                        .err();
-                    if self.error.is_none() {
-                        self.selected = Some(new_id);
-                    }
-                }
-                if ui.button("Delete layer").clicked() {
-                    self.error = self.apply(LayerEdit::Remove { id: id.clone() }).err();
-                }
-            });
-            ui.small(format!("Stable ID: {id}"));
-            // sample() is raw real-source transport data even in synthetic preview modes.
-            let sample = self.preview.sample().filter(|sample| !sample.is_stale());
-            self.behaviors.show(
-                ui,
-                &mut edited,
-                self.capabilities
-                    .get_or_insert_with(CapabilityRegistry::with_builtins),
-                sample.map(|sample| &sample.snapshot),
-                sample.map(|sample| &sample.events),
-            );
-            ui.separator();
-            let others: Vec<_> = doc
-                .layers
-                .iter()
-                .filter(|layer| layer.id != id)
-                .map(|layer| layer.target.clone())
-                .collect();
-            let mut groups = doc.groups.clone();
-            self.targets.entry(id.clone()).or_default().show(
-                ui,
-                &mut edited.target,
-                &mut groups,
-                &others,
-                &underglow::device::DeviceInfo::synthetic_80he(),
-            );
-            if edited != *layer || groups != doc.groups {
-                // Group edits are a separate declarative map; validate atomically with
-                // the selected layer patch, retaining every other layer byte-for-byte.
-                let mut current = self.draft.clone().unwrap();
-                current.groups = groups;
-                let patch = LayerPatch {
-                    transition: (edited.transition != layer.transition)
-                        .then_some(edited.transition),
-                    opacity: (edited.opacity != layer.opacity).then_some(edited.opacity),
-                    blend: (edited.blend != layer.blend).then_some(edited.blend),
-                    name: (edited.name != layer.name).then_some(edited.name),
-                    renderer: (edited.renderer != layer.renderer).then_some(edited.renderer),
-                    brightness: (edited.brightness != layer.brightness)
-                        .then_some(edited.brightness),
-                    target: (edited.target != layer.target).then_some(edited.target),
-                    activation: (edited.activation != layer.activation)
-                        .then_some(edited.activation),
-                    variants: (edited.variants != layer.variants).then_some(edited.variants),
-                };
-                match apply_edits(
-                    &current,
-                    current.revision,
-                    &[LayerEdit::Update {
-                        id: id.clone(),
-                        patch,
-                    }],
-                ) {
-                    Ok(mut candidate) => {
-                        candidate.revision = self.base_revision;
-                        self.draft = Some(candidate);
-                        self.dirty = true;
-                        self.error = None;
-                    }
-                    Err(error) => self.error = Some(error),
-                }
-            }
-        });
         intent
     }
 }

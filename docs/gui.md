@@ -45,21 +45,37 @@ the setup browser.
 ### Layer composition (canonical setups)
 
 The GUI loads `control setup show` through its background subprocess worker.
-When a canonical setup is available, **Layer composition** is the primary editor;
+When a canonical setup is available, the **Editor** workspace is primary;
 whole-preset cards and legacy global-renderer controls are hidden so selecting an
 appearance cannot replace other layers. Status polling never replaces a dirty
 draft. The fixed Pause/Resume control remains separate and explicit.
 
+At 940×850 and wider, the workspace has a layer list, pinned composed keyboard,
+and selected-layer inspector. The layer list and inspector scroll independently;
+scrolling either keeps the setup selector, Save/Discard controls, lighting action,
+keyboard and selected-layer heading visible. At 620×640 the layer list becomes a
+**Layer** picker and the bounded inspector sits below the keyboard. **Layer
+actions** provides enable/mute and reordering in this compact layout. Changing
+window size or navigating away does not create a new draft or reset selection.
+
+**Preview tools** opens the existing live/input-demo/Scenario controls, key
+explanations and coverage details in a separate, scrolling window. Close it to
+return to editing; the keyboard remains pinned in the workspace. Its **Preview
+only** badge always identifies the current source context and whether a Scenario
+is paused or running. These controls do not enable lighting or publish facts.
+
 - Select layers by stable ID. Add, rename, enable/mute, duplicate, delete, and
   move them **Toward bottom / Toward top**. The bounded, scrolling stack is shown
-  bottom to top; later layers cover earlier layers on their targets.
+  topmost first; the document still stores bottom to top, and later layers cover
+  earlier layers on their targets.
 - Appearance controls and the 80HE physical-target canvas edit only the selected
   layer. Duplicates get a fresh ID and retain the original appearance, targets,
   activation, and behavior variants. Custom-group operations protect references
   from every other layer, including disabled layers.
-- **New blank composition → Create blank** creates an independently identified,
+- **More → New blank composition → Create blank** creates an independently identified,
   empty setup. Added layers are explicitly always-on, Whole-keyboard Aurora
-  layers using catalog defaults; no Pi behavior is injected.
+  layers using catalog defaults; no Pi behavior is injected. **More → Add Pi
+  template** remains an explicit editable copy, never a recurring default.
 - **Behavior appearances** edits the selected layer's base/fallback condition and
   its reusable appearances. Choose **Always**, **While a source matches** (presence
   or state), **When an event occurs**, or **When a state changes**. Capability
@@ -89,7 +105,8 @@ draft. The fixed Pause/Resume control remains separate and explicit.
   distinct from the target-editing canvas. Sources are read-only; **Isolated input demo**
   uses isolated synthetic inputs. Neither editing nor preview opens an SDK,
   starts input producers, or changes physical lighting. Resume remains explicit.
-- Click a key in the **composed preview** to inspect **Why this key?**, without
+- Click a key in the **composed preview**, then open **Preview tools** to inspect
+  **Why this key?**, without
   changing a layer's target or draft. The report shows rendered RGB, the winning
   logical layer, contributions underneath, disabled/non-targeting/inactive layers,
   every appearance's cached condition match and occurrence deadline, and current

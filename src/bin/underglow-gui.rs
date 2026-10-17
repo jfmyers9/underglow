@@ -32,6 +32,12 @@ mod setup_preview;
 mod setup_targets;
 #[path = "gui/sharing_panel.rs"]
 mod sharing_panel;
+#[cfg(test)]
+#[path = "gui/workspace_test_ui.rs"]
+mod workspace_test_ui;
+#[cfg(test)]
+#[path = "gui/workspace_tests.rs"]
+mod workspace_tests;
 use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
 use serde::Deserialize;
 use std::{
@@ -1532,79 +1538,68 @@ impl Controller {
 
     /// Paint only: separated from transport polling for hardware-free UI tests.
     fn show_lighting(&mut self, context: &egui::Context) {
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(28)).show(context, |ui| {
-                ui.horizontal(|ui| {
-                    brand::wordmark(ui, false);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Settings").clicked() { self.settings_open = true; }
-                        if ui.button("Diagnostics").clicked() { self.diagnostics_open = true; }
-                    });
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(12)).show(context, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
+            ui.horizontal(|ui| {
+                brand::wordmark(ui, true);
+                ui.selectable_value(&mut self.page, Page::Editor, "Editor");
+                if ui.selectable_value(&mut self.page, Page::Connections, "Connections").clicked()
+                    && self.last_connections.elapsed() >= Duration::from_secs(5) { self.refresh_connections(); }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Settings").clicked() { self.settings_open = true; }
+                    if ui.button("Diagnostics").clicked() { self.diagnostics_open = true; }
                 });
-                brand::divider(ui);
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.page, Page::Editor, "Editor");
-                    if ui.selectable_value(&mut self.page, Page::Connections, "Connections").clicked()
-                        && self.last_connections.elapsed() >= Duration::from_secs(5) {
-                        self.refresh_connections();
+            });
+            let enabled = self.connected && self.status.as_ref().is_some_and(|s| s.enabled);
+            ui.horizontal(|ui| {
+                let title = self.setup_editor.draft.as_ref().map(|doc| doc.name.as_str())
+                    .unwrap_or_else(|| effect_description(&self.preset).0);
+                let width = (ui.available_width() - 330.0).clamp(120.0, 400.0);
+                if ui.add_sized([width, 28.0], egui::Button::new(format!("Setup: {title} ▾")).truncate())
+                    .on_hover_text(format!("{title} — open setup browser")).clicked() { self.setup_library.open = true; }
+                ui.label(if self.setup_editor.dirty { "Unsaved changes" }
+                    else if self.setup_editor.draft.is_some() { "Saved" } else { "Legacy profile" });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label = if self.dev_simulation { "Hardware disabled" } else if self.dev_supervised && !self.connected {
+                        "Waiting for engine"
+                    } else { primary_label(self.connected, enabled) };
+                    let button = egui::Button::new(egui::RichText::new(label).strong().color(BG))
+                        .fill(ACCENT).corner_radius(8).min_size(egui::vec2(156.0, 32.0));
+                    if ui.add_enabled(!self.pending && !self.dev_simulation && (self.connected || !self.dev_supervised), button).clicked() {
+                        if !self.connected { self.dispatch(Action::StartEngine); }
+                        else { self.control(&[if enabled { "pause" } else { "resume" }]); }
                     }
+                    ui.add_visible(self.pending, egui::Spinner::new());
                 });
-                ui.horizontal(|ui| {
-                    let title = self.setup_editor.draft.as_ref().map(|doc| doc.name.as_str())
-                        .unwrap_or_else(|| effect_description(&self.preset).0);
-                    let width = (ui.available_width() - 160.0).clamp(120.0, 400.0);
-                    if ui.add_sized([width, 28.0], egui::Button::new(format!("Setup: {title} ▾")).truncate())
-                        .on_hover_text(format!("{title} — open setup browser")).clicked() {
-                        self.setup_library.open = true;
-                    }
-                    ui.label(if self.setup_editor.dirty { "Unsaved changes" }
-                        else if self.setup_editor.draft.is_some() { "Saved" } else { "Legacy profile" });
-                });
-                ui.add_space(8.0);
-                let enabled = self.connected && self.status.as_ref().is_some_and(|s| s.enabled);
-                let state = if self.dev_simulation { "Development simulation · hardware disabled" } else if !self.connected { "Engine offline" } else {
-                    match self.status.as_ref().map(|s| s.state.as_str()) {
-                        Some("active") => "Lighting active", Some("retrying") => "Reconnecting",
-                        Some("error") => "Needs attention", Some("paused") => "Paused · keyboard in control", _ => "Keyboard lighting",
-                    }
-                };
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("Keyboard lighting").size(20.0).strong());
-                        ui.label(egui::RichText::new(state).color(brand::state_color(self.connected, self.dev_simulation, self.status.as_ref().map(|s| s.state.as_str()))));
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let label = if self.dev_simulation { "Hardware disabled" } else if self.dev_supervised && !self.connected { "Waiting for engine" } else { primary_label(self.connected, enabled) };
-                        let button = egui::Button::new(egui::RichText::new(label).strong().color(BG))
-                            .fill(ACCENT).corner_radius(10).min_size(egui::vec2(156.0, 44.0));
-                        if ui.add_enabled(!self.pending && !self.dev_simulation && (self.connected || !self.dev_supervised), button).clicked() {
-                            if !self.connected { self.dispatch(Action::StartEngine); }
-                            else { self.control(&[if enabled { "pause" } else { "resume" }]); }
-                        }
-                        ui.add_visible(self.pending, egui::Spinner::new());
-                    });
-                });
-                ui.add_space(12.0);
-                if enabled && self.setup_editor.dirty && !self.dev_simulation {
-                    ui.small("Keyboard uses the saved setup; unsaved changes are preview-only.");
+            });
+            let state = if self.dev_simulation { "Development simulation · hardware disabled" } else if !self.connected { "Engine offline" } else {
+                match self.status.as_ref().map(|s| s.state.as_str()) {
+                    Some("active") => "Lighting active", Some("retrying") => "Reconnecting",
+                    Some("error") => "Needs attention", Some("paused") => "Paused · keyboard in control", _ => "Keyboard lighting",
                 }
-                if let Some(error) = self.status.as_ref().and_then(|s| s.last_error.as_ref()) {
-                    ui.colored_label(brand::WARNING, if self.connected { error.clone() } else { format!("Last seen: {error}") });
-                }
-            egui::ScrollArea::vertical().id_salt(match self.page { Page::Editor => "editor", Page::Connections => "connections" }).auto_shrink([false, false]).show(ui, |ui| {
-                if self.page == Page::Connections {
-                    self.show_connections(ui);
-                    return;
-                }
-                if let Some(warning) = self.status.as_ref().and_then(|status| status.migration_warning.as_ref()) {
-                    ui.colored_label(brand::WARNING, warning);
-                }
-                if !self.setup_checked { ui.small("Loading canonical setup from engine…"); }
-                if self.setup_editor.draft.is_some() {
-                    ui.label(&self.message);
-                    self.show_setup_editor(ui);
-                    ui.small("Whole-preset selection is hidden: choose an appearance in the selected layer to preserve the rest of the stack.");
-                    ui.small("Target canvas is an editing aid, not a composited lighting preview or device feedback.");
-                } else {
+            };
+            ui.horizontal(|ui| {
+                ui.small("Keyboard lighting");
+                ui.label(egui::RichText::new(state).small().color(brand::state_color(self.connected, self.dev_simulation, self.status.as_ref().map(|s| s.state.as_str()))));
+                if enabled && self.setup_editor.dirty && !self.dev_simulation { ui.small("Uses saved setup"); }
+            });
+            let message = if let Some(error) = self.status.as_ref().and_then(|s| s.last_error.as_ref()) {
+                format!("{} · {}{error}", self.message, if self.connected { "Engine: " } else { "Last seen: " })
+            } else { self.message.clone() };
+            ui.add(egui::Label::new(egui::RichText::new(&message).small()).truncate()).on_hover_text(&message);
+            brand::divider(ui);
+            if self.page == Page::Connections {
+                egui::ScrollArea::vertical().id_salt("connections").auto_shrink([false, false])
+                    .show(ui, |ui| self.show_connections(ui));
+            } else if self.setup_editor.draft.is_some() {
+                // No outer ScrollArea: each workspace pane owns its own bounded viewport.
+                self.show_setup_editor(ui);
+            } else {
+                egui::ScrollArea::vertical().id_salt("legacy-editor").auto_shrink([false, false]).show(ui, |ui| {
+                    if let Some(warning) = self.status.as_ref().and_then(|s| s.migration_warning.as_ref()) { ui.colored_label(brand::WARNING, warning); }
+                    if !self.setup_checked { ui.small("Loading canonical setup from engine…"); }
+
                 ui.small("Legacy compatibility view · whole-preset controls");
                 card().show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -1715,10 +1710,9 @@ impl Controller {
                     ui.small("This profile has no canonical setup (or uses unsupported legacy behavior). These controls replace whole presets. Create a blank composition to start a layer stack explicitly.");
                     self.show_setup_editor(ui);
                 });
-                }
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(if self.dev_supervised { "Development session · save source to rebuild · Ctrl-C stops owned processes" } else { "Pause returns control to your keyboard. Closing this window keeps your lighting running." }).small().color(MUTED));
-            });
+                    ui.small(if self.dev_supervised { "Development session · Ctrl-C stops owned processes" } else { "Pause returns control to your keyboard. Closing this window keeps your lighting running." });
+                });
+            }
         });
         if self.settings_open {
             self.show_settings(context);
@@ -2161,50 +2155,11 @@ mod tests {
             status.enabled = enabled;
             status.state = if enabled { "active" } else { "paused" }.into();
             app.status = Some(status);
-            let ctx = egui::Context::default();
-            let render = |app: &mut Controller, events| {
-                ctx.run(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(1100.0, 2200.0),
-                        )),
-                        events,
-                        ..Default::default()
-                    },
-                    |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| app.show_setup_editor(ui));
-                    },
-                )
+            let mut harness = workspace_test_ui::Harness::new(workspace_test_ui::MINIMUM_SIZE);
+            let mut click = |app: &mut Controller, label: &str| {
+                workspace_tests::click_workspace_control(&mut harness, app, label);
             };
-            let click = |app: &mut Controller, label: &str| {
-                let _ = render(app, vec![]);
-                let output = render(app, vec![]);
-                let pos = output
-                    .shapes
-                    .iter()
-                    .find_map(|s| match &s.shape {
-                        egui::Shape::Text(text) if text.galley.text() == label => {
-                            Some(text.pos + text.galley.size() * 0.5)
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| panic!("missing {label}"));
-                for pressed in [true, false] {
-                    let _ = render(
-                        app,
-                        vec![
-                            egui::Event::PointerMoved(pos),
-                            egui::Event::PointerButton {
-                                pos,
-                                button: egui::PointerButton::Primary,
-                                pressed,
-                                modifiers: Default::default(),
-                            },
-                        ],
-                    );
-                }
-            };
+            click(&mut app, "Preview tools");
             click(&mut app, "Scenario");
             click(&mut app, "Idle");
             assert_eq!(
@@ -2262,62 +2217,23 @@ mod tests {
         let original = setup_document();
         app.setup_editor.load(Some(original.clone()));
         app.setup_editor.selected = Some(original.layers[0].id.clone());
-        let ctx = egui::Context::default();
-        let render = |app: &mut Controller, events| {
-            ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(940.0, 1800.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ctx| app.show_lighting(ctx),
-            )
-        };
-        let click = |app: &mut Controller, label: &str| {
-            let _ = render(app, vec![]);
-            let output = render(app, vec![]);
-            let pos = output
-                .shapes
-                .iter()
-                .filter_map(|s| match &s.shape {
-                    egui::Shape::Text(text) if text.galley.text() == label => {
-                        Some(text.pos + text.galley.size() * 0.5)
-                    }
-                    _ => None,
-                })
-                .next_back() // Target-edit canvas follows the read-only composed preview.
-                .unwrap_or_else(|| panic!("missing {label}"));
-            for pressed in [true, false] {
-                let _ = render(
-                    app,
-                    vec![
-                        egui::Event::PointerMoved(pos),
-                        egui::Event::PointerButton {
-                            pos,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: Default::default(),
-                        },
-                    ],
-                );
-            }
-        };
-        let output = render(&mut app, vec![]);
-        let mut text = String::new();
-        for shape in &output.shapes {
-            painted_text(&shape.shape, &mut text);
-        }
-        for label in [
-            "Layer composition",
-            "Layer brightness",
-            "Physical targets · 80HE ANSI",
-            "Whole-preset selection is hidden",
-        ] {
+        let mut harness = workspace_test_ui::Harness::new(workspace_test_ui::DEFAULT_SIZE);
+        let output = harness.settle(|ctx| app.show_lighting(ctx));
+        let text = output
+            .texts()
+            .into_iter()
+            .map(|t| t.text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for label in ["Composition preview", "Save composition", "Preview tools"] {
             assert!(text.contains(label), "missing {label}");
         }
+        let mut click = |app: &mut Controller, label: &str| {
+            workspace_tests::click_workspace_control(&mut harness, app, label);
+        };
+        // Inspector controls remain mounted and reachable within their own scroll area.
+        click(&mut app, "Layer brightness");
+        click(&mut app, "Physical targets · 80HE ANSI");
         assert!(!text.contains("Choose an effect"));
         assert!(!text.contains("Lighting controls"));
         click(&mut app, "Matrix");
@@ -2378,21 +2294,15 @@ mod tests {
         );
         assert!(incoming.try_recv().is_err());
         // Native minimum width retains the editor without whole-preset controls.
-        let output = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(620.0, 640.0),
-                )),
-                ..Default::default()
-            },
-            |ctx| app.show_lighting(ctx),
-        );
-        let mut text = String::new();
-        for shape in &output.shapes {
-            painted_text(&shape.shape, &mut text);
-        }
-        assert!(text.contains("Layer composition"));
+        harness.resize(workspace_test_ui::MINIMUM_SIZE);
+        let output = harness.settle(|ctx| app.show_lighting(ctx));
+        let text = output
+            .texts()
+            .into_iter()
+            .map(|t| t.text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Composition preview"));
         assert!(text.contains("Resume lighting"));
         assert!(!text.contains("Choose an effect"));
     }
