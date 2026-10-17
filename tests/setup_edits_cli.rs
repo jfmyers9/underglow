@@ -107,6 +107,117 @@ impl Drop for Harness {
 }
 
 #[test]
+fn sharing_preview_and_rebinding_store_only_a_new_library_copy_with_no_activation_or_trust_change()
+{
+    use underglow::connection_registry::ConnectionRegistry;
+    use underglow::setup::SetupDocument;
+    use underglow::setup_sharing::{self, BindingMapping, Format, ImportPreview};
+    let config = format!(
+        "{}\n{}",
+        include_str!("../examples/layers-profile.toml"),
+        r#"
+[[connectors]]
+id = 'private-fixture'
+source = 'pi'
+command = ['/never-launch-sharing-fixture']
+env = { TOKEN = 'SHARING_PRIVATE_FIXTURE' }
+working_dir = '/never-open-sharing-fixture'
+enabled = false
+trusted = true
+"#
+    );
+    let mut harness = Harness::new(&config);
+    let original = harness.show();
+    let disk = harness.disk();
+    let connections_path = harness.dir.join("runtime/connections.json");
+    let connections_before = fs::read(&connections_path).unwrap();
+    let registry = ConnectionRegistry::from_json(&connections_before).unwrap();
+    let mut document: SetupDocument = serde_json::from_value(original["document"].clone()).unwrap();
+    document.layers[1].activation = underglow::setup::Activation::WhileState {
+        source: "pi".into(),
+        instance: None,
+        state: Some("working".into()),
+    };
+    let exported = setup_sharing::export_document(&document, Format::Json).unwrap();
+    assert!(!exported.contains("SHARING_PRIVATE_FIXTURE"));
+    assert!(!exported.contains("never-launch"));
+    let preview = ImportPreview::parse(exported.as_bytes(), Format::Json).unwrap();
+    let library = harness.call(&["library", "list"], None, true)["library"].clone();
+    let existing_ids = library["setups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        preview
+            .prepare("shared-copy", &[], &registry, &existing_ids)
+            .is_err()
+    );
+    let mappings = preview
+        .bindings()
+        .into_iter()
+        .map(|binding| BindingMapping {
+            key: binding.key,
+            source: "pi".into(),
+            instance: None,
+        })
+        .collect::<Vec<_>>();
+    let candidate = preview
+        .prepare("shared-copy", &mappings, &registry, &existing_ids)
+        .unwrap();
+    let mut malicious: Value = serde_json::from_str(&exported).unwrap();
+    malicious["trusted"] = json!(true);
+    assert!(ImportPreview::parse(malicious.to_string().as_bytes(), Format::Json).is_err());
+    assert_eq!(
+        harness.disk(),
+        disk,
+        "all preview/invalid/cancel work is read-only"
+    );
+    assert_eq!(harness.show(), original);
+    let mutation = json!({"op":"store","document":candidate.document});
+    let revision = library["revision"].as_u64().unwrap();
+    let stored = harness.call(
+        &[
+            "library",
+            "update",
+            "--expected-revision",
+            &revision.to_string(),
+        ],
+        Some(&mutation.to_string()),
+        true,
+    );
+    assert_eq!(stored["status"]["enabled"], false);
+    assert_eq!(stored["library"]["current_id"], document.id);
+    assert_eq!(
+        harness.show(),
+        original,
+        "Store never switches active setup"
+    );
+    assert_eq!(fs::read(&connections_path).unwrap(), connections_before);
+    let new_disk = harness.disk();
+    harness.call(
+        &[
+            "library",
+            "update",
+            "--expected-revision",
+            &revision.to_string(),
+        ],
+        Some(&mutation.to_string()),
+        false,
+    );
+    assert_eq!(
+        harness.disk(),
+        new_disk,
+        "stale import store cannot overwrite"
+    );
+    let retrieved = harness.call(&["library", "get", "shared-copy"], None, true);
+    assert_eq!(retrieved["library"]["document"], mutation["document"]);
+    assert!(!harness.dir.join("runtime/lighting.lock").exists());
+    harness.stop();
+}
+
+#[test]
 fn atomic_renderer_edit_preserves_outer_config_and_survives_restart_without_hardware() {
     let config = format!(
         "{}\n{}",

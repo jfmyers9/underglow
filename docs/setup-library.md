@@ -6,6 +6,10 @@ then switch to that copy to customize it. The original remains unchanged.
 Switching is disabled until you Save or Discard any editor draft, and requires
 Pause. Nothing in the library resumes lighting; Resume remains explicit.
 
+**Share setups safely** exports declarative TOML/JSON and previews imports before
+explicit local rebinding and storing a new copy. It never replaces a dirty draft,
+imports executable trust, or activates lighting; see [safe sharing](setup-sharing.md).
+
 **Blank**, **Aurora**, and **Matrix + Pi** create editable drafts with new IDs.
 Save gives them a permanent library entry. Their layers, variants, references,
 and groups are ordinary setup data: deleting every layer and saving is valid.

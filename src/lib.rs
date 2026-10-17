@@ -22,6 +22,7 @@ pub mod scenes;
 pub mod setup;
 pub mod setup_edits;
 pub mod setup_library;
+pub mod setup_sharing;
 pub mod source_capabilities;
 pub mod templates;
 

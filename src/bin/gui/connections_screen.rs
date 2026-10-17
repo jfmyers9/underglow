@@ -6,7 +6,7 @@ mod binding_editor;
 mod manifest_editor;
 #[cfg(test)]
 #[path = "metadata_test_ui.rs"]
-mod metadata_test_ui;
+pub(super) mod metadata_test_ui;
 #[path = "producer_editor.rs"]
 pub mod producer_editor;
 use eframe::egui;

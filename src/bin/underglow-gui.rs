@@ -27,6 +27,8 @@ mod setup_library_panel;
 mod setup_preview;
 #[path = "gui/setup_targets.rs"]
 mod setup_targets;
+#[path = "gui/sharing_panel.rs"]
+mod sharing_panel;
 use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
 use serde::Deserialize;
 use std::{
@@ -690,6 +692,7 @@ struct Controller {
     last_connections: Instant,
     setup_editor: setup_editor::Editor,
     setup_library: setup_library_panel::Panel,
+    setup_sharing: sharing_panel::Panel,
     live_sources: Option<setup_preview::LiveSourceWorker>,
     setup_checked: bool,
 }
@@ -769,6 +772,7 @@ impl Controller {
             last_connections: Instant::now() - Duration::from_secs(10),
             setup_editor: setup_editor::Editor::default(),
             setup_library: setup_library_panel::Panel::default(),
+            setup_sharing: sharing_panel::Panel::default(),
             live_sources,
             setup_checked: false,
         }
@@ -812,7 +816,18 @@ impl Controller {
             // Leave an interactive interval even when the previous poll was slow.
             self.last_poll = Instant::now();
             match completion.action {
-                Action::LibraryList | Action::LibraryUpdate { .. } => {
+                action @ (Action::LibraryList | Action::LibraryUpdate { .. }) => {
+                    // List/Store imports are library-only; even an unexpected
+                    // setup envelope must not replace a dirty editor draft.
+                    let changes_current = !self.setup_editor.dirty
+                        && matches!(
+                            &action,
+                            Action::LibraryUpdate {
+                                mutation: underglow::setup_library::LibraryMutation::Switch { .. }
+                                    | underglow::setup_library::LibraryMutation::Rename { .. },
+                                ..
+                            }
+                        );
                     match completion
                         .result
                         .and_then(|body| parse_reply(body.as_bytes()))
@@ -823,7 +838,7 @@ impl Controller {
                                 if let Some(report) = reply.library {
                                     let _ = self.setup_library.receive(report);
                                 }
-                                if let Some(setup) = reply.setup {
+                                if let Some(setup) = reply.setup.filter(|_| changes_current) {
                                     if setup.document.as_ref().map_or(0, |doc| doc.revision)
                                         == setup.revision
                                     {
@@ -1245,6 +1260,61 @@ impl Controller {
             }
             _ => {}
         }
+        let existing_ids = self
+            .setup_library
+            .report
+            .as_ref()
+            .map(|report| {
+                report
+                    .setups
+                    .iter()
+                    .map(|setup| setup.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let candidate = self.setup_sharing.show(
+            ui,
+            sharing_panel::View {
+                applied: self.setup_editor.applied.as_ref(),
+                draft: self.setup_editor.draft.as_ref(),
+                registry: self.connections_panel.registry(),
+                existing_ids: &existing_ids,
+                can_store: self.connected
+                    && self.setup_checked
+                    && !self.pending
+                    && self.setup_library.report.is_some(),
+            },
+        );
+        if let Some(document) = candidate {
+            self.store_imported_copy(document);
+        }
+    }
+
+    fn store_imported_copy(&mut self, document: underglow::setup::SetupDocument) {
+        let Some(report) = &self.setup_library.report else {
+            return;
+        };
+        if !self.connected || !self.setup_checked || self.pending {
+            return;
+        }
+        if report.setups.iter().any(|setup| setup.id == document.id)
+            || self
+                .setup_editor
+                .applied
+                .as_ref()
+                .is_some_and(|setup| setup.id == document.id)
+        {
+            self.message = "Import requires a new local ID; existing setup retained".into();
+            return;
+        }
+        if let Err(error) = underglow::layer_runtime::CompiledSetup::compile(&document) {
+            self.message = error;
+            return;
+        }
+        self.dispatch(Action::LibraryUpdate {
+            revision: report.revision,
+            mutation: underglow::setup_library::LibraryMutation::Store { document },
+        });
     }
 
     fn ripple_preview_colors(&self) -> gui_preview::RippleColors {
@@ -2463,12 +2533,91 @@ mod tests {
             setup_editor: setup_editor::Editor::default(),
             connections_panel: connections_screen::Panel::default(),
             setup_library: setup_library_panel::Panel::default(),
+            setup_sharing: sharing_panel::Panel::default(),
             page: Page::Layers,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
             setup_checked: true,
         };
         (app, incoming)
+    }
+
+    #[test]
+    fn sharing_import_dispatches_only_store_and_preserves_dirty_editor_on_success_and_failure() {
+        use underglow::setup_library::{LibraryMutation, SetupSummary};
+        let (mut app, incoming) = controller_fixture();
+        let (outgoing, replies) = mpsc::channel();
+        app.replies = replies;
+        app.status = Some(serde_json::from_str(STATUS).unwrap());
+        app.status.as_mut().unwrap().enabled = false;
+        app.status.as_mut().unwrap().state = "paused".into();
+        let original = setup_document();
+        app.setup_editor.load(Some(original.clone()));
+        app.setup_editor.draft.as_mut().unwrap().name = "Dirty local draft".into();
+        app.setup_editor.dirty = true;
+        let draft = app.setup_editor.draft.clone();
+        app.setup_library
+            .receive(setup_library_panel::Report {
+                schema_version: 1,
+                revision: 7,
+                current_id: Some(original.id.clone()),
+                setups: vec![SetupSummary {
+                    id: original.id.clone(),
+                    name: original.name.clone(),
+                    layers: original.layers.len(),
+                }],
+            })
+            .unwrap();
+        app.store_imported_copy(original.clone());
+        assert!(incoming.try_recv().is_err(), "collision never overwrites");
+        let mut imported = original.clone();
+        imported.id = "imported-new-copy".into();
+        imported.revision = 0;
+        app.store_imported_copy(imported.clone());
+        let action = incoming.try_recv().unwrap();
+        assert!(
+            matches!(&action, Action::LibraryUpdate { revision: 7, mutation: LibraryMutation::Store { document } } if document == &imported)
+        );
+        assert!(
+            incoming.try_recv().is_err(),
+            "no Resume or connection replacement"
+        );
+        outgoing
+            .send(Completion {
+                action,
+                result: Err("CAS conflict".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(app.setup_editor.draft, draft);
+        assert!(app.setup_editor.dirty);
+        app.store_imported_copy(imported.clone());
+        let action = incoming.try_recv().unwrap();
+        outgoing
+            .send(Completion {
+                action,
+                result: Ok(serde_json::json!({
+                    "ok":true,
+                    "library":{"schema_version":1,"revision":8,"current_id":original.id,"setups":[
+                        {"id":original.id,"name":original.name,"layers":original.layers.len()},
+                        {"id":imported.id,"name":imported.name,"layers":imported.layers.len()}
+                    ]},
+                    // Store replies normally omit setup. Defend against a stale/mixed
+                    // envelope too: library-only work must never discard dirty edits.
+                    "setup":{"revision":imported.revision,"document":imported}
+                })
+                .to_string()),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(app.setup_editor.draft, draft);
+        assert_eq!(app.setup_editor.applied.as_ref(), Some(&original));
+        assert!(app.setup_editor.dirty);
+        assert!(!app.status.as_ref().unwrap().enabled);
+        assert_eq!(app.setup_library.report.as_ref().unwrap().revision, 8);
+        assert!(incoming.try_recv().is_err());
+        app.store_imported_copy(imported);
+        assert!(incoming.try_recv().is_err(), "new library ID now collides");
     }
 
     #[test]
@@ -3131,6 +3280,7 @@ mod tests {
             setup_editor: setup_editor::Editor::default(),
             connections_panel: connections_screen::Panel::default(),
             setup_library: setup_library_panel::Panel::default(),
+            setup_sharing: sharing_panel::Panel::default(),
             page: Page::Layers,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
