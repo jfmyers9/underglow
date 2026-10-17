@@ -1,6 +1,10 @@
 //! Pinned canonical RGB canvas and secondary preview/inspection tools.
 use super::*;
 
+#[cfg(test)]
+#[path = "setup_editor_canvas_tests.rs"]
+mod tests;
+
 impl Editor {
     /// Stable Keys-inspector mount, separate from the forms' atomic patch handling.
     pub(super) fn show_target_controls(
@@ -11,20 +15,77 @@ impl Editor {
         groups: &mut BTreeMap<String, Vec<String>>,
         other_targets: &[Target],
     ) {
-        self.targets.entry(id.to_owned()).or_default().show(
-            ui,
-            target,
-            groups,
-            other_targets,
-            &underglow::device::DeviceInfo::synthetic_80he(),
-        );
+        self.targets
+            .entry(id.to_owned())
+            .or_default()
+            .show_controls(
+                ui,
+                target,
+                groups,
+                other_targets,
+                &underglow::device::DeviceInfo::synthetic_80he(),
+            );
+    }
+
+    /// Keys inspectors use the same explicit mode as the pinned canvas.
+    pub(super) fn select_keys_mode(&mut self) {
+        self.canvas_mode = setup_targets::CanvasMode::SelectKeys;
+    }
+
+    /// Replacing a document must not inherit group drafts or in-flight gestures.
+    pub(super) fn reset_canvas_context(&mut self) {
+        self.targets.clear();
+        self.empty_canvas = setup_targets::TargetSelection::default();
+        self.canvas_selection = None;
+        self.canvas_mode = setup_targets::CanvasMode::Preview;
+        self.explained_key = None;
+    }
+
+    fn sync_canvas_selection(&mut self) {
+        if self.canvas_selection != self.selected {
+            if let Some(state) = self
+                .canvas_selection
+                .as_ref()
+                .and_then(|id| self.targets.get_mut(id))
+            {
+                state.cancel_interaction();
+            }
+            self.empty_canvas.cancel_interaction();
+            if let Some(id) = &self.selected {
+                self.targets
+                    .entry(id.clone())
+                    .or_default()
+                    .cancel_interaction();
+            }
+            self.canvas_selection = self.selected.clone();
+        }
     }
 
     pub(super) fn show_workspace_canvas(&mut self, ui: &mut egui::Ui) {
+        self.sync_canvas_selection();
         ui.horizontal(|ui| {
             ui.strong("Composition preview");
             if ui.button("Preview tools").clicked() {
                 self.preview_tools_open = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            for mode in [
+                setup_targets::CanvasMode::Preview,
+                setup_targets::CanvasMode::SelectKeys,
+                setup_targets::CanvasMode::Inspect,
+            ] {
+                if ui
+                    .selectable_label(self.canvas_mode == mode, mode.label())
+                    .on_hover_text(mode.help())
+                    .clicked()
+                {
+                    if mode == setup_targets::CanvasMode::SelectKeys {
+                        self.select_keys_mode();
+                    } else {
+                        self.canvas_mode = mode;
+                    }
+                }
             }
         });
         let highlighted = self.preview.coverage().and_then(|report| {
@@ -32,28 +93,72 @@ impl Editor {
                 self.highlight_coverage && self.selected.as_deref() == Some(layer.id.as_str())
             })
         });
+        // Reserve both the mode caption and the preview-facts badge. At the
+        // minimum viewport this scales the board, never scrolls it out of reach.
         let width = ui
             .available_width()
-            .min((ui.available_height() - 28.0).max(40.0) * 18.5 / 6.4)
+            .min((ui.available_height() - 50.0).max(40.0) * 18.5 / 6.4)
             .min(700.0);
-        let board = egui::Rect::from_min_size(
+        let content = egui::Rect::from_min_size(
             ui.cursor().min + egui::vec2((ui.available_width() - width) * 0.5, 0.0),
-            egui::vec2(width, width / 18.5 * 6.4),
+            egui::vec2(width, width / 18.5 * 6.4 + 24.0),
         );
         let mut board_ui = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("composed-keyboard")
-                .max_rect(board),
+                .max_rect(content),
         );
-        if let Some(coord) = setup_targets::composition_preview(
+        let layer = self.draft.as_ref().and_then(|doc| {
+            doc.layers
+                .iter()
+                .find(|layer| Some(&layer.id) == self.selected.as_ref())
+        });
+        let mut target = layer.map(|layer| layer.target.clone());
+        let layer_id = layer.map(|layer| layer.id.clone());
+        let device = underglow::device::DeviceInfo::synthetic_80he();
+        let selection = target
+            .as_mut()
+            .map(|target| setup_targets::SelectionContext {
+                target,
+                groups: &self
+                    .draft
+                    .as_ref()
+                    .expect("selected layer has a document")
+                    .groups,
+                device: &device,
+            });
+        let state = if let Some(id) = &layer_id {
+            self.targets.entry(id.clone()).or_default()
+        } else {
+            &mut self.empty_canvas
+        };
+        let response = state.show_canvas(
             &mut board_ui,
             self.preview.frame(),
+            self.canvas_mode,
+            selection,
             self.explained_key,
             highlighted,
-        ) {
+        );
+        if let Some(coord) = response.inspected {
             self.explained_key = Some(coord);
         }
-        ui.advance_cursor_after_rect(board);
+        if response.changed
+            && let (Some(id), Some(target)) = (layer_id, target)
+        {
+            // One authoritative document, using the same scoped typed edit path
+            // as the inspector. Invalid/empty selectors never enter the draft.
+            self.error = self
+                .apply(LayerEdit::Update {
+                    id,
+                    patch: LayerPatch {
+                        target: Some(target),
+                        ..Default::default()
+                    },
+                })
+                .err();
+        }
+        ui.advance_cursor_after_rect(content);
         let context = match self.preview.mode {
             setup_preview::Mode::Live => "Live facts",
             setup_preview::Mode::InputDemo => "Isolated input demo",

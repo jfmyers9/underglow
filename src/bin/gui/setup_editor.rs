@@ -143,7 +143,8 @@ mod tests {
         let mut editor = Editor::default();
         let original = document();
         editor.load(Some(original.clone()));
-        // First F3 belongs to composed output, second to the target editor.
+        // Preview is read-only; inspection requires the explicit Inspect mode.
+        click(&ctx, &mut editor, "Inspect", 0);
         click(&ctx, &mut editor, "F3", 0);
         let coord = underglow::key_targets::canonical_coord("F3").unwrap();
         assert_eq!(editor.explained_key, Some(coord));
@@ -598,7 +599,8 @@ mod tests {
         );
         // Mounted physical-key canvas retargets every appearance together.
         click(&ctx, &mut editor, "Whole keyboard", 0);
-        click(&ctx, &mut editor, "F1", 1);
+        click(&ctx, &mut editor, "Select keys", 0);
+        click(&ctx, &mut editor, "F1", 0);
         assert_eq!(
             editor.draft.as_ref().unwrap().layers[1].target,
             Target::Selection {
@@ -637,7 +639,8 @@ mod tests {
         // Actual mounted appearance inspector and physical-key canvas, not mocks.
         click(&ctx, &mut editor, "Aurora", 0);
         click(&ctx, &mut editor, "Matrix", 0);
-        click(&ctx, &mut editor, "F1", 1); // Editing canvas, not composed preview legend.
+        click(&ctx, &mut editor, "Select keys", 0);
+        click(&ctx, &mut editor, "F1", 0); // One composed RGB canvas, explicit target mode.
         let selected = &editor.draft.as_ref().unwrap().layers[1];
         assert_eq!(selected.renderer.catalog_id(), Some("matrix"));
         assert_eq!(
@@ -704,6 +707,9 @@ pub struct Editor {
     pub base_revision: u64,
     pub dirty: bool,
     pub selected: Option<String>,
+    pub canvas_mode: setup_targets::CanvasMode,
+    canvas_selection: Option<String>,
+    empty_canvas: setup_targets::TargetSelection,
     targets: BTreeMap<String, setup_targets::TargetSelection>,
     behaviors: setup_behavior::BehaviorEditor,
     capabilities: Option<CapabilityRegistry>,
@@ -750,7 +756,7 @@ impl Editor {
         }
         self.draft = Some(document);
         self.dirty = true;
-        self.targets.clear();
+        self.reset_canvas_context();
         self.selected = None;
         self.error = None;
         self.reconcile_selection();
@@ -796,6 +802,7 @@ impl Editor {
         self.base_revision = document.as_ref().map_or(0, |doc| doc.revision);
         if self.applied != document {
             self.preview.rebaseline();
+            self.reset_canvas_context();
         }
         self.applied = document.clone();
         self.draft = document;
@@ -807,7 +814,7 @@ impl Editor {
         self.dirty = false;
         self.error = None;
         self.confirm_blank = false;
-        self.targets.clear();
+        self.reset_canvas_context();
         self.reconcile_selection();
         self.preview.rebaseline();
     }
@@ -843,7 +850,7 @@ impl Editor {
         });
         self.dirty = true;
         self.selected = None;
-        self.targets.clear();
+        self.reset_canvas_context();
         self.error = None;
     }
 

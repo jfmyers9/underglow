@@ -35,7 +35,13 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             .iter()
             .find(|t| t.text == "Close preview tools")
             .map(|t| t.clip);
-        let region = if label == "F1" { inspector } else { None };
+        let region = match label {
+            "F1" => Some(keyboard_region(&frame)),
+            // These controls intentionally live outside scrollable inspectors.
+            "Preview tools" | "Preview" | "Select keys" | "Inspect" | "Save composition"
+            | "Add layer" => None,
+            _ => tools.or(inspector),
+        };
         if texts.iter().any(|t| {
             t.text == label
                 && t.fully_visible()
@@ -119,6 +125,9 @@ fn workspace_primary_controls_and_complete_keyboard_are_reachable_at_real_sizes(
             "Save composition",
             "Add layer",
             "Preview tools",
+            "Preview",
+            "Select keys",
+            "Inspect",
         ] {
             visible(&frame, label);
         }

@@ -344,87 +344,63 @@ struct GroupDraft {
     target: Target,
 }
 
-/// Full compositor output, using the same physical keyboard geometry as editing.
-/// Black is a real pixel, never interpreted as transparency or a missing overlay.
+/// Explicit click semantics for the one composed keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CanvasMode {
+    #[default]
+    Preview,
+    SelectKeys,
+    Inspect,
+}
+
+impl CanvasMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Preview => "Preview",
+            Self::SelectKeys => "Select keys",
+            Self::Inspect => "Inspect",
+        }
+    }
+
+    pub fn help(self) -> &'static str {
+        match self {
+            Self::Preview => {
+                "Read-only composed output. Choose Select keys to edit targets or Inspect to explain a key."
+            }
+            Self::SelectKeys => {
+                "Click replaces direct keys; Shift/Ctrl/⌘-click toggles; drag selects; modifier-drag adds. Zones/groups stay unioned."
+            }
+            Self::Inspect => {
+                "Click a key or matrix position to explain the captured composition. Targets are unchanged."
+            }
+        }
+    }
+}
+
+/// The editor owns this selected-layer context; the canvas never owns a draft.
+pub struct SelectionContext<'a> {
+    pub target: &'a mut Target,
+    pub groups: &'a Groups,
+    pub device: &'a DeviceInfo,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct CanvasResponse {
+    pub inspected: Option<MatrixCoord>,
+    /// Only a committed target edit, never hover, inspection, or group drafting.
+    pub changed: bool,
+}
+
+/// Read-only compatibility view for sharing. Uses the same RGB canvas renderer.
 pub fn composition_preview(
     ui: &mut egui::Ui,
     frame: &underglow::render::Frame,
     selected: Option<MatrixCoord>,
     coverage: Option<&underglow::explanations::LayerCoverage>,
 ) -> Option<MatrixCoord> {
-    let layout = KeyboardLayout::for_device(&DeviceInfo::synthetic_80he());
-    let width = ui.available_width().clamp(100.0, 700.0);
-    let unit = width / 18.5;
-    let (board, _) = ui.allocate_exact_size(Vec2::new(width, unit * 6.4), Sense::hover());
-    let keys = canvas_keys(&layout, board.min + Vec2::splat(unit * 0.25), unit);
-    let mut clicked = None;
-    for (key, position) in keys.iter().zip(layout.keys()) {
-        let response = ui.interact(
-            key.rect,
-            ui.id()
-                .with(("explain-key", key.coord.row, key.coord.column)),
-            Sense::click(),
-        );
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                ui.is_enabled(),
-                format!("Inspect {}", key_label(key.coord)),
-            )
-        });
-        if response.clicked() {
-            clicked = Some(key.coord);
-        }
-        let color = frame.get_coord(position.coord);
-        ui.painter().rect_filled(
-            key.rect,
-            3,
-            Color32::from_rgb(color.red, color.green, color.blue),
-        );
-        if let Some(layer) = coverage.filter(|layer| layer.targeted.contains(&key.coord)) {
-            let visible = layer.visible.contains(&key.coord);
-            let obscured = layer.obscured.contains(&key.coord);
-            let accent = if visible {
-                Color32::LIGHT_GREEN
-            } else if obscured {
-                Color32::LIGHT_RED
-            } else {
-                Color32::LIGHT_BLUE
-            };
-            ui.painter()
-                .rect_stroke(key.rect, 3, Stroke::new(2.0, accent), StrokeKind::Outside);
-            if obscured {
-                // Cross-hatching is an annotation, never substitute RGB fill.
-                let inner = key.rect.shrink(3.0);
-                ui.painter().line_segment(
-                    [inner.left_bottom(), inner.right_top()],
-                    Stroke::new(1.0, accent),
-                );
-                ui.painter().line_segment(
-                    [inner.left_top(), inner.right_bottom()],
-                    Stroke::new(1.0, accent),
-                );
-            }
-        }
-        if selected == Some(key.coord) {
-            ui.painter().rect_stroke(
-                key.rect,
-                3,
-                Stroke::new(2.0, Color32::YELLOW),
-                StrokeKind::Inside,
-            );
-        }
-        if let Some(name) = &key.name {
-            ui.painter().text(
-                key.rect.center(),
-                Align2::CENTER_CENTER,
-                legend(name),
-                FontId::monospace((unit * 0.21).clamp(6.0, 12.0)),
-                Color32::WHITE,
-            );
-        }
-    }
-    clicked
+    TargetSelection::default()
+        .show_canvas(ui, frame, CanvasMode::Inspect, None, selected, coverage)
+        .inspected
 }
 
 /// Reuse the physical-name resolver; unnamed cells remain honest coordinates.
@@ -435,19 +411,29 @@ pub fn key_label(coord: MatrixCoord) -> String {
         .unwrap_or_else(|| format!("row {} / column {}", coord.row, coord.column))
 }
 
-/// Keep one instance per stable layer ID (or reset it when changing layers).
+/// Keep one instance per stable layer ID; call cancel_interaction on selection
+/// changes before rendering the new layer. Group drafts remain local UI state.
 #[derive(Default)]
 pub struct TargetSelection {
     drag: Option<(Pos2, bool)>,
     draft: Option<GroupDraft>,
     error: Option<String>,
+    last_mode: Option<CanvasMode>,
+    blocked_pointer: bool,
 }
 
 impl TargetSelection {
+    /// Drop an in-flight gesture when switching layers, modes, or documents.
+    /// Draft group members are intentionally preserved.
+    pub fn cancel_interaction(&mut self) {
+        self.drag = None;
+        self.blocked_pointer = true;
+    }
+
     /// Returns true only when target/groups changed, not for hover/draft edits.
     /// `other_targets` MUST contain every other layer, even disabled ones, for
     /// reference-safe group operations. `device` may be synthetic_80he().
-    pub fn show(
+    pub fn show_controls(
         &mut self,
         ui: &mut egui::Ui,
         target: &mut Target,
@@ -463,7 +449,7 @@ impl TargetSelection {
         let before = (target.clone(), groups.clone());
         let layout = KeyboardLayout::for_device(device);
         ui.strong("Physical targets · 80HE ANSI");
-        ui.small("Click replaces direct keys (Whole is replaced). Shift/Ctrl/⌘-click toggles; modifier-drag adds. Zones/groups remain unioned until unchecked.");
+        ui.small("Choose Select keys on the shared keyboard to edit direct keys or group members. Zones/groups remain unioned until unchecked.");
         ui.small("Physical positions, not OS characters/remaps. Fn, Mode, right Meta, numpad and light bar are unsupported. Dots are unnamed engine matrix cells, not invented keys.");
         if self.draft.is_none() {
             ui.horizontal_wrapped(|ui| {
@@ -566,21 +552,7 @@ impl TargetSelection {
                 self.draft = None;
             }
         }
-        let layer_mask = self
-            .draft
-            .as_ref()
-            .and_then(|_| target_mask(target, groups).ok());
-        if self.draft.is_some() {
-            ui.small("Blue fill: draft members · gold outline: selected layer coverage.");
-        }
-        let active = self
-            .draft
-            .as_mut()
-            .map_or(&mut *target, |draft| &mut draft.target);
-        let mask = target_mask(active, groups);
-        if let Err(error) = &mask {
-            ui.colored_label(Color32::LIGHT_RED, error);
-        }
+        let active = self.draft.as_ref().map_or(&*target, |draft| &draft.target);
         if let Target::Selection {
             keys, groups: refs, ..
         } = active
@@ -591,99 +563,239 @@ impl TargetSelection {
                 refs.join(", ")
             ));
         }
-        let width = ui.available_width().clamp(100.0, 700.0);
+        if let Err(error) = target_mask(active, groups) {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+        if let Some(error) = &self.error {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+        before != (target.clone(), groups.clone())
+    }
+
+    /// One persistent RGB canvas. Only SelectKeys may edit the selected target;
+    /// Inspect returns a coordinate for the caller's canonical capture report.
+    /// All annotations are strokes: black is a real RGB pixel, not transparency.
+    #[allow(clippy::too_many_arguments)]
+    pub fn show_canvas(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &underglow::render::Frame,
+        mode: CanvasMode,
+        mut selection: Option<SelectionContext<'_>>,
+        inspected: Option<MatrixCoord>,
+        coverage: Option<&underglow::explanations::LayerCoverage>,
+    ) -> CanvasResponse {
+        let mut result = CanvasResponse::default();
+        if self.last_mode.is_some_and(|previous| previous != mode) {
+            self.cancel_interaction();
+        }
+        self.last_mode = Some(mode);
+        // A mode/layer switch while the button is held must not reinterpret its
+        // release as a new click. An idle switch can accept the next gesture.
+        let pointer_busy = ui.input(|i| i.pointer.primary_down() || i.pointer.any_released());
+        if !pointer_busy {
+            self.blocked_pointer = false;
+        }
+        let supported = selection
+            .as_ref()
+            .is_some_and(|s| validate_device(s.device).is_ok());
+        let can_edit = mode == CanvasMode::SelectKeys && supported;
+        let before = selection.as_ref().map(|s| s.target.clone());
+        let layout = KeyboardLayout::for_device(&DeviceInfo::synthetic_80he());
+        let width = ui.available_width().clamp(1.0, 700.0);
         let unit = width / 18.5;
-        let (board, response) =
-            ui.allocate_exact_size(Vec2::new(width, unit * 6.4), Sense::click_and_drag());
+        let (board, _) = ui.allocate_exact_size(Vec2::new(width, unit * 6.4), Sense::hover());
+        // Explicit ID and allocation are independent of mode and layer. The
+        // editor must mount this once, outside per-layer inspector ID scopes.
+        let response = ui.interact(
+            board,
+            ui.id().with("composition-keyboard"),
+            if can_edit {
+                Sense::click_and_drag()
+            } else {
+                Sense::hover()
+            },
+        );
         let keys = canvas_keys(&layout, board.min + Vec2::splat(unit * 0.25), unit);
         let additive = ui.input(|i| i.modifiers.shift || i.modifiers.ctrl || i.modifiers.command);
-        if response.drag_started() {
-            self.drag = ui
-                .input(|i| i.pointer.press_origin())
-                .map(|start| (start, additive));
-        }
         let pointer = response.interact_pointer_pos();
-        if response.clicked()
-            && let Some(key) =
-                pointer.and_then(|pos| keys.iter().find(|key| key.rect.contains(pos)))
-        {
-            if let Some(name) = &key.name {
+        if can_edit && !self.blocked_pointer {
+            if response.drag_started() {
+                self.drag = ui
+                    .input(|i| i.pointer.press_origin())
+                    .map(|start| (start, additive));
+            }
+            let s = selection.as_mut().unwrap();
+            let active = self
+                .draft
+                .as_mut()
+                .map_or(&mut *s.target, |draft| &mut draft.target);
+            if response.clicked()
+                && let Some(key) =
+                    pointer.and_then(|pos| keys.iter().find(|key| key.rect.contains(pos)))
+            {
+                if let Some(name) = &key.name {
+                    self.error = edit_keys(
+                        active,
+                        std::slice::from_ref(name),
+                        if additive {
+                            Edit::Toggle
+                        } else {
+                            Edit::ReplaceDirect
+                        },
+                    )
+                    .err();
+                } else {
+                    self.error = Some("Unnamed matrix cell: Fn/Mode/custom namespaces/light bar are not selectable physical keys.".into());
+                }
+            }
+            if response.drag_stopped()
+                && let (Some((start, add)), Some(end)) = (self.drag.take(), pointer)
+            {
                 self.error = edit_keys(
                     active,
-                    std::slice::from_ref(name),
-                    if additive {
-                        Edit::Toggle
-                    } else {
-                        Edit::ReplaceDirect
-                    },
+                    &rectangle_hits(&keys, Rect::from_two_pos(start, end)),
+                    if add { Edit::Add } else { Edit::ReplaceDirect },
                 )
                 .err();
-            } else {
-                self.error = Some("Unnamed matrix cell: Fn/Mode/custom namespaces/light bar are not selectable physical keys.".into());
             }
+        } else {
+            self.drag = None;
         }
-        if response.drag_stopped()
-            && let (Some((start, add)), Some(end)) = (self.drag.take(), pointer)
-        {
-            self.error = edit_keys(
-                active,
-                &rectangle_hits(&keys, Rect::from_two_pos(start, end)),
-                if add { Edit::Add } else { Edit::ReplaceDirect },
-            )
-            .err();
-        }
-        let mask = target_mask(active, groups).ok();
-        let covered = layout
-            .keys()
-            .iter()
-            .filter(|key| mask.as_ref().is_some_and(|m| m.contains(key)))
-            .count();
+        let layer_mask = selection
+            .as_ref()
+            .filter(|_| supported)
+            .and_then(|s| target_mask(s.target, s.groups).ok());
+        let draft_mask = selection.as_ref().filter(|_| supported).and_then(|s| {
+            self.draft
+                .as_ref()
+                .and_then(|draft| target_mask(&draft.target, s.groups).ok())
+        });
         for (key, position) in keys.iter().zip(layout.keys()) {
-            let selected = mask.as_ref().is_some_and(|m| m.contains(position));
-            let fill = if selected {
-                Color32::from_rgb(0, 100, 145)
-            } else {
-                Color32::from_gray(35)
-            };
-            let rect = if key.name.is_some() {
-                key.rect
-            } else {
-                Rect::from_center_size(key.rect.center(), Vec2::splat(unit * 0.14))
-            };
-            ui.painter().rect(
-                rect,
-                3,
-                fill,
-                Stroke::new(
-                    1.0,
-                    if layer_mask.as_ref().is_some_and(|m| m.contains(position)) {
-                        Color32::GOLD
-                    } else {
-                        Color32::GRAY
-                    },
-                ),
-                StrokeKind::Inside,
+            let key_response = ui.interact(
+                key.rect,
+                ui.id()
+                    .with(("composition-key", key.coord.row, key.coord.column)),
+                if mode == CanvasMode::Inspect {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                },
             );
+            if mode == CanvasMode::Inspect {
+                key_response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        ui.is_enabled(),
+                        format!("Inspect {}", key_label(key.coord)),
+                    )
+                });
+                if key_response.clicked() && !self.blocked_pointer {
+                    result.inspected = Some(key.coord);
+                }
+            }
+            let color = frame.get_coord(key.coord);
+            ui.painter().rect_filled(
+                key.rect,
+                3,
+                Color32::from_rgb(color.red, color.green, color.blue),
+            );
+            if layer_mask
+                .as_ref()
+                .is_some_and(|mask| mask.contains(position))
+            {
+                ui.painter().rect_stroke(
+                    key.rect,
+                    3,
+                    Stroke::new(1.0, Color32::GOLD),
+                    StrokeKind::Inside,
+                );
+            }
+            if draft_mask
+                .as_ref()
+                .is_some_and(|mask| mask.contains(position))
+            {
+                ui.painter().rect_stroke(
+                    key.rect.shrink(2.0),
+                    2,
+                    Stroke::new(2.0, Color32::LIGHT_BLUE),
+                    StrokeKind::Inside,
+                );
+            }
+            if let Some(layer) = coverage.filter(|layer| layer.targeted.contains(&key.coord)) {
+                let visible = layer.visible.contains(&key.coord);
+                let obscured = layer.obscured.contains(&key.coord);
+                let accent = if visible {
+                    Color32::LIGHT_GREEN
+                } else if obscured {
+                    Color32::LIGHT_RED
+                } else {
+                    Color32::LIGHT_BLUE
+                };
+                ui.painter().rect_stroke(
+                    key.rect,
+                    3,
+                    Stroke::new(2.0, accent),
+                    StrokeKind::Outside,
+                );
+                if obscured {
+                    // Cross-hatching is an annotation, never substitute RGB fill.
+                    let inner = key.rect.shrink(3.0);
+                    ui.painter().line_segment(
+                        [inner.left_bottom(), inner.right_top()],
+                        Stroke::new(1.0, accent),
+                    );
+                    ui.painter().line_segment(
+                        [inner.left_top(), inner.right_bottom()],
+                        Stroke::new(1.0, accent),
+                    );
+                }
+            }
+            if inspected == Some(key.coord) {
+                ui.painter().rect_stroke(
+                    key.rect,
+                    3,
+                    Stroke::new(2.0, Color32::YELLOW),
+                    StrokeKind::Inside,
+                );
+            }
             if let Some(name) = &key.name {
+                let luminance = u32::from(color.red) * 299
+                    + u32::from(color.green) * 587
+                    + u32::from(color.blue) * 114;
                 ui.painter().text(
                     key.rect.center(),
                     Align2::CENTER_CENTER,
                     legend(name),
                     FontId::monospace((unit * 0.21).clamp(6.0, 12.0)),
-                    Color32::WHITE,
+                    if luminance > 140_000 {
+                        Color32::BLACK
+                    } else {
+                        Color32::WHITE
+                    },
+                );
+            } else {
+                // A hollow marker identifies an unnamed position without inventing
+                // a physical legend or obscuring its composed RGB fill.
+                ui.painter().circle_stroke(
+                    key.rect.center(),
+                    unit * 0.07,
+                    Stroke::new(1.0, Color32::GRAY),
                 );
             }
-            if response.hover_pos().is_some_and(|p| key.rect.contains(p)) {
-                response.clone().on_hover_text(format!(
-                    "{} · row {} col {}{}",
-                    key.name
-                        .as_deref()
-                        .unwrap_or("Unsupported unnamed matrix cell"),
-                    key.coord.row,
-                    key.coord.column,
-                    if selected { " · covered" } else { "" }
-                ));
-            }
+            key_response.on_hover_text(format!(
+                "{} · row {} col {}{}",
+                key.name
+                    .as_deref()
+                    .unwrap_or("Unnamed matrix position · not a selectable physical key"),
+                key.coord.row,
+                key.coord.column,
+                if layer_mask.as_ref().is_some_and(|m| m.contains(position)) {
+                    " · targeted"
+                } else {
+                    ""
+                },
+            ));
         }
         if let (Some((start, _)), Some(end)) = (self.drag, pointer) {
             ui.painter().rect_stroke(
@@ -693,11 +805,93 @@ impl TargetSelection {
                 StrokeKind::Inside,
             );
         }
-        ui.small(format!("{covered} engine matrix positions covered (keys + dots). Overlap counts once; unchecking a key does not subtract zone/group coverage."));
-        if let Some(error) = &self.error {
-            ui.colored_label(Color32::LIGHT_RED, error);
+        let mut caption = match mode {
+            CanvasMode::SelectKeys if selection.is_none() => "Select keys · choose a layer".into(),
+            CanvasMode::SelectKeys if !supported => "Select keys · unsupported map".into(),
+            CanvasMode::SelectKeys if self.draft.is_some() => {
+                "Select keys · group draft · 80HE ANSI".into()
+            }
+            _ => format!("{} · 80HE ANSI", mode.label()),
+        };
+        let mut help = format!(
+            "{}\n80HE ANSI physical keys only; Fn, Mode, right Meta, numpad and light bar are unsupported. Gold = layer target; blue = group draft. RGB fills are unchanged.",
+            mode.help()
+        );
+        if self.draft.is_some() {
+            help.push_str("\nEditing group draft members only. Save or cancel the draft in the Keys inspector.");
         }
-        before != (target.clone(), groups.clone())
+        if let Some(error) = selection
+            .as_ref()
+            .and_then(|s| validate_device(s.device).err())
+        {
+            help.push('\n');
+            help.push_str(&error);
+        }
+        let target_error = if mode == CanvasMode::SelectKeys {
+            selection.as_ref().filter(|_| supported).and_then(|s| {
+                let active = self
+                    .draft
+                    .as_ref()
+                    .map_or(&*s.target, |draft| &draft.target);
+                target_mask(active, s.groups).err()
+            })
+        } else {
+            None
+        };
+        let error = if mode == CanvasMode::SelectKeys {
+            self.error.as_deref().or(target_error.as_deref())
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            caption.push_str(" · target issue");
+            help.push('\n');
+            help.push_str(error);
+        }
+        // Errors must not grow the pinned pane or cover its source-facts badge.
+        // Full text also remains visible in the scrollable Keys controls.
+        let caption = egui::RichText::new(caption).small();
+        let caption = if error.is_some() {
+            caption.color(Color32::LIGHT_RED)
+        } else {
+            caption
+        };
+        ui.add(egui::Label::new(caption).truncate())
+            .on_hover_text(help);
+        if let Some(s) = selection.as_ref() {
+            result.changed = before.as_ref().is_some_and(|before| before != s.target);
+        }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.blocked_pointer = false;
+        }
+        result
+    }
+
+    /// Transitional compatibility mount. The workspace uses show_controls in
+    /// its Keys inspector and show_canvas once in its persistent center pane.
+    #[cfg(test)]
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        target: &mut Target,
+        groups: &mut Groups,
+        other_targets: &[Target],
+        device: &DeviceInfo,
+    ) -> bool {
+        let controls_changed = self.show_controls(ui, target, groups, other_targets, device);
+        let canvas = self.show_canvas(
+            ui,
+            &underglow::render::Frame::black(),
+            CanvasMode::SelectKeys,
+            Some(SelectionContext {
+                target,
+                groups,
+                device,
+            }),
+            None,
+            None,
+        );
+        controls_changed || canvas.changed
     }
 }
 
@@ -995,6 +1189,449 @@ mod tests {
             pressed,
             modifiers,
         }
+    }
+
+    struct CanvasHarness {
+        ctx: egui::Context,
+        state: TargetSelection,
+        target: Target,
+        groups: Groups,
+        device: DeviceInfo,
+        frame: Frame,
+        size: Vec2,
+        context: bool,
+        coverage: Option<underglow::explanations::LayerCoverage>,
+    }
+
+    impl CanvasHarness {
+        fn new(size: Vec2) -> Self {
+            let mut frame = Frame::black();
+            for key in layout().keys() {
+                frame.set_coord(
+                    key.coord,
+                    Color::new(key.coord.row * 29, key.coord.column * 11, 73),
+                );
+            }
+            frame.set_coord(canonical_coord("F1").unwrap(), Color::BLACK);
+            Self {
+                ctx: egui::Context::default(),
+                state: TargetSelection::default(),
+                target: direct(&["F1"]),
+                groups: Groups::new(),
+                device: DeviceInfo::synthetic_80he(),
+                frame,
+                size,
+                context: true,
+                coverage: None,
+            }
+        }
+
+        fn run(
+            &mut self,
+            mode: CanvasMode,
+            events: Vec<egui::Event>,
+            modifiers: egui::Modifiers,
+        ) -> (CanvasResponse, Vec<egui::epaint::ClippedShape>) {
+            let mut response = CanvasResponse::default();
+            let output = self.ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+                    events,
+                    modifiers,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let selection = self.context.then_some(SelectionContext {
+                            target: &mut self.target,
+                            groups: &self.groups,
+                            device: &self.device,
+                        });
+                        response = self.state.show_canvas(
+                            ui,
+                            &self.frame,
+                            mode,
+                            selection,
+                            canonical_coord("F1"),
+                            self.coverage.as_ref(),
+                        );
+                    });
+                },
+            );
+            (response, output.shapes)
+        }
+
+        fn idle(&mut self, mode: CanvasMode) -> Vec<egui::epaint::ClippedShape> {
+            let (response, shapes) = self.run(mode, vec![], egui::Modifiers::NONE);
+            assert_eq!(response, CanvasResponse::default());
+            shapes
+        }
+
+        fn click(
+            &mut self,
+            mode: CanvasMode,
+            pos: Pos2,
+            modifiers: egui::Modifiers,
+        ) -> CanvasResponse {
+            assert!(
+                !self
+                    .run(
+                        mode,
+                        vec![egui::Event::PointerMoved(pos), button(pos, true, modifiers)],
+                        modifiers
+                    )
+                    .0
+                    .changed
+            );
+            self.run(mode, vec![button(pos, false, modifiers)], modifiers)
+                .0
+        }
+
+        fn controls(
+            &mut self,
+            events: Vec<egui::Event>,
+        ) -> (bool, Vec<egui::epaint::ClippedShape>) {
+            let mut dirty = false;
+            let output = self.ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        dirty = self.state.show_controls(
+                            ui,
+                            &mut self.target,
+                            &mut self.groups,
+                            &[],
+                            &self.device,
+                        );
+                    });
+                },
+            );
+            (dirty, output.shapes)
+        }
+    }
+
+    fn rgb_rects(
+        shapes: &[egui::epaint::ClippedShape],
+        unit: f32,
+    ) -> Vec<&egui::epaint::RectShape> {
+        shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if (rect.rect.width() - unit * 0.88).abs() < 0.01
+                        && (rect.rect.height() - unit * 0.88).abs() < 0.01
+                        && rect.fill != Color32::TRANSPARENT =>
+                {
+                    Some(rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shared_canvas_modes_keep_exact_composed_rgb_and_one_keyboard_at_both_sizes() {
+        use underglow::explanations::{CoverageStatus, LayerCoverage};
+        for size in [Vec2::new(940.0, 850.0), Vec2::new(620.0, 640.0)] {
+            let mut h = CanvasHarness::new(size);
+            let f1 = canonical_coord("F1").unwrap();
+            h.coverage = Some(LayerCoverage {
+                transition: None,
+                index: 0,
+                id: "layer".into(),
+                name: "Layer".into(),
+                status: CoverageStatus::FullyObscured,
+                reason: "test".into(),
+                selected_variant: None,
+                targeted: vec![f1],
+                contributing: vec![f1],
+                visible: vec![],
+                blended: vec![],
+                obscured: vec![f1],
+                overlapping: vec![f1],
+                obscured_by: vec![1],
+                conditions: vec![],
+                deadline: None,
+            });
+            h.state.draft = Some(GroupDraft {
+                old: None,
+                id: "draft".into(),
+                target: direct(&["F1", "F2"]),
+            });
+            let before = h.target.clone();
+            let mut board_rects = None;
+            for mode in [
+                CanvasMode::Preview,
+                CanvasMode::SelectKeys,
+                CanvasMode::Inspect,
+            ] {
+                assert!(!mode.label().is_empty());
+                let shapes = h.idle(mode);
+                let caption = shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text().contains("80HE ANSI") => {
+                            Some(text)
+                        }
+                        _ => None,
+                    })
+                    .expect("short mode caption");
+                assert!(
+                    caption.galley.size().y < 20.0,
+                    "the caption must stay one line"
+                );
+                assert!(!shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text().contains(mode.help()))));
+                let unit = (size.x - 16.0).min(700.0) / 18.5;
+                let fills = rgb_rects(&shapes, unit);
+                assert_eq!(
+                    fills.len(),
+                    layout().keys().len(),
+                    "exactly one RGB keyboard"
+                );
+                let rects: Vec<_> = fills.iter().map(|rect| rect.rect).collect();
+                if let Some(previous) = &board_rects {
+                    assert_eq!(&rects, previous, "mode changes must not move the keyboard");
+                }
+                board_rects = Some(rects);
+                for (rect, key) in fills.iter().zip(layout().keys()) {
+                    let rgb = h.frame.get_coord(key.coord);
+                    assert_eq!(rect.fill, Color32::from_rgb(rgb.red, rgb.green, rgb.blue));
+                    assert!(Rect::from_min_size(Pos2::ZERO, size).contains_rect(rect.rect));
+                }
+                assert!(fills.iter().any(|rect| rect.fill == Color32::BLACK));
+                assert_eq!(shapes.iter().filter(|shape|
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "F1")
+                ).count(), 1);
+            }
+            assert_eq!(h.target, before);
+            assert!(h.groups.is_empty());
+        }
+    }
+
+    #[test]
+    fn shared_canvas_preview_and_inspect_are_read_only_including_unnamed_positions() {
+        let mut h = CanvasHarness::new(Vec2::new(620.0, 640.0));
+        let before = h.target.clone();
+        let shapes = h.idle(CanvasMode::Preview);
+        let f1 = text_center(&shapes, "F1");
+        assert_eq!(
+            h.click(CanvasMode::Preview, f1, egui::Modifiers::NONE),
+            CanvasResponse::default()
+        );
+        h.idle(CanvasMode::Inspect);
+        assert_eq!(
+            h.click(CanvasMode::Inspect, f1, egui::Modifiers::NONE),
+            CanvasResponse {
+                inspected: canonical_coord("F1"),
+                changed: false
+            }
+        );
+        let shapes = h.idle(CanvasMode::Inspect);
+        let fills = rgb_rects(&shapes, (h.size.x - 16.0) / 18.5);
+        let unnamed_index = canvas_keys(&layout(), Pos2::ZERO, 1.0)
+            .iter()
+            .position(|key| key.name.is_none())
+            .unwrap();
+        let unnamed = layout().keys()[unnamed_index].coord;
+        let pos = fills[unnamed_index].rect.center();
+        assert_eq!(
+            h.click(CanvasMode::Inspect, pos, egui::Modifiers::NONE)
+                .inspected,
+            Some(unnamed)
+        );
+        h.idle(CanvasMode::SelectKeys);
+        assert!(
+            !h.click(CanvasMode::SelectKeys, pos, egui::Modifiers::NONE)
+                .changed
+        );
+        assert!(h.state.error.as_ref().unwrap().contains("Unnamed"));
+        let shapes = h.idle(CanvasMode::SelectKeys);
+        let issue = shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().contains("target issue") => {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .expect("target error remains discoverable in the short caption");
+        assert!(
+            issue.galley.size().y < 20.0,
+            "errors must not grow the pinned canvas"
+        );
+        assert_eq!(h.target, before);
+        assert!(h.groups.is_empty());
+    }
+
+    #[test]
+    fn shared_canvas_selection_union_modifiers_drag_and_unsupported_contexts() {
+        let mut h = CanvasHarness::new(Vec2::new(620.0, 640.0));
+        h.target = Target::Selection {
+            zones: vec![TargetZone::Navigation],
+            keys: keys(&["F1"]),
+            groups: keys(&["saved"]),
+        };
+        h.groups.insert("saved".into(), keys(&["ArrowUp"]));
+        let shapes = h.idle(CanvasMode::SelectKeys);
+        let f1 = text_center(&shapes, "F1");
+        let f2 = text_center(&shapes, "F2");
+        let f4 = text_center(&shapes, "F4");
+        let shift = egui::Modifiers {
+            shift: true,
+            ..egui::Modifiers::NONE
+        };
+        assert!(h.click(CanvasMode::SelectKeys, f2, shift).changed);
+        assert_eq!(selection(&mut h.target).1, &keys(&["F1", "F2"]));
+        h.run(
+            CanvasMode::SelectKeys,
+            vec![egui::Event::PointerMoved(f1), button(f1, true, shift)],
+            shift,
+        );
+        assert!(
+            !h.run(
+                CanvasMode::SelectKeys,
+                vec![egui::Event::PointerMoved(f4)],
+                shift
+            )
+            .0
+            .changed
+        );
+        assert!(
+            h.run(
+                CanvasMode::SelectKeys,
+                vec![button(f4, false, shift)],
+                shift
+            )
+            .0
+            .changed
+        );
+        let (zones, direct, groups) = selection(&mut h.target);
+        assert_eq!(direct, &keys(&["F1", "F2", "F3", "F4"]));
+        assert_eq!(zones, &vec![TargetZone::Navigation]);
+        assert_eq!(groups, &keys(&["saved"]));
+        let before = h.target.clone();
+        h.device.layout = Layout::Iso;
+        h.idle(CanvasMode::SelectKeys);
+        assert!(
+            !h.click(CanvasMode::SelectKeys, f2, egui::Modifiers::NONE)
+                .changed
+        );
+        assert_eq!(h.target, before);
+        h.context = false;
+        h.idle(CanvasMode::SelectKeys);
+        assert!(
+            !h.click(CanvasMode::SelectKeys, f2, egui::Modifiers::NONE)
+                .changed
+        );
+        assert_eq!(h.target, before);
+    }
+
+    #[test]
+    fn shared_canvas_cancels_gestures_across_modes_and_selected_layers() {
+        let mut h = CanvasHarness::new(Vec2::new(620.0, 640.0));
+        for cancel_by_mode in [true, false] {
+            let shapes = h.idle(CanvasMode::SelectKeys);
+            let f1 = text_center(&shapes, "F1");
+            let f4 = text_center(&shapes, "F4");
+            h.run(
+                CanvasMode::SelectKeys,
+                vec![
+                    egui::Event::PointerMoved(f1),
+                    button(f1, true, egui::Modifiers::NONE),
+                ],
+                egui::Modifiers::NONE,
+            );
+            h.run(
+                CanvasMode::SelectKeys,
+                vec![egui::Event::PointerMoved(f4)],
+                egui::Modifiers::NONE,
+            );
+            assert!(h.state.drag.is_some());
+            if cancel_by_mode {
+                h.run(CanvasMode::Preview, vec![], egui::Modifiers::NONE);
+                h.run(CanvasMode::SelectKeys, vec![], egui::Modifiers::NONE);
+            } else {
+                h.state.cancel_interaction();
+                h.target = direct(&["A"]); // editor resolves another stable layer
+            }
+            let before = h.target.clone();
+            assert!(
+                !h.run(
+                    CanvasMode::SelectKeys,
+                    vec![button(f4, false, egui::Modifiers::NONE)],
+                    egui::Modifiers::NONE
+                )
+                .0
+                .changed
+            );
+            assert_eq!(h.target, before);
+            assert!(h.state.drag.is_none());
+            h.idle(CanvasMode::SelectKeys);
+            assert!(
+                h.click(CanvasMode::SelectKeys, f4, egui::Modifiers::NONE)
+                    .changed
+            );
+            h.target = direct(&["F1"]);
+        }
+    }
+
+    #[test]
+    fn shared_canvas_group_drafts_use_outlines_and_controls_have_no_keyboard() {
+        let mut h = CanvasHarness::new(Vec2::new(940.0, 850.0));
+        h.state.draft = Some(GroupDraft {
+            old: None,
+            id: "subset".into(),
+            target: direct(&["F1"]),
+        });
+        let shapes = h.idle(CanvasMode::SelectKeys);
+        let f2 = text_center(&shapes, "F2");
+        assert!(
+            !h.click(CanvasMode::SelectKeys, f2, egui::Modifiers::NONE)
+                .changed
+        );
+        assert_eq!(h.target, direct(&["F1"]));
+        assert!(h.groups.is_empty());
+        assert_eq!(h.state.draft.as_ref().unwrap().target, direct(&["F2"]));
+        let (dirty, shapes) = h.controls(vec![]);
+        assert!(!dirty);
+        assert!(!shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "F1")
+        ));
+        let save = text_center(&shapes, "Save group");
+        h.controls(vec![
+            egui::Event::PointerMoved(save),
+            button(save, true, egui::Modifiers::NONE),
+        ]);
+        assert!(
+            h.controls(vec![button(save, false, egui::Modifiers::NONE)])
+                .0
+        );
+        assert_eq!(h.groups["subset"], keys(&["F2"]));
+        assert_eq!(h.target, direct(&["F1"]));
+        assert!(h.state.draft.is_none());
+        h.state.draft = Some(GroupDraft {
+            old: Some("subset".into()),
+            id: "renamed".into(),
+            target: direct(&["A"]),
+        });
+        let (_, shapes) = h.controls(vec![]);
+        let cancel = text_center(&shapes, "Cancel group edit");
+        h.controls(vec![
+            egui::Event::PointerMoved(cancel),
+            button(cancel, true, egui::Modifiers::NONE),
+        ]);
+        assert!(
+            !h.controls(vec![button(cancel, false, egui::Modifiers::NONE)])
+                .0
+        );
+        assert_eq!(h.groups["subset"], keys(&["F2"]));
+        assert!(!h.groups.contains_key("renamed"));
+        assert!(h.state.draft.is_none());
     }
 
     #[test]
