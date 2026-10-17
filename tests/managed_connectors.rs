@@ -138,6 +138,59 @@ impl Harness {
     fn health(&self) -> Value {
         self.cli(&["control", "connectors", "status"])["connectors"].clone()
     }
+    fn connections_input(&self, input: &str, revision: &str, ok: bool) -> Value {
+        let mut child = self
+            .command()
+            .args([
+                "control",
+                "connections",
+                "replace",
+                "--expected-revision",
+                revision,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Oversized input can close its pipe as soon as the bound is detected.
+        let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(
+            output.status.success(),
+            ok,
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+    fn replace_connections(&self, config: &str) -> Value {
+        use underglow::connection_registry::{ConnectionRegistry, ConnectorConfig};
+        let legacy: toml::Value = toml::from_str(config).unwrap();
+        let configs: Vec<ConnectorConfig> = legacy
+            .get("connectors")
+            .map(|value| value.clone().try_into().unwrap())
+            .unwrap_or_default();
+        let current = self.cli(&["control", "connections", "show"]);
+        let mut registry = ConnectionRegistry::from_legacy(&configs).unwrap();
+        registry.revision = current["connections"]["registry"]["revision"]
+            .as_u64()
+            .unwrap();
+        self.request(
+            serde_json::json!({"schema_version":1,"action":"connections-replace",
+            "expected_revision":registry.revision,"registry":registry}),
+        )
+    }
+    fn request(&self, request: Value) -> Value {
+        let mut stream = UnixStream::connect(self.dir.join("runtime/control.sock")).unwrap();
+        writeln!(stream, "{request}").unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["ok"], true, "{}", response["error"]);
+        response
+    }
     fn wait_health(&self, id: &str, pred: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -376,13 +429,12 @@ fn disable_enable_and_shutdown_reap_owned_groups_without_touching_other_connecto
 }
 
 #[test]
-fn profile_replacement_stops_old_group_and_leases_expire() {
+fn explicit_connection_replacement_stops_old_group_and_leases_expire() {
     let mut h = Harness::new();
     h.start(&h.config("focus", "descendants", true, true, 0));
     h.wait_health("focus", |v| v["healthy"] == true);
     let old = h.pids("focus");
-    let p = h.profile("effect='matrix'\n");
-    h.cli(&["control", "select", "--config", p.to_str().unwrap()]);
+    h.replace_connections("effect='matrix'\n");
     let deadline = Instant::now() + Duration::from_secs(3);
     while !h.health().as_array().unwrap().is_empty() {
         assert!(Instant::now() < deadline);
@@ -401,9 +453,8 @@ fn natural_exit_drains_final_event_and_remove_and_cleans_descendants() {
     let state = h.inspect().to_string();
     assert!(state.contains("done"));
     assert!(!state.contains("working"));
-    let p = h.profile(&h.config("focus", "exit-descendants", true, true, 0));
-    h.cli(&["control", "select", "--config", p.to_str().unwrap()]);
-    // A changed profile passes through stopping; wait for the new invocation.
+    h.replace_connections(&h.config("focus", "exit-descendants", true, true, 0));
+    // Explicit connection changes pass through stopping; wait for the new invocation.
     let deadline = Instant::now() + Duration::from_secs(4);
     while h.pids("focus")[1].is_none() {
         assert!(Instant::now() < deadline);
@@ -495,4 +546,157 @@ fn generated_starter_stream_works_without_engine_specific_producer_code() {
     let state = h.inspect().to_string();
     assert!(state.contains("done"), "{state}");
     assert!(!state.contains("focusing"), "{state}");
+}
+
+#[test]
+fn two_setups_edits_and_legacy_visual_selection_reuse_one_pid_without_machine_secrets() {
+    let mut h = Harness::new();
+    let config = h.config("focus", "hold", true, true, 0);
+    h.start(&config);
+    let initial = h.wait_health("focus", |v| v["healthy"] == true);
+    let registry_bytes = fs::read(h.dir.join("runtime/connections.json")).unwrap();
+    let profile: toml::Value =
+        toml::from_str(include_str!("../examples/layers-profile.toml")).unwrap();
+    let mut document = serde_json::to_value(&profile["setup"]).unwrap();
+    document["layers"][1]["activation"] =
+        serde_json::json!({"kind":"while-state","source":"focus"});
+    for revision in 0..2 {
+        document["name"] = serde_json::json!(format!("Visual {revision}"));
+        h.request(
+            serde_json::json!({"schema_version":1,"action":"setup-replace",
+            "expected_revision":revision,"document":document}),
+        );
+    }
+    h.request(serde_json::json!({"schema_version":1,"action":"setup-edit",
+        "expected_revision":2,"edits":[{"op":"remove","id":"matrix"}]}));
+    let p =
+        h.profile(&(String::from("effect='aurora'\n") + &h.config("other", "hold", true, true, 0)));
+    let selected = h.cli(&["control", "select", "--config", p.to_str().unwrap()]);
+    assert!(selected["warning"].as_str().unwrap().contains("ignored"));
+    assert!(!h.dir.join("other").exists());
+    assert_eq!(
+        h.wait_health("focus", |v| v["running"] == true)["pid"],
+        initial["pid"]
+    );
+    assert_eq!(
+        fs::read(h.dir.join("runtime/connections.json")).unwrap(),
+        registry_bytes
+    );
+    assert_eq!(
+        fs::read_to_string(h.dir.join("focus.starts"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    let saved: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("runtime/state.json")).unwrap()).unwrap();
+    assert!(!saved["config"].as_str().unwrap().contains("producer.py"));
+    assert!(!saved["config"].as_str().unwrap().contains("connectors"));
+    let report = h.cli(&["control", "connections", "show"]);
+    assert_eq!(
+        report["connections"]["runtime_index"]["focus"]["producer"]["pid"],
+        initial["pid"]
+    );
+    assert_eq!(report["status"]["state"], "paused");
+    assert!(!h.dir.join("runtime/hardware.lock").exists());
+}
+
+#[test]
+fn registry_cli_is_bounded_atomic_and_does_not_reinstall_removed_legacy_producers() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut h = Harness::new();
+    h.start(&h.config("focus", "hold", false, true, 0));
+    let original = h.cli(&["control", "connections", "show"])["connections"]["registry"].clone();
+    let path = h.dir.join("runtime/connections.json");
+    let before = fs::read(&path).unwrap();
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    for (input, revision) in [
+        ("bad".to_string(), "0"),
+        (
+            {
+                let mut bad = original.clone();
+                bad["extra"] = serde_json::json!(true);
+                bad.to_string()
+            },
+            "0",
+        ),
+        (original.to_string(), "9"),
+        (" ".repeat(256 * 1024 + 1), "0"),
+    ] {
+        h.connections_input(&input, revision, false);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(!h.dir.join("focus").exists());
+    }
+    // Metadata-only replacement is explicit but still must not start a disabled producer.
+    let replaced = h.connections_input(&original.to_string(), "0", true);
+    assert_eq!(replaced["connections"]["registry"]["revision"], 1);
+    h.cli(&["control", "connectors", "enable", "focus"]);
+    h.wait_health("focus", |v| v["healthy"] == true);
+    let removed = h.replace_connections("effect='matrix'\n");
+    assert!(
+        removed["connections"]["registry"]["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("producer").is_none())
+    );
+    h.stop();
+    let bytes = fs::read(&path).unwrap();
+    h.start(&h.config("focus", "hold", true, true, 0));
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert!(h.health().as_array().unwrap().is_empty());
+    assert_eq!(h.cli(&["control", "status"])["status"]["state"], "paused");
+}
+
+#[test]
+fn descriptor_only_edits_preserve_pid_and_missing_bindings_remain_repairable() {
+    let mut h = Harness::new();
+    h.start(&h.config("focus", "hold", true, true, 0));
+    let original = h.wait_health("focus", |v| v["healthy"] == true);
+    let mut registry =
+        h.cli(&["control", "connections", "show"])["connections"]["registry"].clone();
+    let before = fs::read(h.dir.join("runtime/connections.json")).unwrap();
+    let engine_pid = h.child.as_ref().unwrap().id();
+    let occupied = h.dir.join(format!("runtime/.connections-{engine_pid}.tmp"));
+    fs::write(&occupied, "occupied").unwrap();
+    let mut disabled = registry.clone();
+    disabled["connections"][1]["producer"]["enabled"] = serde_json::json!(false);
+    let rejected = h.connections_input(&disabled.to_string(), "0", false);
+    assert_eq!(rejected["connections"]["registry"], registry);
+    assert_eq!(
+        fs::read(h.dir.join("runtime/connections.json")).unwrap(),
+        before
+    );
+    assert_eq!(
+        h.wait_health("focus", |v| v["healthy"] == true)["pid"],
+        original["pid"]
+    );
+    fs::remove_file(occupied).unwrap();
+    registry["connections"][1]["descriptor"]["display_name"] = serde_json::json!("Friendly source");
+    h.connections_input(&registry.to_string(), "0", true);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        h.wait_health("focus", |v| v["healthy"] == true)["pid"],
+        original["pid"]
+    );
+    let config: toml::Value =
+        toml::from_str(include_str!("../examples/layers-profile.toml")).unwrap();
+    let mut document = serde_json::to_value(&config["setup"]).unwrap();
+    document["layers"][1]["activation"] =
+        serde_json::json!({"kind":"while-state","source":"missing"});
+    h.request(serde_json::json!({"schema_version":1,"action":"setup-replace","expected_revision":0,"document":document}));
+    let report = h.cli(&["control", "connections", "show"]);
+    assert_eq!(
+        report["connections"]["missing_sources"],
+        serde_json::json!(["missing"])
+    );
+    let shown = h.cli(&["control", "setup", "show"]);
+    assert_eq!(
+        shown["setup"]["document"]["layers"][1]["activation"]["source"],
+        "missing"
+    );
 }

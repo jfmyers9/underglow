@@ -3,6 +3,7 @@ pub mod animation;
 pub mod automation;
 pub mod catalog;
 pub mod compositor;
+pub mod connection_registry;
 pub mod device;
 pub mod effects;
 pub mod external;

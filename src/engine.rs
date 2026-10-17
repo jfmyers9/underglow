@@ -13,6 +13,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use underglow::connection_registry::ConnectionRegistry;
 use underglow::layer_runtime::CompiledSetup;
 use underglow::setup::SetupDocument;
 use underglow::setup_edits::{self, LayerEdit};
@@ -40,6 +41,11 @@ pub struct ControlOptions {
 #[derive(Debug, Subcommand)]
 enum ControlCommand {
     Status,
+    /// Read or explicitly replace local connections (may authorize executables).
+    Connections {
+        #[command(subcommand)]
+        command: ConnectionCommand,
+    },
     /// Read or atomically edit canonical layers without restarting providers.
     Setup {
         #[command(subcommand)]
@@ -99,6 +105,15 @@ enum ConnectorCommand {
     },
 }
 #[derive(Debug, Subcommand)]
+enum ConnectionCommand {
+    Show,
+    /// Read local machine configuration JSON from stdin (256 KiB); not a setup import.
+    Replace {
+        #[arg(long)]
+        expected_revision: u64,
+    },
+}
+#[derive(Debug, Subcommand)]
 enum SetupCommand {
     Show,
     /// Read a JSON array of layer operations from stdin (256 KiB maximum).
@@ -122,6 +137,11 @@ struct Request {
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 enum Action {
     Status,
+    ConnectionsShow,
+    ConnectionsReplace {
+        expected_revision: u64,
+        registry: ConnectionRegistry,
+    },
     SetupShow,
     SetupEdit {
         expected_revision: u64,
@@ -193,6 +213,10 @@ struct Response {
     preview: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     setup: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connections: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<&'static str>,
 }
 
 fn parse_hex_color(value: &str) -> Result<[u8; 3], String> {
@@ -474,6 +498,7 @@ struct Runtime {
     preview: LivePreview,
     next_preview: Instant,
     connectors: Option<crate::managed_connectors::Supervisor>,
+    connections: ConnectionRegistry,
     dir: PathBuf,
     saved: Saved,
     config: AppConfig,
@@ -486,6 +511,48 @@ struct Runtime {
     healthy_since: Instant,
 }
 impl Runtime {
+    fn connection_report(&self) -> serde_json::Value {
+        let health = self
+            .connectors
+            .as_ref()
+            .map(|c| c.status())
+            .unwrap_or_default();
+        let runtime_index: std::collections::BTreeMap<_, _> = self
+            .connections
+            .connections
+            .iter()
+            .map(|c| {
+                let producer = health.iter().find(|h| h.source() == c.descriptor.source);
+                (
+                    c.descriptor.source.clone(),
+                    serde_json::json!({
+                        "kind": if c.producer.is_some() { "managed" } else { "external" },
+                        "producer": producer,
+                    }),
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "registry": self.connections,
+            "runtime_index": runtime_index,
+            "missing_sources": self.config.setup.as_ref().map(|s| self.connections.missing_sources(s)).unwrap_or_default(),
+        })
+    }
+
+    fn replace_connections(
+        &mut self,
+        expected_revision: u64,
+        registry: ConnectionRegistry,
+    ) -> ProgramResult {
+        let candidate = self.connections.replace(expected_revision, &registry)?;
+        crate::connection_store::save(&self.dir, &candidate)?;
+        if let Some(supervisor) = &self.connectors {
+            supervisor.replace(candidate.managed_configs());
+        }
+        self.connections = candidate;
+        Ok(())
+    }
+
     fn setup_document(&self) -> serde_json::Value {
         serde_json::json!({
             "revision": self.config.setup.as_ref().map_or(0, |doc| doc.revision),
@@ -697,7 +764,14 @@ impl Runtime {
             | Action::Diagnostics
             | Action::Preview
             | Action::Connectors
+            | Action::ConnectionsShow
             | Action::SetupShow => {}
+            Action::ConnectionsReplace {
+                expected_revision,
+                registry,
+            } => {
+                self.replace_connections(expected_revision, registry)?;
+            }
             Action::SetupEdit {
                 expected_revision,
                 edits,
@@ -731,30 +805,15 @@ impl Runtime {
             }
             Action::ConnectorEnable { ref id } | Action::ConnectorDisable { ref id } => {
                 let enabled = matches!(action, Action::ConnectorEnable { .. });
-                let mut value: toml::Value = toml::from_str(&self.saved.config)?;
-                let table = value
-                    .get_mut("connectors")
-                    .and_then(toml::Value::as_array_mut)
-                    .and_then(|items| {
-                        items.iter_mut().find(|item| {
-                            item.get("id").and_then(toml::Value::as_str) == Some(id.as_str())
-                        })
-                    })
-                    .and_then(toml::Value::as_table_mut)
+                let mut candidate = self.connections.clone();
+                let producer = candidate
+                    .connections
+                    .iter_mut()
+                    .filter_map(|c| c.producer.as_mut())
+                    .find(|c| c.id == *id)
                     .ok_or("unknown managed connector id")?;
-                table.insert("enabled".into(), toml::Value::Boolean(enabled));
-                let config = toml::to_string(&value)?;
-                let parsed = validate(&config)?;
-                let candidate = Saved {
-                    config,
-                    ..self.saved.clone()
-                };
-                save(&self.dir, &candidate)?;
-                self.saved = candidate;
-                self.config = parsed;
-                if let Some(connectors) = &self.connectors {
-                    connectors.replace(self.config.connectors.clone());
-                }
+                producer.enabled = enabled;
+                self.replace_connections(self.connections.revision, candidate)?;
             }
             Action::Pause | Action::Stop => self.pause()?,
             Action::Resume => {
@@ -774,6 +833,8 @@ impl Runtime {
                 }
             }
             Action::Select { config } => {
+                // Selecting visuals never installs/trusts/replaces local producers.
+                let config = crate::connection_store::visual_config(&config)?;
                 let config = if std::env::var("WOOTING_DEV_SUPERVISED").as_deref() == Ok("1") {
                     crate::dev_setup::config(&config)?
                 } else {
@@ -790,9 +851,6 @@ impl Runtime {
                 self.saved = candidate;
                 self.config = parsed;
                 self.preview = preview;
-                if let Some(connectors) = &self.connectors {
-                    connectors.replace(self.config.connectors.clone());
-                }
                 self.retry_attempt = 0;
                 self.retry_at = None;
                 if let Err(error) = cleanup {
@@ -931,6 +989,9 @@ pub fn run(
     if saved.schema_version != 1 {
         return Err("unsupported saved state version".into());
     }
+    let legacy = validate(&saved.config)?;
+    let connections = crate::connection_store::load_or_migrate(&dir, &legacy.connectors)?;
+    saved.config = crate::connection_store::visual_config(&saved.config)?;
     let config = validate(&saved.config)?;
     // Never automatically rerun a command after service/process restart.
     if options.paused || crate::sdk::hardware_disabled() || config.runs_commands() {
@@ -960,7 +1021,7 @@ pub fn run(
     let mut ingress = crate::ingress::Server::bind(&dir, sources.clone())?;
     save(&dir, &saved)?;
     let connectors = Some(crate::managed_connectors::Supervisor::start(
-        config.connectors.clone(),
+        connections.managed_configs(),
         sources.clone(),
     )?);
     let mut runtime = Runtime {
@@ -968,6 +1029,7 @@ pub fn run(
         next_preview: Instant::now(),
         sources,
         connectors,
+        connections,
         dir,
         saved,
         config,
@@ -1001,6 +1063,8 @@ pub fn run(
             let mut diagnostics = None;
             let mut preview = None;
             let mut setup = None;
+            let mut connection_request = false;
+            let mut warning = None;
             let result = (|| -> ProgramResult {
                 // Darwin can inherit the listener's O_NONBLOCK on accepted sockets.
                 stream.set_nonblocking(false)?;
@@ -1015,7 +1079,17 @@ pub fn run(
                 if request.schema_version != 1 {
                     return Err("unsupported protocol version".into());
                 }
+                connection_request = matches!(
+                    request.action,
+                    Action::ConnectionsShow
+                        | Action::ConnectionsReplace { .. }
+                        | Action::ConnectorEnable { .. }
+                        | Action::ConnectorDisable { .. }
+                );
                 stop = matches!(request.action, Action::Stop);
+                if let Action::Select { config } = &request.action {
+                    warning = crate::connection_store::select_warning(config);
+                }
                 if matches!(request.action, Action::Diagnostics) {
                     diagnostics = Some(runtime.diagnostics()?);
                 }
@@ -1044,6 +1118,8 @@ pub fn run(
                 diagnostics,
                 preview,
                 setup,
+                connections: connection_request.then(|| runtime.connection_report()),
+                warning,
             };
             // A disconnected UI cannot terminate the engine or undo an applied operation.
             let _ = serde_json::to_writer(&mut stream, &response);
@@ -1079,6 +1155,13 @@ pub fn control(options: ControlOptions) -> ProgramResult {
         let dir = options.state_dir.unwrap_or(ownership::state_dir()?);
         let action = match options.command {
             ControlCommand::Status => Action::Status,
+            ControlCommand::Connections { command } => match command {
+                ConnectionCommand::Show => Action::ConnectionsShow,
+                ConnectionCommand::Replace { expected_revision } => Action::ConnectionsReplace {
+                    expected_revision,
+                    registry: crate::connection_store::read_json(std::io::stdin().lock())?,
+                },
+            },
             ControlCommand::Setup { command } => match command {
                 SetupCommand::Show => Action::SetupShow,
                 SetupCommand::Edit { expected_revision } => Action::SetupEdit {
@@ -1442,6 +1525,7 @@ zones = ['function']
             next_preview: Instant::now(),
             sources,
             connectors: None,
+            connections: ConnectionRegistry::default(),
             config,
             saved: Saved {
                 schema_version: 1,

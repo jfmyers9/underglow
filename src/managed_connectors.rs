@@ -1,7 +1,7 @@
 //! Explicitly trusted, engine-owned producers. Never constructed by profile validation/rendering.
 use crate::ingress::SharedSources;
 use crate::ownership::Error;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
@@ -10,88 +10,13 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+pub use underglow::connection_registry::{ConnectorConfig, validate_producers as validate};
 use underglow::external::{ApplyOutcome, Limits, Message};
 
-const MAX_CONNECTORS: usize = 16;
 const MAX_FRAME: usize = 4096;
 const MAX_FRAMES_PER_TICK: usize = 32;
 const MAX_FRAMES_PER_SECOND: usize = 100;
 const TICK: Duration = Duration::from_millis(10);
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct ConnectorConfig {
-    pub id: String,
-    pub source: String,
-    pub command: Vec<String>,
-    pub enabled: bool,
-    pub trusted: bool,
-    pub restart_initial_ms: u64,
-    pub restart_max_ms: u64,
-    /// Retries after the initial attempt; zero disables retries.
-    pub restart_limit: u32,
-}
-
-impl Default for ConnectorConfig {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            source: String::new(),
-            command: Vec::new(),
-            enabled: false,
-            trusted: false,
-            restart_initial_ms: 1000,
-            restart_max_ms: 30000,
-            restart_limit: 8,
-        }
-    }
-}
-
-pub fn validate(configs: &[ConnectorConfig]) -> Result<(), String> {
-    if configs.len() > MAX_CONNECTORS {
-        return Err("at most 16 managed connectors are allowed".into());
-    }
-    let mut ids = std::collections::BTreeSet::new();
-    let mut sources = std::collections::BTreeSet::new();
-    for c in configs {
-        let token = |s: &str| {
-            !s.is_empty()
-                && s.len() <= 128
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:/".contains(&b))
-        };
-        if !token(&c.id) || !token(&c.source) {
-            return Err("connector id/source must be 1–128 ASCII token characters".into());
-        }
-        if !ids.insert(&c.id) || !sources.insert(&c.source) {
-            return Err("connector ids and managed sources must be unique".into());
-        }
-        if c.enabled && !c.trusted {
-            return Err(format!(
-                "connector {} must be explicitly trusted before enabling",
-                c.id
-            ));
-        }
-        if c.command.is_empty()
-            || c.command.len() > 64
-            || c.command[0].is_empty()
-            || c.command.iter().any(|a| a.contains('\0'))
-            || c.command.iter().map(String::len).sum::<usize>() > 16384
-        {
-            return Err(format!(
-                "connector {} requires a bounded nonempty argv command (64 arguments / 16 KiB maximum)",
-                c.id
-            ));
-        }
-        if !(250..=60000).contains(&c.restart_initial_ms)
-            || !(c.restart_initial_ms..=300000).contains(&c.restart_max_ms)
-            || c.restart_limit > 32
-        {
-            return Err("connector restart_initial_ms must be 250–60000, restart_max_ms initial–300000, restart_limit 0–32".into());
-        }
-    }
-    Ok(())
-}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Health {
@@ -108,6 +33,11 @@ pub struct Health {
     retry_in_ms: Option<u64>,
     last_message_age_ms: Option<u64>,
     last_error: Option<String>,
+}
+impl Health {
+    pub fn source(&self) -> &str {
+        &self.source
+    }
 }
 
 struct Desired {

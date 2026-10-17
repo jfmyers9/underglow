@@ -140,6 +140,8 @@ trusted = true
     let mut outer_before: toml::Value = toml::from_str(&config).unwrap();
     let mut outer_after: toml::Value = toml::from_str(saved["config"].as_str().unwrap()).unwrap();
     outer_before.as_table_mut().unwrap().remove("setup");
+    // Startup migrates machine-local producers out of visual configuration.
+    outer_before.as_table_mut().unwrap().remove("connectors");
     outer_after.as_table_mut().unwrap().remove("setup");
     assert_eq!(outer_after, outer_before);
     for (revision, input) in [

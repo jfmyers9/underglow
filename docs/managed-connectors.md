@@ -8,39 +8,27 @@ arguments, and updates before granting trust. No shell is inserted.
 
 ## Configure and enable
 
-Generate a [starter connector](connectors.md), review it, then add this to your
-profile (replace the absolute paths):
+Generate a [starter connector](connectors.md), review it, then configure it using
+the independent [connection registry workflow](connections.md). Producer commands
+and credentials are machine-local, never part of shared layer setups. Existing
+local profile connectors migrate once at initial startup; later visual profile
+selection ignores producer definitions with a warning. It no longer installs,
+reconfigures, or disables them.
 
-```toml
-effect = "matrix"
-
-[[connectors]]
-id = "focus-timer"
-source = "focus"
-command = ["/usr/bin/python3", "-u", "/absolute/path/my-focus/connector.py", "--stdout", "--duration-seconds", "60"]
-enabled = false
-trusted = false
-restart_limit = 0 # one timed session, not a continuously restarted timer
-```
-
-Both flags default to false. After reviewing the producer, set `trusted = true`
-in the profile, then explicitly select it and enable the connector:
+Both flags default to false. Enabling cannot grant trust. Explicitly review and
+set trust through `control connections replace`, then use:
 
 ```sh
-underglow control select --config /absolute/path/profile.toml
 underglow control connectors enable focus-timer
 underglow control connectors status
 underglow external inspect
 underglow control connectors disable focus-timer
 ```
 
-Enable cannot grant trust. `enabled=true` with `trusted=false` is a validation
-error. Enable/disable persists to the engine's selected configuration snapshot,
-not your original file. Re-selecting a file applies that file's flags again.
-The CLI acknowledges the saved intent; poll connector status for completion of
-asynchronous start/stop/reaping. Unknown IDs and extra control fields reject.
-To rerun a completed one-shot connector, disable it, wait for `disabled` status,
-then enable it. Rapid edits coalesce to the latest desired configuration.
+Enable/disable persists to `connections.json`, not the selected visual profile or
+original file. Poll status for asynchronous start/stop/reaping. Unknown IDs and
+extra control fields reject. To rerun a completed one-shot producer, disable it,
+wait for `disabled`, then enable it. Rapid edits coalesce to the latest intent.
 
 Use absolute paths and an unbuffered/flushing producer. Arguments are literal
 argv entries: no quoting expansion, `$HOME`, `~`, redirects, or pipes are
@@ -54,13 +42,13 @@ stderr goes to the null device, never an unbounded log or blocking reader.
 - Only `underglow engine` constructs the supervisor. Parsing, validation,
   `run --dry-run`, `run --preview`, and offline diagnostics never launch it.
   Foreground `run` does not supervise connectors; use the persistent engine.
-- Explicitly enabled/trusted connectors start on engine startup and profile
-  selection, **including while lighting is paused**. They observe facts, never
+- Explicitly enabled/trusted connectors start on engine startup and explicit
+  connection configuration, **including while lighting is paused**. They observe facts, never
   resume lighting or acquire an SDK. Pausing lighting does not stop connectors.
-- Disable, removal/change in a selected profile, engine stop, and SIGINT/SIGTERM
+- Disable, explicit registry removal/change, engine stop, and SIGINT/SIGTERM
   shutdown terminate the owned process group, close its stdout transport, and
   reap its direct child. Unchanged connector configurations retain their PID
-  across visual settings edits and unrelated connector changes.
+  across setup switches, visual settings edits, descriptor-only edits, and unrelated connector changes.
 - Cleanup uses immediate SIGKILL, not graceful completion hooks. A producer's
   final notification must never be inferred from termination. Remaining states
   expire by their finite leases (at most 300 seconds); Underglow does not delete
@@ -140,6 +128,6 @@ checked against the local SDK `sys/wait.h`.
 `cargo test --test managed_connectors` exercises fake Python producers in
 isolated, hardware-disabled engines: trust/opt-in, inert dry-run/preview,
 paused observation, bad/spoofed/flooded output, bounded retries, independent
-enable/disable, profile replacement, final facts, descendants, and reaping.
+enable/disable, registry replacement, setup PID reuse, final facts, descendants, and reaping.
 These tests were executed on macOS; Linux constants follow its waitid ABI but
 Linux execution still needs CI verification.
