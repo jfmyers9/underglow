@@ -82,6 +82,24 @@ pub struct Session {
     closed: bool,
 }
 impl Session {
+    /// Inspect the existing program against its real device layout; never ticks or writes RGB.
+    pub fn automation_diagnostics(
+        &self,
+        signal: &dyn SignalProgram,
+    ) -> (Vec<underglow::automation::RuleDiagnostic>, &'static str) {
+        let layout = KeyboardLayout::for_device(self.keyboard.info());
+        let ctx = RenderContext {
+            info: self.keyboard.info(),
+            layout: &layout,
+            brightness: self.options.brightness,
+            palette: self.options.palette,
+            tick: self.tick,
+            // Visibility depends on masks/priority, not animation phase.
+            animation_seconds: 0.0,
+        };
+        (signal.automation_diagnostics(&ctx), layout.name)
+    }
+
     pub fn set_visuals(&mut self, options: &SignalRunOptions) {
         self.animation
             .set_speed(self.epoch.elapsed(), options.speed);

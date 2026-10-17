@@ -1,4 +1,5 @@
 mod config;
+mod diagnostics;
 mod doctor;
 mod engine;
 mod external_rules;
@@ -53,6 +54,8 @@ enum Command {
     Control(engine::ControlOptions),
     /// Publish external facts without changing engine controls or acquiring hardware.
     External(ingress::ExternalOptions),
+    /// Isolated synthetic connector diagnostics and hardware-free overlay previews.
+    Diagnostics(diagnostics::DiagnosticsOptions),
     /// Check SDK access and restoration (opens/resets RGB; opt in to an animation).
     Doctor(doctor::DoctorOptions),
     /// Play an interactive keyboard toy; stop to restore normal lighting.
@@ -318,6 +321,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Engine(_)
         | Command::Control(_)
         | Command::External(_)
+        | Command::Diagnostics(_)
         | Command::Preview { .. } => false,
         Command::Run {
             dry_run, preview, ..
@@ -337,6 +341,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Engine(options) => engine::run(options, cli.sdk_path, &interrupted)?,
         Command::Control(options) => engine::control(options)?,
         Command::External(options) => ingress::external(options)?,
+        Command::Diagnostics(options) => diagnostics::run(options)?,
         Command::Doctor(options) => doctor::run(options, cli.sdk_path.as_deref(), &interrupted)?,
         Command::Toy { command } => toys::run(command, cli.sdk_path.as_deref(), &interrupted)?,
         Command::Info => {

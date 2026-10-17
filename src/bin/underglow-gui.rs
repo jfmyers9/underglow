@@ -3,6 +3,8 @@ use clap::Parser;
 use eframe::egui;
 #[path = "gui/brand.rs"]
 mod brand;
+#[path = "gui/connectors.rs"]
+mod connectors;
 #[path = "gui/preview.rs"]
 mod gui_preview;
 use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
@@ -52,6 +54,8 @@ struct Reply {
     ok: bool,
     error: Option<String>,
     status: Option<Status>,
+    #[serde(default)]
+    diagnostics: Option<serde_json::Value>,
 }
 
 fn parse_reply(bytes: &[u8]) -> Result<Reply, String> {
@@ -62,12 +66,23 @@ fn parse_reply(bytes: &[u8]) -> Result<Reply, String> {
             "Unsupported engine status schema; install matching CLI and GUI versions".into(),
         );
     }
+    if reply
+        .diagnostics
+        .as_ref()
+        .is_some_and(|value| value["schema_version"] != 1)
+    {
+        return Err(
+            "Unsupported connector diagnostics schema; install matching CLI and GUI versions"
+                .into(),
+        );
+    }
     Ok(reply)
 }
 
 #[derive(Clone, Debug)]
 enum Action {
     Control(Vec<OsString>),
+    DiagnosticsPreview(Vec<OsString>),
     StartEngine,
     Service(String),
 }
@@ -110,6 +125,9 @@ impl Backend {
                 .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
         );
         match action {
+            Action::DiagnosticsPreview(args) => {
+                command.arg("diagnostics").args(args);
+            }
             Action::Service(verb) => {
                 command.arg(verb);
             }
@@ -474,6 +492,7 @@ struct Controller {
     dev_supervised: bool,
     dev_simulation: bool,
     keyboard_preview: gui_preview::KeyboardPreview,
+    connector_panel: connectors::Panel,
 }
 
 impl Controller {
@@ -530,6 +549,7 @@ impl Controller {
             dev_supervised: std::env::var_os("WOOTING_DEV_SUPERVISED").is_some(),
             dev_simulation: std::env::var_os("WOOTING_DEV_SIMULATION").is_some(),
             keyboard_preview: gui_preview::KeyboardPreview::default(),
+            connector_panel: connectors::Panel::default(),
         }
     }
 
@@ -571,6 +591,9 @@ impl Controller {
             // Leave an interactive interval even when the previous poll was slow.
             self.last_poll = Instant::now();
             match completion.action {
+                Action::DiagnosticsPreview(_) => {
+                    self.connector_panel.receive_preview(completion.result);
+                }
                 Action::Service(_) => {
                     self.service = completion
                         .result
@@ -585,6 +608,16 @@ impl Controller {
                     parse_reply(body.as_bytes())
                 }) {
                     Ok(reply) => {
+                        if args.first().is_some_and(|arg| arg == "diagnostics") {
+                            if let Some(diagnostics) = reply.diagnostics {
+                                self.connector_panel.receive_live(diagnostics);
+                            } else {
+                                self.connector_panel
+                                    .error(reply.error.clone().unwrap_or_else(|| {
+                                        "Engine does not support connector diagnostics".into()
+                                    }));
+                            }
+                        }
                         if reply.ok && args.first().is_some_and(|arg| arg == "settings") {
                             self.settings_dirty = false;
                             self.ripple_colors_dirty = false;
@@ -611,6 +644,9 @@ impl Controller {
                         }
                     }
                     Err(error) => {
+                        if args.first().is_some_and(|arg| arg == "diagnostics") {
+                            self.connector_panel.error(error.clone());
+                        }
                         self.connected = false;
                         self.message = error;
                     }
@@ -1025,6 +1061,12 @@ impl Controller {
                     }
                 });
                 ui.add_space(4.0);
+                if let Some(request) = self.connector_panel.show(ui, self.connected, self.pending) {
+                    match request {
+                        connectors::Request::Refresh => self.control(&["diagnostics"]),
+                        connectors::Request::Preview(args) => self.dispatch(Action::DiagnosticsPreview(args)),
+                    }
+                }
                 ui.label(egui::RichText::new(if self.dev_supervised { "Development session · save source to rebuild · Ctrl-C stops owned processes" } else { "Pause returns control to your keyboard. Closing this window keeps your lighting running." }).small().color(MUTED));
             });
         });
@@ -1091,6 +1133,64 @@ fn application_icon(bundled_app: bool) -> egui::IconData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connector_preview_uses_worker_arguments_without_engine_control_or_shell() {
+        let backend = Backend {
+            directory: "/bundle".into(),
+            state_dir: Some("/private/state".into()),
+        };
+        let action = Action::DiagnosticsPreview(vec![
+            "preview".into(),
+            "--config".into(),
+            "/tmp/profile with spaces.toml".into(),
+        ]);
+        let command = backend.command(&action);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "diagnostics",
+                "preview",
+                "--config",
+                "/tmp/profile with spaces.toml"
+            ]
+        );
+        let (mut app, incoming) = controller_fixture();
+        app.dispatch(action.clone());
+        assert!(matches!(
+            incoming.try_recv(),
+            Ok(Action::DiagnosticsPreview(_))
+        ));
+        let (outgoing, replies) = mpsc::channel();
+        app.replies = replies;
+        outgoing
+            .send(Completion {
+                action,
+                result: Err("invalid preview fixture".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(
+            app.connected,
+            "offline preview errors must not disconnect the engine"
+        );
+        assert!(!app.pending);
+    }
+
+    #[test]
+    fn connector_report_is_optional_and_status_parsing_stays_compatible() {
+        let old = parse_reply(format!(r#"{{"ok":true,"status":{STATUS}}}"#).as_bytes()).unwrap();
+        assert!(old.diagnostics.is_none());
+        let report = parse_reply(format!(r#"{{"ok":true,"status":{STATUS},"diagnostics":{{"schema_version":1,"lighting_applied":false}}}}"#).as_bytes()).unwrap();
+        assert_eq!(report.diagnostics.unwrap()["lighting_applied"], false);
+        let (mut app, _) = controller_fixture();
+        let (outgoing, replies) = mpsc::channel();
+        app.replies = replies;
+        outgoing.send(Completion { action:Action::Control(vec!["diagnostics".into()]),
+            result:Ok(format!(r#"{{"ok":true,"status":{STATUS},"diagnostics":{{"schema_version":1,"lighting_applied":false,"instances":[],"rules":[]}}}}"#)) }).unwrap();
+        app.receive();
+        assert!(app.connected);
+    }
 
     #[test]
     fn application_icon_preserves_bundle_art_and_has_transparent_margins() {
@@ -1214,6 +1314,7 @@ mod tests {
             dev_supervised: false,
             dev_simulation: false,
             keyboard_preview: gui_preview::KeyboardPreview::default(),
+            connector_panel: connectors::Panel::default(),
         };
         (app, incoming)
     }
@@ -1786,6 +1887,7 @@ mod tests {
             dev_supervised: false,
             dev_simulation: false,
             keyboard_preview: gui_preview::KeyboardPreview::default(),
+            connector_panel: connectors::Panel::default(),
         };
         app.ripple_colors = RippleColors {
             enabled: true,

@@ -37,6 +37,8 @@ pub struct ControlOptions {
 #[derive(Debug, Subcommand)]
 enum ControlCommand {
     Status,
+    /// Read-only source freshness and actual/potential rule visibility. Never resumes lighting.
+    Diagnostics,
     Pause,
     Resume,
     Stop,
@@ -78,6 +80,7 @@ struct Request {
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 enum Action {
     Status,
+    Diagnostics,
     Pause,
     Resume,
     Stop,
@@ -123,6 +126,8 @@ struct Response {
     ok: bool,
     error: Option<String>,
     status: Status,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<serde_json::Value>,
 }
 
 fn parse_hex_color(value: &str) -> Result<[u8; 3], String> {
@@ -291,6 +296,41 @@ struct Runtime {
     healthy_since: Instant,
 }
 impl Runtime {
+    fn diagnostics(&self) -> Result<serde_json::Value, Error> {
+        let observation = self.sources.observe(0)?;
+        if let Some(active) = &self.active {
+            let (rules, layout) = active.session.automation_diagnostics(&*active.signal);
+            return Ok(crate::diagnostics::report(
+                &observation,
+                rules,
+                "live",
+                true,
+                layout,
+            ));
+        }
+        // Paused/retrying/error: explain persistent matches without reviving events.
+        let mut runtime =
+            underglow::automation::AutomationRuntime::new(self.config.automation.clone())?;
+        runtime.baseline(&observation.snapshot, observation.now);
+        let info = underglow::device::DeviceInfo::synthetic_80he();
+        let layout = underglow::layout::KeyboardLayout::for_device(&info);
+        let ctx = underglow::render::RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: self.config.brightness,
+            palette: self.config.palette,
+            tick: 0,
+            animation_seconds: 0.0,
+        };
+        Ok(crate::diagnostics::report(
+            &observation,
+            runtime.diagnostics(&ctx),
+            "potential",
+            false,
+            layout.name,
+        ))
+    }
+
     fn status(&self) -> Status {
         let selected = self.config.signal_config();
         let mode = if selected.kind == crate::signals::SignalKind::StaticEffect {
@@ -384,7 +424,7 @@ impl Runtime {
     }
     fn action(&mut self, action: Action) -> ProgramResult {
         match action {
-            Action::Status => {}
+            Action::Status | Action::Diagnostics => {}
             Action::Pause | Action::Stop => self.pause()?,
             Action::Resume => {
                 if crate::sdk::hardware_disabled() {
@@ -610,6 +650,7 @@ pub fn run(
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(error.into()),
             };
+            let mut diagnostics = None;
             let result = (|| -> ProgramResult {
                 stream.set_read_timeout(Some(Duration::from_millis(500)))?;
                 stream.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -623,12 +664,16 @@ pub fn run(
                     return Err("unsupported protocol version".into());
                 }
                 stop = matches!(request.action, Action::Stop);
+                if matches!(request.action, Action::Diagnostics) {
+                    diagnostics = Some(runtime.diagnostics()?);
+                }
                 runtime.action(request.action)
             })();
             let response = Response {
                 ok: result.is_ok(),
                 error: result.err().map(|e| e.to_string()),
                 status: runtime.status(),
+                diagnostics,
             };
             // A disconnected UI cannot terminate the engine or undo an applied operation.
             let _ = serde_json::to_writer(&mut stream, &response);
@@ -648,6 +693,7 @@ pub fn control(options: ControlOptions) -> ProgramResult {
         let dir = options.state_dir.unwrap_or(ownership::state_dir()?);
         let action = match options.command {
             ControlCommand::Status => Action::Status,
+            ControlCommand::Diagnostics => Action::Diagnostics,
             ControlCommand::Pause => Action::Pause,
             ControlCommand::Resume => Action::Resume,
             ControlCommand::Stop => Action::Stop,

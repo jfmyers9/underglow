@@ -58,7 +58,6 @@ pub trait SignalProgram {
         (self.render(ctx), Vec::new())
     }
     // Engine diagnostics consumes this optional hook; rendering does not.
-    #[allow(dead_code)]
     fn automation_diagnostics(
         &self,
         _ctx: &RenderContext<'_>,
