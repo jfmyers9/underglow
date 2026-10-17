@@ -3,6 +3,7 @@ pub mod animation;
 pub mod catalog;
 pub mod device;
 pub mod effects;
+pub mod external;
 pub mod focus;
 pub mod layout;
 pub mod reactive;
