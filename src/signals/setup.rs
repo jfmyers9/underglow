@@ -149,6 +149,13 @@ impl SignalProgram for SetupProgram {
         (self.render(ctx), Vec::new())
     }
 
+    fn automation_diagnostics(
+        &self,
+        ctx: &RenderContext<'_>,
+    ) -> Vec<underglow::automation::RuleDiagnostic> {
+        self.runtime.diagnostics(ctx)
+    }
+
     fn finished(&self) -> bool {
         false
     }

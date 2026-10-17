@@ -749,7 +749,16 @@ fn renamed_binary_reuses_legacy_default_state_and_lock_namespace() {
     };
     assert_eq!(status["status"]["brightness"], 73);
     assert_eq!(status["status"]["fps"], 9);
-    assert_eq!(status["status"]["mode"], "matrix");
+    assert_eq!(status["status"]["mode"], "setup");
+    let setup = command(&legacy)
+        .args(["control", "setup", "show"])
+        .output()
+        .unwrap();
+    let setup: serde_json::Value = serde_json::from_slice(&setup.stdout).unwrap();
+    assert_eq!(
+        setup["setup"]["document"]["layers"][0]["renderer"]["effect"],
+        "matrix"
+    );
     assert_eq!(status["status"]["state"], "paused");
     assert!(
         command(&legacy)
@@ -821,12 +830,23 @@ impl Mock {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+
+    fn canonical_mode(&self) -> String {
+        let setup = self.control(&["setup", "show"]);
+        let renderer = &setup["setup"]["document"]["layers"][0]["renderer"];
+        match renderer["kind"].as_str().unwrap() {
+            "effect" | "reactive" => renderer["effect"].as_str().unwrap().to_owned(),
+            "focus" => "focus-cockpit".into(),
+            kind => kind.to_owned(),
+        }
+    }
 }
 #[test]
 fn engine_paused_persistence_switching_and_single_writer() {
     let mock = Mock::new();
     let mut engine = mock.engine();
-    assert_eq!(mock.wait_state("paused")["status"]["mode"], "ripples");
+    assert_eq!(mock.wait_state("paused")["status"]["mode"], "setup");
+    assert_eq!(mock.canonical_mode(), "ripples");
     assert!(
         mock.calls().is_empty(),
         "starting paused must never open SDKs"
@@ -864,6 +884,9 @@ fn engine_paused_persistence_switching_and_single_writer() {
     assert!(!mock.calls().contains("close\n"));
     assert_eq!(mock.control(&["select", "--preset", "comet"])["ok"], true);
     assert_eq!(mock.calls().matches("uninit\n").count(), 1);
+    assert_eq!(mock.wait_state("paused")["status"]["enabled"], false);
+    assert_eq!(mock.control(&["resume"])["ok"], true);
+    mock.wait_state("active");
     let opened = mock.calls().matches("init\n").count();
     let closed = mock.calls().matches("close\n").count();
     let changed = mock.control(&["settings", "--speed", "75", "--fps", "60"]);
@@ -888,7 +911,8 @@ fn engine_paused_persistence_switching_and_single_writer() {
     let calls = mock.calls();
     let mut restarted = mock.engine();
     let status = mock.wait_state("paused");
-    assert_eq!(status["status"]["mode"], "comet");
+    assert_eq!(status["status"]["mode"], "setup");
+    assert_eq!(mock.canonical_mode(), "comet");
     assert_eq!(status["status"]["speed"], 75);
     assert_eq!(status["status"]["fps"], 60);
     assert_eq!(
@@ -906,7 +930,9 @@ fn engine_sigterm_restores_and_retry_is_cancelled_by_pause() {
     let mock = Mock::new();
     let mut engine = mock.engine();
     assert_eq!(mock.control(&["resume"])["ok"], true);
-    fs::write(mock.dir.join("failure"), "read").unwrap();
+    // Canonical analog failure hides only its layer. Retry the engine writer's
+    // RGB failure instead; pause must still cancel that scheduled retry.
+    fs::write(mock.dir.join("failure"), "write").unwrap();
     let status = mock.wait_state("retrying");
     assert_eq!(status["status"]["retry_attempt"], 1);
     assert_eq!(mock.control(&["pause"])["ok"], true);
@@ -1013,7 +1039,7 @@ fn engine_does_not_retry_after_unacknowledged_cleanup() {
     let mock = Mock::new();
     let _engine = mock.engine();
     assert_eq!(mock.control(&["resume"])["ok"], true);
-    fs::write(mock.dir.join("failure"), "read-close").unwrap();
+    fs::write(mock.dir.join("failure"), "write-close").unwrap();
     let status = mock.wait_state("error");
     assert_eq!(status["status"]["retry_attempt"], 0);
     assert!(
@@ -1036,7 +1062,7 @@ const MOCK_C: &str = r#"
 #include <math.h>
 static bool fail(const char *name) {
   const char *path = getenv("MOCK_FAILURE_FILE");
-  if (path) { FILE *f = fopen(path, "r"); if (f) { char value[64] = {0}; fgets(value, sizeof(value), f); fclose(f); if (!strcmp(value, name) || (!strcmp(value, "read-close") && (!strcmp(name, "read") || !strcmp(name, "close")))) return true; } }
+  if (path) { FILE *f = fopen(path, "r"); if (f) { char value[64] = {0}; fgets(value, sizeof(value), f); fclose(f); if (!strcmp(value, name) || (!strcmp(value, "read-close") && (!strcmp(name, "read") || !strcmp(name, "close"))) || (!strcmp(value, "write-close") && (!strcmp(name, "write") || !strcmp(name, "close")))) return true; } }
   const char *s = getenv("MOCK_FAILURE"); return s && !strcmp(s, name);
 }
 static void log_call(const char *name) { FILE *f = fopen(getenv("MOCK_LOG"), "a"); if (f) { fprintf(f, "%s\n", name); fclose(f); } }
@@ -1330,7 +1356,8 @@ fn all_new_presets_persist_paused_and_reactive_switches_release_input() {
     ] {
         let selected = mock.control(&["select", "--preset", mode]);
         assert_eq!(selected["ok"], true, "{selected}");
-        assert_eq!(selected["status"]["mode"], mode);
+        assert_eq!(selected["status"]["mode"], "setup");
+        assert_eq!(mock.canonical_mode(), mode);
         assert_eq!(selected["status"]["brightness"], 255);
         let mut settings = vec![
             "settings",
@@ -1349,7 +1376,8 @@ fn all_new_presets_persist_paused_and_reactive_switches_release_input() {
         assert!(engine.0.wait().unwrap().success());
         engine = mock.engine();
         let status = mock.wait_state("paused")["status"].clone();
-        assert_eq!(status["mode"], mode);
+        assert_eq!(status["mode"], "setup");
+        assert_eq!(mock.canonical_mode(), mode);
         assert_eq!(status["brightness"], 73);
         assert_eq!(status["fps"], 9);
         assert_eq!(status["palette"], "ocean");
@@ -1391,6 +1419,8 @@ fn all_new_presets_persist_paused_and_reactive_switches_release_input() {
             "switching from {mode}: {switched}; calls: {}",
             mock.calls()
         );
+        mock.wait_state("paused");
+        assert_eq!(mock.control(&["resume"])["ok"], true);
         mock.wait_state("active");
         assert_eq!(
             counts(),

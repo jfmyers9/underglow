@@ -92,6 +92,9 @@ impl SignalProgram for ExternalRulesProgram {
     }
 
     fn automation_diagnostics(&self, ctx: &RenderContext<'_>) -> Vec<RuleDiagnostic> {
+        // Migration retains dormant scene/group definitions; their wrapper must
+        // not hide canonical diagnostics when no outer rules remain.
+        let inherited_diagnostics = self.base.automation_diagnostics(ctx);
         let (_, inherited) = self.base.composition(ctx);
         let mut index = inherited.len();
         let (_, layers) = self.composition(ctx);
@@ -107,7 +110,9 @@ impl SignalProgram for ExternalRulesProgram {
                 index += 1;
             }
         }
-        diagnostics
+        let mut combined = inherited_diagnostics;
+        combined.extend(diagnostics);
+        combined
     }
 
     fn finished(&self) -> bool {

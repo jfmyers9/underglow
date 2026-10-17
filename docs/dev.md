@@ -16,10 +16,12 @@ processes or delete their locks.
 
 The default is **simulation**: SDK access is blocked. Fresh development state
 starts with **Matrix + Pi**. Existing state keeps its selected animation,
-brightness, speed, FPS, colors, and custom rules; missing Pi rules are added to
-the saved development snapshot, not to your source TOML files. An explicit Pi
-rule configuration is left unchanged. Selecting another effect in the
-development GUI keeps the default Pi integration available.
+brightness, speed, FPS, colors, and custom rules. Supported legacy snapshots
+migrate once to canonical layers; a missing Pi starter is added only during that
+one-time development upgrade, never on effect selection or rebuild. Deleting Pi
+stays deleted after restart. Source TOML files are never rewritten. Configurations
+that cannot migrate without losing behavior remain unchanged in explicit legacy
+compatibility mode with a warning. See [setup migration](setup-migration.md).
 
 In another terminal, from this checkout, just run:
 

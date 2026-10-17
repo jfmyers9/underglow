@@ -185,6 +185,32 @@ struct Saved {
     schema_version: u32,
     enabled: bool,
     config: String,
+    #[serde(default)]
+    dev_starter_migrated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    migration_warning: Option<String>,
+}
+
+/// Only private snapshots migrate. Source paths and TOML files are never written.
+fn migrate_saved(saved: &mut Saved, development: bool) -> ProgramResult {
+    let before: AppConfig = toml::from_str(&saved.config)?;
+    if development && !saved.dev_starter_migrated {
+        saved.config = crate::dev_setup::config(&saved.config)?;
+        // Compatibility mode has no setup marker; remember the attempted upgrade
+        // privately rather than adding unknown fields to application TOML.
+        saved.dev_starter_migrated = true;
+    }
+    let outcome = crate::migration::migrate(&saved.config)?;
+    saved.config = outcome.config;
+    saved.migration_warning = outcome.warning;
+    let after: AppConfig = toml::from_str(&saved.config)?;
+    if before.setup.is_none() && after.setup.is_some() {
+        saved.enabled = false;
+    }
+    if let Some(warning) = &saved.migration_warning {
+        eprintln!("warning: {warning}");
+    }
+    Ok(())
 }
 #[derive(Serialize)]
 struct Status {
@@ -200,6 +226,7 @@ struct Status {
     ripple_color: Option<[u8; 3]>,
     last_error: Option<String>,
     retry_attempt: u32,
+    migration_warning: Option<String>,
 }
 #[derive(Serialize)]
 struct Response {
@@ -470,24 +497,67 @@ impl LivePreview {
                     .map(|_| [key.coord.row, key.coord.column])
             })
             .collect();
+        let mut conditional_keys = overlay_keys.clone();
         let base = if let Some(setup) = &mut self.setup {
             setup.preview_tick_at(
                 self.tick,
                 now.saturating_sub(self.previous_preview).as_secs_f32(),
             );
-            setup.render(&ctx, now.saturating_sub(self.started))
+            let contributions = setup.composition(&ctx, now.saturating_sub(self.started));
+            conditional_keys = layout
+                .keys()
+                .iter()
+                .filter(|key| {
+                    contributions.iter().any(|layer| {
+                        config
+                            .setup
+                            .as_ref()
+                            .and_then(|document| document.layers.get(layer.priority as usize))
+                            .is_some_and(|definition| {
+                                setup.selected_appearance(&definition.id).is_some_and(
+                                    |appearance| {
+                                        !matches!(
+                                            appearance.activation,
+                                            underglow::setup::Activation::Always {}
+                                        )
+                                    },
+                                )
+                            })
+                            && layer.mask.contains(key)
+                    })
+                })
+                .map(|key| [key.coord.row, key.coord.column])
+                .collect();
+            underglow::compositor::compose(
+                underglow::render::Frame::black(),
+                &layout,
+                &contributions,
+                now,
+            )
         } else {
             effect.render(&ctx)
         };
         self.tick = self.tick.wrapping_add(1);
         self.previous_preview = now;
         let frame = underglow::compositor::compose(base, &layout, &layers, now);
+        // A canonical stack owns the entire frame, including uncovered black.
+        // Keep conditional targets separate for lifecycle/debugging consumers.
+        let overlay_keys = if self.setup.is_some() {
+            layout
+                .keys()
+                .iter()
+                .map(|key| [key.coord.row, key.coord.column])
+                .collect()
+        } else {
+            overlay_keys
+        };
         serde_json::json!({
             "schema_version": 1,
             "kind": "simulated-live-sources",
             "layout": layout.name,
             "rgb": frame.as_bytes(),
             "overlay_keys": overlay_keys,
+            "conditional_keys": conditional_keys,
             "base_effect": if self.setup.is_some() { "setup".to_string() } else { effect.to_string() },
         })
     }
@@ -592,6 +662,7 @@ impl Runtime {
             .observe(self.preview.automation.event_cursor())?;
         let candidate = Saved {
             config,
+            migration_warning: None,
             ..self.saved.clone()
         };
         save(&self.dir, &candidate)?;
@@ -656,9 +727,16 @@ impl Runtime {
             tick: 0,
             animation_seconds: 0.0,
         };
+        let rules = if let Some(document) = &self.config.setup {
+            let mut setup = CompiledSetup::compile(document)?;
+            setup.baseline(&observation.snapshot, observation.now);
+            setup.diagnostics(&ctx)
+        } else {
+            runtime.diagnostics(&ctx)
+        };
         Ok(crate::diagnostics::report(
             &observation,
-            runtime.diagnostics(&ctx),
+            rules,
             "potential",
             false,
             layout.name,
@@ -700,6 +778,7 @@ impl Runtime {
             ripple_color: selected.ripples.ripple_color,
             last_error: self.last_error.clone(),
             retry_attempt: self.retry_attempt,
+            migration_warning: self.saved.migration_warning.clone(),
         }
     }
     fn release(&mut self) -> ProgramResult {
@@ -798,10 +877,17 @@ impl Runtime {
                 {
                     return Err("dev-setup requires a supervised, paused development engine".into());
                 }
-                let config = crate::dev_setup::config(&self.saved.config)?;
-                if config != self.saved.config {
-                    self.action(Action::Select { config })?;
+                if self.saved.dev_starter_migrated {
+                    return Ok(());
                 }
+                let mut candidate = self.saved.clone();
+                migrate_saved(&mut candidate, true)?;
+                let parsed = validate(&candidate.config)?;
+                let preview = LivePreview::new(&parsed, &self.sources.observe(0)?)?;
+                save(&self.dir, &candidate)?;
+                self.saved = candidate;
+                self.config = parsed;
+                self.preview = preview;
             }
             Action::ConnectorEnable { ref id } | Action::ConnectorDisable { ref id } => {
                 let enabled = matches!(action, Action::ConnectorEnable { .. });
@@ -835,17 +921,14 @@ impl Runtime {
             Action::Select { config } => {
                 // Selecting visuals never installs/trusts/replaces local producers.
                 let config = crate::connection_store::visual_config(&config)?;
-                let config = if std::env::var("WOOTING_DEV_SUPERVISED").as_deref() == Ok("1") {
-                    crate::dev_setup::config(&config)?
-                } else {
-                    config
-                };
-                let parsed = validate(&config)?;
-                let preview = LivePreview::new(&parsed, &self.sources.observe(0)?)?;
-                let candidate = Saved {
+                let mut candidate = Saved {
                     config,
                     ..self.saved.clone()
                 };
+                // Selecting an effect/profile never implicitly reinjects Pi.
+                migrate_saved(&mut candidate, false)?;
+                let parsed = validate(&candidate.config)?;
+                let preview = LivePreview::new(&parsed, &self.sources.observe(0)?)?;
                 save(&self.dir, &candidate)?;
                 let cleanup = self.release();
                 self.saved = candidate;
@@ -978,6 +1061,8 @@ pub fn run(
         Saved {
             schema_version: 1,
             enabled: false,
+            dev_starter_migrated: false,
+            migration_warning: None,
             config: options
                 .config
                 .as_deref()
@@ -989,6 +1074,10 @@ pub fn run(
     if saved.schema_version != 1 {
         return Err("unsupported saved state version".into());
     }
+    migrate_saved(
+        &mut saved,
+        std::env::var("WOOTING_DEV_SUPERVISED").as_deref() == Ok("1"),
+    )?;
     let legacy = validate(&saved.config)?;
     let connections = crate::connection_store::load_or_migrate(&dir, &legacy.connectors)?;
     saved.config = crate::connection_store::visual_config(&saved.config)?;
@@ -1531,6 +1620,8 @@ zones = ['function']
                 schema_version: 1,
                 enabled: false,
                 config: text,
+                dev_starter_migrated: false,
+                migration_warning: None,
             },
             dir,
             sdk: None,

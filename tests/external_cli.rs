@@ -173,6 +173,19 @@ __attribute__((constructor)) static void loaded(void) {
         self.cli(&["external", "inspect"])
     }
 
+    fn control(&self, action: Value) -> Value {
+        let mut stream = UnixStream::connect(self.dir.join("runtime/control.sock")).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut action = action;
+        action["schema_version"] = json!(1);
+        writeln!(stream, "{action}").unwrap();
+        let response = read_response(stream);
+        assert_eq!(response["ok"], true, "{response}");
+        response
+    }
+
     fn assert_paused_and_no_sdk(&self) {
         let status = self.cli(&["control", "status"]);
         assert_eq!(status["status"]["state"], "paused");
@@ -342,12 +355,15 @@ fn paused_live_preview_reads_real_external_sources_without_sdk_or_providers() {
 }
 
 #[test]
-fn dev_setup_is_guarded_preserves_visuals_and_keeps_pi_when_effect_changes() {
+fn dev_setup_is_once_only_and_pi_deletion_survives_edits_selection_and_restart() {
     let mut h = Harness::new();
     h.start();
     let rejected = h.command().args(["control", "dev-setup"]).output().unwrap();
     assert!(!rejected.status.success());
     h.stop();
+    fs::write(h.dir.join("runtime/state.json"), json!({
+        "schema_version":1, "enabled":false, "config":"effect='breath'\nbrightness=73\nspeed=65\n"
+    }).to_string()).unwrap();
     h.start_mode(true);
     let before = h.cli(&["control", "status"]);
     h.cli(&["control", "dev-setup"]);
@@ -355,22 +371,138 @@ fn dev_setup_is_guarded_preserves_visuals_and_keeps_pi_when_effect_changes() {
     assert_eq!(before["status"], after["status"]);
     h.state("a", "1", "5000");
     assert!(
-        !h.cli(&["control", "preview"])["preview"]["overlay_keys"]
+        !h.cli(&["control", "preview"])["preview"]["conditional_keys"]
             .as_array()
             .unwrap()
             .is_empty()
     );
+    let setup = h.cli(&["control", "setup", "show"])["setup"].clone();
+    let operations: Vec<_> = setup["document"]["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|layer| layer["activation"]["source"] == "pi")
+        .map(|layer| json!({"op":"remove","id":layer["id"]}))
+        .collect();
+    assert_eq!(operations.len(), 3);
+    h.control(json!({"action":"setup-edit","expected_revision":0,"edits":operations}));
+    h.control(json!({"action":"setup-edit","expected_revision":1,"edits":[{
+        "op":"update","id":"legacy-base","patch":{"renderer":{"kind":"effect","effect":"aurora","palette":"ocean","speed":100}}
+    }]}));
+    h.cli(&["control", "dev-setup"]);
+    assert_eq!(
+        h.cli(&["control", "setup", "show"])["setup"]["document"]["layers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     h.cli(&["control", "select", "--preset", "aurora"]);
     let changed = h.cli(&["control", "preview"]);
-    assert_eq!(changed["status"]["mode"], "aurora");
+    assert_eq!(changed["status"]["mode"], "setup");
+    assert_eq!(
+        h.cli(&["control", "setup", "show"])["setup"]["document"]["layers"][0]["renderer"]["effect"],
+        "aurora"
+    );
     assert!(
-        !changed["preview"]["overlay_keys"]
+        changed["preview"]["conditional_keys"]
             .as_array()
             .unwrap()
             .is_empty()
     );
     h.assert_paused_and_no_sdk();
     h.stop();
+    h.start_mode(true);
+    h.cli(&["control", "dev-setup"]);
+    assert_eq!(
+        h.cli(&["control", "setup", "show"])["setup"]["document"]["layers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    h.assert_paused_and_no_sdk();
+    h.stop();
+}
+
+#[test]
+fn matrix_pi_import_is_canonical_idempotent_and_never_rewrites_source_toml() {
+    let mut h = Harness::new();
+    h.start();
+    let original = include_str!("../examples/matrix-pi.toml");
+    let source = h.dir.join("source.toml");
+    fs::write(&source, original).unwrap();
+    h.cli(&["control", "select", "--config", source.to_str().unwrap()]);
+    let setup = h.cli(&["control", "setup", "show"])["setup"].clone();
+    assert_eq!(setup["revision"], 0);
+    assert_eq!(setup["document"]["layers"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        setup["document"]["layers"][0]["renderer"]["effect"],
+        "matrix"
+    );
+    h.state("session", "1", "5000");
+    let preview = h.cli(&["control", "preview"]);
+    assert!(
+        !preview["preview"]["conditional_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let saved: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("runtime/state.json")).unwrap()).unwrap();
+    let migrated: toml::Value = toml::from_str(saved["config"].as_str().unwrap()).unwrap();
+    assert!(migrated["automation"].get("rules").is_none());
+    assert_eq!(fs::read_to_string(&source).unwrap(), original);
+    h.assert_paused_and_no_sdk();
+    h.stop();
+    h.start_mode(true);
+    h.cli(&["control", "dev-setup"]);
+    assert_eq!(h.cli(&["control", "setup", "show"])["setup"], setup);
+    let restarted: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("runtime/state.json")).unwrap()).unwrap();
+    assert_eq!(saved["config"], restarted["config"]);
+    assert_eq!(fs::read_to_string(&source).unwrap(), original);
+    h.assert_paused_and_no_sdk();
+    h.stop();
+}
+
+#[test]
+fn incompatible_snapshot_retains_exact_settings_and_private_one_time_marker() {
+    let mut h = Harness::new();
+    h.start();
+    h.stop();
+    let marker = h.dir.join("provider-ran");
+    let original = format!(
+        "# deliberate formatting retained\neffect='matrix'\nbrightness=73\nspeed=65\n[signal]\nkind='command-pulse'\ncommand=['touch','{}']\n",
+        marker.display()
+    );
+    fs::write(
+        h.dir.join("runtime/state.json"),
+        json!({"schema_version":1,"enabled":true,"config":original}).to_string(),
+    )
+    .unwrap();
+    for _restart in 0..2 {
+        h.start_mode(true);
+        h.cli(&["control", "dev-setup"]);
+        let status = h.cli(&["control", "status"]);
+        assert!(
+            status["status"]["migration_warning"]
+                .as_str()
+                .unwrap()
+                .contains("compatibility mode")
+        );
+        assert_eq!(
+            h.cli(&["control", "setup", "show"])["setup"]["document"],
+            Value::Null
+        );
+        let saved: Value =
+            serde_json::from_slice(&fs::read(h.dir.join("runtime/state.json")).unwrap()).unwrap();
+        assert_eq!(saved["config"], original);
+        assert_eq!(saved["dev_starter_migrated"], true);
+        assert!(!marker.exists());
+        h.assert_paused_and_no_sdk();
+        h.stop();
+    }
 }
 
 #[test]

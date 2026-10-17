@@ -335,6 +335,72 @@ impl CompiledSetup {
         (self.input_available || matches!(simulation, Simulation::None)).then_some(appearance)
     }
 
+    /// Read-only logical-layer diagnostics against the complete canonical stack.
+    /// Inactive conditions retain target coverage; black pixels are still opaque.
+    pub fn diagnostics(&self, ctx: &RenderContext<'_>) -> Vec<crate::automation::RuleDiagnostic> {
+        let contributions = self.composition(ctx, Duration::ZERO);
+        let base_conditions = self.conditions.diagnostics(ctx);
+        self.layers
+            .iter()
+            .enumerate()
+            .map(|(index, layer)| {
+                let definition = &layer.definition;
+                let appearance = self.selected_appearance(&definition.id);
+                let variant_conditions = layer.variant_conditions.diagnostics(ctx);
+                let selected_condition = appearance.and_then(|selected| {
+                    if let Some(id) = selected.variant_id {
+                        variant_conditions
+                            .iter()
+                            .find(|condition| condition.rule_id == id)
+                    } else {
+                        base_conditions
+                            .iter()
+                            .find(|condition| condition.rule_id == definition.id)
+                    }
+                });
+                let matched = if let Some(selected) = appearance {
+                    matches!(selected.activation, Activation::Always {})
+                        || selected_condition.is_some_and(|condition| condition.matched)
+                } else {
+                    base_conditions
+                        .iter()
+                        .filter(|condition| condition.rule_id == definition.id)
+                        .chain(variant_conditions.iter())
+                        .any(|condition| condition.matched)
+                };
+                let targeted_keys = ctx
+                    .layout
+                    .keys()
+                    .iter()
+                    .filter(|key| {
+                        matches!(definition.target, Target::Whole {})
+                            || layer.coordinates.contains(&key.coord)
+                            || layer.zones.contains(&key.zone)
+                    })
+                    .count();
+                let visible_keys = ctx
+                    .layout
+                    .keys()
+                    .iter()
+                    .filter(|key| {
+                        compositor::winning_layer(&contributions, key, Duration::ZERO)
+                            .is_some_and(|winner| contributions[winner].priority == index as i32)
+                    })
+                    .count();
+                crate::automation::RuleDiagnostic {
+                    rule_id: definition.id.clone(),
+                    scene: definition.name.clone(),
+                    matched,
+                    active: appearance.is_some(),
+                    priority: index as i32,
+                    expires: appearance.and_then(|selected| selected.expires),
+                    targeted_keys,
+                    visible_keys,
+                }
+            })
+            .collect()
+    }
+
     pub fn composition(
         &self,
         ctx: &RenderContext<'_>,

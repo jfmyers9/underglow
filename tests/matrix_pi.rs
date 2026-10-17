@@ -185,6 +185,19 @@ impl Drop for Session {
     }
 }
 fn rule<'a>(report: &'a Value, id: &str) -> &'a Value {
+    // Migration assigns stable canonical identities by legacy declaration index.
+    // Offline previews still evaluate the untouched legacy source document.
+    let id = if report["status"]["mode"] == "setup" {
+        match id {
+            "pi-present" => "legacy-rule-0",
+            "pi-working" => "legacy-rule-1",
+            "pi-finished" => "legacy-rule-2",
+            "ci-failed" => "legacy-rule-3",
+            other => other,
+        }
+    } else {
+        id
+    };
     report["diagnostics"]["rules"]
         .as_array()
         .unwrap()

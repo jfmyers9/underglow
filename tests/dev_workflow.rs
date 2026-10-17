@@ -183,6 +183,20 @@ impl Harness {
         toml::from_str(saved["config"].as_str().unwrap()).unwrap()
     }
 
+    fn edit(&self, edits: Vec<Value>, revision: u64) -> Value {
+        let mut stream =
+            std::os::unix::net::UnixStream::connect(self.state.join("control.sock")).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        writeln!(stream, "{}", json!({"schema_version":1,"action":"setup-edit","expected_revision":revision,"edits":edits})).unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["ok"], true, "{response}");
+        response
+    }
+
     fn preview_until(&self, predicate: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
@@ -214,7 +228,7 @@ impl Drop for Harness {
 }
 
 fn overlay_colors(value: &Value) -> Vec<[u64; 3]> {
-    value["preview"]["overlay_keys"]
+    value["preview"]["conditional_keys"]
         .as_array()
         .unwrap()
         .iter()
@@ -252,7 +266,10 @@ fn make_dev_discovers_pi_and_previews_lifecycle_without_resuming_hardware() {
     let mut h = Harness::start(false);
     let profile = h.profile();
     assert_eq!(profile["effect"].as_str(), Some("matrix"));
-    assert_eq!(profile["automation"]["rules"].as_array().unwrap().len(), 3);
+    let layers = profile["setup"]["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), 4);
+    assert_eq!(layers[0]["renderer"]["effect"].as_str(), Some("matrix"));
+    assert_eq!(layers[1]["activation"]["source"].as_str(), Some("pi"));
     let mut pi = h.pi();
     pi.action("session_start");
     h.preview_until(cyan);
@@ -296,12 +313,16 @@ fn make_dev_keeps_saved_animation_settings_while_adding_pi_rules() {
     assert_eq!(profile["effect"].as_str(), Some("breath"));
     assert_eq!(profile["brightness"].as_integer(), Some(73));
     assert_eq!(profile["speed"].as_integer(), Some(65));
-    assert_eq!(profile["automation"]["rules"].as_array().unwrap().len(), 3);
+    let layers = profile["setup"]["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), 4);
+    assert_eq!(layers[0]["renderer"]["effect"].as_str(), Some("breath"));
+    assert_eq!(layers[0]["renderer"]["speed"].as_integer(), Some(65));
+    assert_eq!(layers[0]["brightness"].as_integer(), Some(255));
     let mut pi = h.pi();
     pi.action("session_start");
     pi.action("agent_start");
     let preview = h.preview_until(blue);
-    assert_eq!(preview["preview"]["base_effect"], "breath");
+    assert_eq!(preview["preview"]["base_effect"], "setup");
     pi.action("session_shutdown");
     h.preview_until(|value| overlay_colors(value).is_empty());
     // A producer that disappears without remove must not leave an indicator stuck.
@@ -322,4 +343,43 @@ fn make_dev_keeps_saved_animation_settings_while_adding_pi_rules() {
     ]);
     h.preview_until(cyan);
     h.preview_until(|value| overlay_colors(value).is_empty());
+}
+
+#[test]
+fn make_dev_does_not_reinject_deleted_pi_after_gui_and_engine_rebuilds() {
+    let mut h = Harness::start(true);
+    let document = h.cli(&["control", "setup", "show"])["setup"]["document"].clone();
+    let edits: Vec<_> = document["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|layer| layer["activation"]["source"] == "pi")
+        .map(|layer| json!({"op":"remove","id":layer["id"]}))
+        .collect();
+    assert_eq!(edits.len(), 3);
+    let edited = h.edit(edits, 0)["setup"]["document"].clone();
+    assert_eq!(edited["layers"].as_array().unwrap().len(), 1);
+    for rebuild in ["gui", "engine", "engine"] {
+        h.supervisor.action(rebuild);
+        assert_eq!(
+            h.cli(&["control", "setup", "show"])["setup"]["document"],
+            edited
+        );
+        assert_eq!(h.profile()["brightness"].as_integer(), Some(73));
+        assert!(!h.state.join("hardware.lock").exists());
+    }
+    let mut pi = h.pi();
+    pi.action("session_start");
+    pi.action("agent_start");
+    h.preview_until(|value| {
+        value["preview"]["conditional_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    });
+    pi.action("session_shutdown");
+    assert_eq!(
+        fs::read_to_string(h.checkout.join("examples/matrix-pi.toml")).unwrap(),
+        include_str!("../examples/matrix-pi.toml")
+    );
 }

@@ -182,8 +182,10 @@ trusted = true
 }
 
 #[test]
-fn legacy_show_does_not_migrate_and_replacement_is_validated_before_save() {
-    let harness = Harness::new("effect = 'matrix'\nbrightness = 99\n");
+fn compatibility_show_is_read_only_and_replacement_is_validated_before_save() {
+    let harness = Harness::new(
+        "effect = 'matrix'\nbrightness = 99\n[signal]\nkind='command-pulse'\ncommand=['never-run']\n",
+    );
     let before = harness.disk();
     assert_eq!(harness.show(), json!({"revision":0,"document":null}));
     assert_eq!(harness.disk(), before);

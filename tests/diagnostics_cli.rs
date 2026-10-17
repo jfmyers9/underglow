@@ -193,9 +193,32 @@ fn paused_diagnostics_report_leases_and_potential_rules_without_replaying_events
     assert_eq!(diag["instances"][0]["instance"], "real");
     assert_eq!(diag["instances"][0]["available"], true);
     assert!(diag["instances"][0]["lease_remaining_ms"].as_u64().unwrap() > 0);
-    assert_eq!(diag["rules"][1]["matched"], true);
+    let rule = |diagnostics: &Value, id: &str| {
+        diagnostics["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["rule_id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let working = rule(diag, "legacy-rule-1");
+    let finished = rule(diag, "legacy-rule-2");
+    assert_eq!(working["matched"], true);
+    assert_eq!(working["active"], true);
+    let info = underglow::device::DeviceInfo::synthetic_80he();
+    let layout = underglow::layout::KeyboardLayout::for_device(&info);
+    let function_keys = layout
+        .keys()
+        .iter()
+        .filter(|key| key.zone == underglow::layout::Zone::Function)
+        .count();
+    assert_eq!(working["targeted_keys"], function_keys);
+    assert_eq!(working["visible_keys"], function_keys);
+    assert_eq!(finished["targeted_keys"], function_keys);
+    assert_eq!(finished["visible_keys"], 0);
     assert_eq!(
-        diag["rules"][2]["active"], false,
+        finished["active"], false,
         "paused diagnostics must not replay old events"
     );
     h.preview(&[]);
@@ -225,7 +248,10 @@ fn paused_diagnostics_report_leases_and_potential_rules_without_replaying_events
             .unwrap()
             .is_empty()
     );
-    assert_eq!(removed["diagnostics"]["rules"][1]["matched"], false);
+    assert_eq!(
+        rule(&removed["diagnostics"], "legacy-rule-1")["matched"],
+        false
+    );
     h.cli(&["control", "stop"]);
     assert!(h.child.take().unwrap().wait().unwrap().success());
 }

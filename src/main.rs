@@ -7,6 +7,7 @@ mod engine;
 mod external_rules;
 mod ingress;
 mod managed_connectors;
+mod migration;
 mod notifications;
 mod ownership;
 mod preview;
