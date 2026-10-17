@@ -1,4 +1,5 @@
 mod config;
+mod dev_setup;
 mod diagnostics;
 mod doctor;
 mod engine;

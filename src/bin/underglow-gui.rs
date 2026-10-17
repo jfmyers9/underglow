@@ -5,6 +5,8 @@ use eframe::egui;
 mod brand;
 #[path = "gui/connectors.rs"]
 mod connectors;
+#[path = "gui/devpreview.rs"]
+mod devpreview;
 #[path = "gui/preview.rs"]
 mod gui_preview;
 use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
@@ -492,6 +494,7 @@ struct Controller {
     dev_supervised: bool,
     dev_simulation: bool,
     keyboard_preview: gui_preview::KeyboardPreview,
+    live_preview: Option<devpreview::Worker>,
     connector_panel: connectors::Panel,
 }
 
@@ -504,6 +507,16 @@ impl Controller {
         let repaint = context.clone();
         let custom_state = backend.state_dir.is_some();
         let bundled_app = backend.bundled_app();
+        let live_preview = if std::env::var("WOOTING_DEV_SUPERVISED").as_deref() == Ok("1")
+            && std::env::var("WOOTING_DEV_SIMULATION").as_deref() == Ok("1")
+        {
+            backend
+                .state_dir
+                .clone()
+                .map(|dir| devpreview::Worker::start(dir, context.clone()))
+        } else {
+            None
+        };
         thread::spawn(move || {
             while let Ok(action) = incoming.recv() {
                 let result = backend.execute(&action);
@@ -549,6 +562,7 @@ impl Controller {
             dev_supervised: std::env::var_os("WOOTING_DEV_SUPERVISED").is_some(),
             dev_simulation: std::env::var_os("WOOTING_DEV_SIMULATION").is_some(),
             keyboard_preview: gui_preview::KeyboardPreview::default(),
+            live_preview,
             connector_panel: connectors::Panel::default(),
         }
     }
@@ -1042,6 +1056,21 @@ impl Controller {
                         });
                     });
                     let ripple_colors = self.ripple_preview_colors();
+                    let live = self.live_preview.as_ref().map(|worker| worker.latest());
+                    self.keyboard_preview.live = if !self.settings_dirty {
+                        live.as_ref().and_then(|result| result.as_ref().ok()).filter(|sample| {
+                            sample.mode == self.preset && sample.brightness == self.brightness
+                                && sample.palette == self.palette && sample.speed == self.speed
+                        }).cloned()
+                    } else { None };
+                    if let Some(result) = &live {
+                        ui.small(if self.settings_dirty {
+                            "Draft simulation · apply or discard changes to restore live-source overlays".to_owned()
+                        } else { match result {
+                            Ok(_) => "Simulated keyboard + live connector sources · not device feedback".to_owned(),
+                            Err(error) => format!("Simulation only · {error}"),
+                        }});
+                    }
                     gui_preview::keyboard(ui, &self.preset, &self.palette, self.brightness, ripple_colors, gui_preview::PreviewTiming { fps: self.fps, speed: self.speed }, &mut self.keyboard_preview);
                     ui.label(egui::RichText::new(catalog::find(&self.preset).map_or("This custom mode has no registered hardware-free preview.", |v| v.preview_description())).small().color(MUTED));
                 });
@@ -1314,9 +1343,97 @@ mod tests {
             dev_supervised: false,
             dev_simulation: false,
             keyboard_preview: gui_preview::KeyboardPreview::default(),
+            live_preview: None,
             connector_panel: connectors::Panel::default(),
         };
         (app, incoming)
+    }
+
+    #[test]
+    fn live_sources_paint_main_preview_without_clobbering_drafts_or_synthetic_controls() {
+        let info = underglow::device::DeviceInfo::synthetic_80he();
+        let layout = underglow::layout::KeyboardLayout::for_device(&info);
+        let keys: Vec<_> = layout
+            .keys()
+            .iter()
+            .filter(|key| key.zone == underglow::layout::Zone::Function)
+            .map(|key| [key.coord.row, key.coord.column])
+            .collect();
+        let rgb: Vec<_> = (0..underglow::render::FRAME_BYTES)
+            .map(|index| [231, 17, 199][index % 3])
+            .collect();
+        for mode in ["matrix", "ripples", "heatmap"] {
+            let (mut app, requests) = controller_fixture();
+            app.preset = mode.into();
+            app.dev_supervised = true;
+            app.dev_simulation = true;
+            let value = serde_json::json!({"ok":true,"status":{
+                "schema_version":1,"state":"paused","enabled":false,"mode":mode,
+                "brightness":128,"palette":"ocean","fps":30,"speed":100,
+                "last_error":null,"retry_attempt":0},"preview":{
+                    "schema_version":1,"kind":"simulated-live-sources","layout":layout.name,
+                    "rgb":rgb,"overlay_keys":keys}});
+            app.status = Some(serde_json::from_value(value["status"].clone()).unwrap());
+            app.live_preview = Some(devpreview::Worker::fixture(
+                devpreview::parse(&serde_json::to_vec(&value).unwrap()).unwrap(),
+            ));
+            let context = egui::Context::default();
+            let render = |app: &mut Controller| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(940.0, 1800.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| app.show_lighting(ctx),
+                )
+            };
+            let _ = render(&mut app);
+            let output = render(&mut app);
+            assert!(app.keyboard_preview.live.is_some(), "{mode}");
+            let painted = output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgb(231,17,199))
+                })
+                .count();
+            assert_eq!(
+                painted,
+                keys.len(),
+                "{mode}: live strip must be on main keyboard"
+            );
+            let mut text = String::new();
+            for shape in &output.shapes {
+                painted_text(&shape.shape, &mut text);
+            }
+            assert!(text.contains("not device feedback"));
+            if mode != "matrix" {
+                assert!(
+                    text.contains("Auto demo"),
+                    "synthetic controls disappeared for {mode}"
+                );
+            }
+            app.settings_dirty = true;
+            app.brightness = 64;
+            let output = render(&mut app);
+            assert!(app.keyboard_preview.live.is_none());
+            assert_eq!(app.brightness, 64);
+            assert!(app.settings_dirty);
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgb(231,17,199))));
+            app.discard_settings();
+            let _ = render(&mut app);
+            assert_eq!(app.brightness, 128);
+            assert!(app.keyboard_preview.live.is_some());
+            assert!(
+                requests.try_recv().is_err(),
+                "preview must not dispatch engine controls"
+            );
+        }
     }
 
     #[test]
@@ -1887,6 +2004,7 @@ mod tests {
             dev_supervised: false,
             dev_simulation: false,
             keyboard_preview: gui_preview::KeyboardPreview::default(),
+            live_preview: None,
             connector_panel: connectors::Panel::default(),
         };
         app.ripple_colors = RippleColors {

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import signal
 import stat
@@ -159,6 +160,54 @@ class Supervisor:
         self.engine = self.gui = self.builder = None
         self.engine_generation = self.gui_generation = None
         self.applied = {}
+        self.discovery = self.runtime / 'current.json'
+        self.discovery_nonce = secrets.token_hex(16)
+
+    def publish_discovery(self):
+        """Publish only a ready, owned engine; readers never need shell exports."""
+        nonce = secrets.token_hex(16)
+        descriptor = {
+            'schema_version': 1,
+            'checkout': str(self.root.resolve()),
+            'state_dir': str(self.state.resolve()),
+            'socket': str(self.state.resolve() / 'events.sock'),
+            'mode': 'hardware' if self.hardware else 'simulation',
+            'supervisor_pid': os.getpid(),
+            'engine_pid': self.engine.pid,
+            'nonce': nonce,
+        }
+        temporary = self.runtime / f'.current-{nonce}.tmp'
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, 'w') as stream:
+                json.dump(descriptor, stream)
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.discovery)
+            self.discovery_nonce = nonce
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def clear_discovery(self):
+        """Do not unlink a descriptor replaced by a different supervisor."""
+        try:
+            fd = os.open(self.discovery, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return
+        try:
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                    raise RuntimeError('Development discovery must be a private owned file')
+                descriptor = json.loads(stream.read(4097))
+            if descriptor.get('nonce') == self.discovery_nonce:
+                # Same-user atomic replacement is possible; preserve a new inode.
+                current = self.discovery.lstat()
+                if (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino):
+                    self.discovery.unlink()
+        except (ValueError, AttributeError, FileNotFoundError):
+            pass
 
     def spawn(self, args, log=None):
         if log is None:
@@ -238,19 +287,28 @@ class Supervisor:
         stop(self.gui)
         self.gui = None
         if not only_gui:
+            self.clear_discovery()
             stop(self.engine)
             self.engine = None
             self.engine_generation = generation
             self.engine = self.spawn([str(generation / 'underglow'), 'engine',
-                                      '--state-dir', str(self.state), '--paused'], 'engine.log')
+                                      '--state-dir', str(self.state), '--paused',
+                                      '--config', str(self.root / 'examples/matrix-pi.toml')], 'engine.log')
             self.ready()
+            # Fresh state is seeded above. Existing state keeps its selected
+            # animation/settings; the engine atomically adds only missing Pi rules.
+            if not self.control('dev-setup'):
+                raise RuntimeError('Could not configure development Pi rules; inspect engine.log. '
+                                   'Saved selection was not replaced.')
+            self.publish_discovery()
         self.gui_generation = generation
         self.gui = self.spawn([str(generation / 'underglow-gui'), '--state-dir', str(self.state)],
                               'gui.log')
         self.applied = current
         self.prune()
         status = 'engine unchanged' if only_gui else 'paused'
-        print(f'Ready ({status}). Save source to rebuild; Ctrl-C stops owned processes.', flush=True)
+        print(f'Ready ({status}). Run pi in this checkout to connect automatically. '
+              'Save source to rebuild; Ctrl-C stops owned processes.', flush=True)
         return True
 
     def prune(self):
@@ -260,6 +318,10 @@ class Supervisor:
 
     def close(self):
         errors = []
+        try:
+            self.clear_discovery()
+        except (OSError, RuntimeError) as error:
+            errors.append(error)
         for name in ('builder', 'gui', 'engine'):
             try:
                 stop(getattr(self, name))

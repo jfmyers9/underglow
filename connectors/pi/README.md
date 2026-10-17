@@ -9,19 +9,36 @@ macOS or Linux, and Node 22.19+ as required by Pi. No npm dependencies or build 
 
 ## Load it
 
-From this repository, start a new Pi process:
+From this repository, start the development session and launch Pi in another
+terminal in the same checkout:
 
 ```sh
-pi --extension "$PWD/connectors/pi/index.ts"
+make dev
+# In another terminal, from this checkout:
+pi
 ```
 
-For automatic loading in future sessions, copy the **whole directory** (including
-`connector.mjs`, not just `index.ts`) to `~/.pi/agent/extensions/wooting/`, or add a
-directory symlink there. Only install extensions you trust: they run with your
-user's permissions. Do not load this connector twice in one Pi process.
+Pi auto-loads `.pi/extensions/underglow/index.ts` after the normal project-trust
+approval. There is no global install, path copying, environment export, or
+`--extension` argument. Already running Pi sessions need `/reload` once to load
+the new project extension. Pi may start before `make dev`; it reconnects when
+the development engine is ready. Use `make dev DEV_HARDWARE=1` for the real
+keyboard and explicitly resume lighting. Simulation uses the GUI preview only.
 
-The engine must already be running with external ingress enabled. Pi remains
-usable if it is stopped; the connector silently reconnects when it returns.
+### Outside this checkout
+
+To load the generic connector explicitly:
+
+```sh
+pi --extension /absolute/path/to/connectors/pi/index.ts
+```
+
+For automatic loading outside this project, copy the **whole directory**
+(including `connector.mjs`, not just `index.ts`) to
+`~/.pi/agent/extensions/wooting/`, or add a directory symlink there. Only install
+extensions you trust: they run with your user's permissions. No installer or
+development command changes that directory. The generic adapter uses the
+installed engine's normal discovery paths and silently retries if unavailable.
 
 ### Which engine?
 
@@ -29,27 +46,34 @@ Discovery, in order:
 
 1. `WOOTING_PI_SOCKET`: connector-only override for the exact socket path.
 2. `WOOTING_STATE_DIR`: engine state directory; append `events.sock`.
-3. macOS: `~/Library/Application Support/wooting-signals/runtime/events.sock`.
-4. Linux: `$XDG_STATE_HOME/wooting-signals/events.sock`, falling back to
+3. **Project-local adapter:** private checkout-specific `make dev` metadata,
+   dynamically following simulation/hardware mode and engine restarts. If dev
+   is inactive or the descriptor is invalid, **do not connect to any engine**.
+   This adapter never falls back to the installed engine.
+4. **Generic adapter only, macOS:**
+   `~/Library/Application Support/wooting-signals/runtime/events.sock`.
+5. **Generic adapter only, Linux:** `$XDG_STATE_HOME/wooting-signals/events.sock`, falling back to
    `~/.local/state/wooting-signals/events.sock`.
 
-For `make dev` simulation, copy the **state directory printed at startup** and
-launch Pi in a separate terminal with that directory:
+The development watcher publishes a private `current.json` under
+`/tmp/wsdev-UID-CHECKOUT_HASH/` only after its engine is ready and removes it
+before replacement/shutdown. Discovery checks the real checkout, expected mode
+directory/socket, live supervisor/engine PIDs, ownership, permissions, file type,
+and bounded descriptor size. A new engine nonce discards stale completion events
+and republishes only the current state, preserving the Pi instance identity.
 
-```sh
-WOOTING_STATE_DIR=/tmp/wsdev-UID-CHECKOUT/simulation \
-  pi --extension "$PWD/connectors/pi/index.ts"
-```
-
-Replace the placeholder path; it is not a literal working example. The watcher
-does not export its child environment to other terminals. Hardware development
-also uses an explicit state directory; use the printed path rather than assuming
-the installed engine's default. An exact socket override works for either mode:
+Explicit overrides intentionally bypass automatic dev discovery. For example:
 
 ```sh
 WOOTING_PI_SOCKET=/actual/engine/state/events.sock \
-  pi --extension "$PWD/connectors/pi/index.ts"
+  pi
 ```
+
+Clear old `WOOTING_PI_SOCKET`/`WOOTING_STATE_DIR` exports to restore automatic
+development discovery. Loading both current generic and project adapters still
+creates one publisher: they arbitrate through Pi's runtime-scoped event bus,
+with project discovery winning regardless of load order. Previously copied
+older connector versions should be updated or disabled to avoid duplicates.
 
 ## Lifecycle and delivery
 
@@ -107,7 +131,7 @@ lighting visible: enable a matching rule/scene and explicitly resume lighting.
 Hardware-free tests (Node 26 used during implementation):
 
 ```sh
-node --test connectors/pi/connector.test.mjs
+node --test connectors/pi/*.test.mjs
 ```
 
 Tests use a fake Pi event emitter and real temporary Unix-socket servers. They
@@ -115,3 +139,8 @@ cover lifecycle/privacy, multiple sessions, reload/replacement, renewal, missing
 engines, restart recovery, event expiry, lost/stale ACKs, bounded delivery,
 malformed replies, safe sequences, and idempotent resource cleanup. They do not
 launch a real Pi model run or access a keyboard.
+
+Discovery tests additionally cover Pi-before-dev, descriptor removal, mode and
+nonce changes, stale PIDs, malformed/oversized descriptors, unsafe permissions,
+symlinks, explicit overrides, and duplicate adapter registration using real
+temporary Unix sockets.

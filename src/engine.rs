@@ -39,6 +39,10 @@ enum ControlCommand {
     Status,
     /// Read-only source freshness and actual/potential rule visibility. Never resumes lighting.
     Diagnostics,
+    /// Hardware-free animation with live external overlays; never resumes lighting.
+    Preview,
+    /// Add development Pi defaults without replacing existing lighting settings.
+    DevSetup,
     /// Manage explicitly trusted connector executables, independently of lighting.
     Connectors {
         #[command(subcommand)]
@@ -97,6 +101,8 @@ struct Request {
 enum Action {
     Status,
     Diagnostics,
+    Preview,
+    DevSetup,
     Connectors,
     ConnectorEnable {
         id: String,
@@ -152,6 +158,8 @@ struct Response {
     connectors: Vec<crate::managed_connectors::Health>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diagnostics: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<serde_json::Value>,
 }
 
 fn parse_hex_color(value: &str) -> Result<[u8; 3], String> {
@@ -306,8 +314,74 @@ impl Drop for Active {
         }
     }
 }
+/// Independent of the hardware session and configured providers. Preview requests
+/// must not initialize a command, audio capture, network provider, or RGB SDK.
+struct LivePreview {
+    automation: underglow::automation::AutomationRuntime,
+    animation: underglow::animation::AnimationClock,
+}
+impl LivePreview {
+    fn new(config: &AppConfig, observation: &crate::ingress::Observation) -> Result<Self, Error> {
+        let mut automation =
+            underglow::automation::AutomationRuntime::new(config.automation.clone())?;
+        automation.baseline(&observation.snapshot, observation.now);
+        let mut animation = underglow::animation::AnimationClock::default();
+        animation.set_speed(observation.now, config.speed);
+        Ok(Self {
+            automation,
+            animation,
+        })
+    }
+
+    fn observe(&mut self, observation: &crate::ingress::Observation) {
+        self.automation
+            .observe(&observation.snapshot, &observation.events, observation.now);
+    }
+
+    fn frame(&mut self, config: &AppConfig, now: Duration) -> serde_json::Value {
+        let info = underglow::device::DeviceInfo::synthetic_80he();
+        let layout = underglow::layout::KeyboardLayout::for_device(&info);
+        let seconds = self.animation.set_speed(now, config.speed);
+        let ctx = underglow::render::RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: config.brightness,
+            palette: config.palette,
+            tick: 0,
+            animation_seconds: seconds,
+        };
+        let selected = config.signal_config();
+        let effect = if selected.kind == crate::signals::SignalKind::StaticEffect {
+            selected.effect.unwrap_or(config.effect)
+        } else {
+            // Provider-driven backgrounds are deliberately not evaluated here.
+            config.effect
+        };
+        let layers = self.automation.layers(&ctx);
+        let overlay_keys: Vec<_> = layout
+            .keys()
+            .iter()
+            .filter_map(|key| {
+                underglow::compositor::winning_layer(&layers, key, now)
+                    .map(|_| [key.coord.row, key.coord.column])
+            })
+            .collect();
+        let frame = underglow::compositor::compose(effect.render(&ctx), &layout, &layers, now);
+        serde_json::json!({
+            "schema_version": 1,
+            "kind": "simulated-live-sources",
+            "layout": layout.name,
+            "rgb": frame.as_bytes(),
+            "overlay_keys": overlay_keys,
+            "base_effect": effect.to_string(),
+        })
+    }
+}
+
 struct Runtime {
     sources: crate::ingress::SharedSources,
+    preview: LivePreview,
+    next_preview: Instant,
     connectors: Option<crate::managed_connectors::Supervisor>,
     dir: PathBuf,
     saved: Saved,
@@ -321,6 +395,14 @@ struct Runtime {
     healthy_since: Instant,
 }
 impl Runtime {
+    fn preview(&mut self) -> Result<serde_json::Value, Error> {
+        let observation = self
+            .sources
+            .observe(self.preview.automation.event_cursor())?;
+        self.preview.observe(&observation);
+        Ok(self.preview.frame(&self.config, observation.now))
+    }
+
     fn diagnostics(&self) -> Result<serde_json::Value, Error> {
         let observation = self.sources.observe(0)?;
         if let Some(active) = &self.active {
@@ -449,7 +531,19 @@ impl Runtime {
     }
     fn action(&mut self, action: Action) -> ProgramResult {
         match action {
-            Action::Status | Action::Diagnostics | Action::Connectors => {}
+            Action::Status | Action::Diagnostics | Action::Preview | Action::Connectors => {}
+            Action::DevSetup => {
+                if std::env::var("WOOTING_DEV_SUPERVISED").as_deref() != Ok("1")
+                    || self.saved.enabled
+                    || self.active.is_some()
+                {
+                    return Err("dev-setup requires a supervised, paused development engine".into());
+                }
+                let config = crate::dev_setup::config(&self.saved.config)?;
+                if config != self.saved.config {
+                    self.action(Action::Select { config })?;
+                }
+            }
             Action::ConnectorEnable { ref id } | Action::ConnectorDisable { ref id } => {
                 let enabled = matches!(action, Action::ConnectorEnable { .. });
                 let mut value: toml::Value = toml::from_str(&self.saved.config)?;
@@ -495,7 +589,13 @@ impl Runtime {
                 }
             }
             Action::Select { config } => {
+                let config = if std::env::var("WOOTING_DEV_SUPERVISED").as_deref() == Ok("1") {
+                    crate::dev_setup::config(&config)?
+                } else {
+                    config
+                };
                 let parsed = validate(&config)?;
+                let preview = LivePreview::new(&parsed, &self.sources.observe(0)?)?;
                 let candidate = Saved {
                     config,
                     ..self.saved.clone()
@@ -504,6 +604,7 @@ impl Runtime {
                 let cleanup = self.release();
                 self.saved = candidate;
                 self.config = parsed;
+                self.preview = preview;
                 if let Some(connectors) = &self.connectors {
                     connectors.replace(self.config.connectors.clone());
                 }
@@ -678,6 +779,8 @@ pub fn run(
         sources.clone(),
     )?);
     let mut runtime = Runtime {
+        preview: LivePreview::new(&config, &sources.observe(0)?)?,
+        next_preview: Instant::now(),
         sources,
         connectors,
         dir,
@@ -711,6 +814,7 @@ pub fn run(
                 Err(error) => return Err(error.into()),
             };
             let mut diagnostics = None;
+            let mut preview = None;
             let result = (|| -> ProgramResult {
                 // Darwin can inherit the listener's O_NONBLOCK on accepted sockets.
                 stream.set_nonblocking(false)?;
@@ -729,6 +833,9 @@ pub fn run(
                 if matches!(request.action, Action::Diagnostics) {
                     diagnostics = Some(runtime.diagnostics()?);
                 }
+                if matches!(request.action, Action::Preview) {
+                    preview = Some(runtime.preview()?);
+                }
                 runtime.action(request.action)
             })();
             let response = Response {
@@ -741,6 +848,7 @@ pub fn run(
                     .map(|c| c.status())
                     .unwrap_or_default(),
                 diagnostics,
+                preview,
             };
             // A disconnected UI cannot terminate the engine or undo an applied operation.
             let _ = serde_json::to_writer(&mut stream, &response);
@@ -748,6 +856,15 @@ pub fn run(
             if stop {
                 break;
             }
+        }
+        // Keep event cursors/transition history current even with no GUI client.
+        // Reconnecting does not replay past events, and pausing never stops sources.
+        if Instant::now() >= runtime.next_preview {
+            let observation = runtime
+                .sources
+                .observe(runtime.preview.automation.event_cursor())?;
+            runtime.preview.observe(&observation);
+            runtime.next_preview = Instant::now() + Duration::from_millis(50);
         }
         runtime.advance(interrupted);
         std::thread::sleep(Duration::from_millis(5));
@@ -768,6 +885,8 @@ pub fn control(options: ControlOptions) -> ProgramResult {
         let action = match options.command {
             ControlCommand::Status => Action::Status,
             ControlCommand::Diagnostics => Action::Diagnostics,
+            ControlCommand::Preview => Action::Preview,
+            ControlCommand::DevSetup => Action::DevSetup,
             ControlCommand::Connectors { command } => match command {
                 ConnectorCommand::Status => Action::Connectors,
                 ConnectorCommand::Enable { id } => Action::ConnectorEnable { id },
@@ -961,10 +1080,14 @@ mod tests {
     }
 
     fn runtime(text: String, dir: PathBuf) -> Runtime {
+        let sources = crate::ingress::SharedSources::default();
+        let config = validate(&text).unwrap();
         Runtime {
-            sources: crate::ingress::SharedSources::default(),
+            preview: LivePreview::new(&config, &sources.observe(0).unwrap()).unwrap(),
+            next_preview: Instant::now(),
+            sources,
             connectors: None,
-            config: validate(&text).unwrap(),
+            config,
             saved: Saved {
                 schema_version: 1,
                 enabled: false,
@@ -979,6 +1102,189 @@ mod tests {
             next_frame: Instant::now(),
             healthy_since: Instant::now(),
         }
+    }
+
+    fn preview_observation(
+        registry: &mut underglow::external::Registry,
+        cursor: u64,
+        ms: u64,
+    ) -> crate::ingress::Observation {
+        let now = Duration::from_millis(ms);
+        registry.expire(now).unwrap();
+        crate::ingress::Observation {
+            now,
+            snapshot: registry.snapshot(),
+            events: registry.events_since(cursor),
+        }
+    }
+
+    fn publish_preview(
+        registry: &mut underglow::external::Registry,
+        instance: &str,
+        sequence: u64,
+        payload: underglow::external::Payload,
+        ms: u64,
+    ) {
+        registry
+            .apply(
+                underglow::external::Message {
+                    schema_version: 1,
+                    source: "pi".into(),
+                    instance: instance.into(),
+                    sequence,
+                    payload,
+                },
+                Duration::from_millis(ms),
+            )
+            .unwrap();
+    }
+
+    fn preview_colors(frame: &serde_json::Value, zone: underglow::layout::Zone) -> Vec<[u64; 3]> {
+        let info = underglow::device::DeviceInfo::synthetic_80he();
+        underglow::layout::KeyboardLayout::for_device(&info)
+            .keys()
+            .iter()
+            .filter(|key| key.zone == zone)
+            .map(|key| {
+                let index = (usize::from(key.coord.row) * 21 + usize::from(key.coord.column)) * 3;
+                std::array::from_fn(|channel| frame["rgb"][index + channel].as_u64().unwrap())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn live_preview_composes_real_rules_with_independent_instances_and_clock() {
+        use underglow::external::{Payload, Registry};
+        use underglow::layout::Zone;
+        let config = validate(include_str!("../examples/matrix-pi.toml")).unwrap();
+        let mut registry = Registry::default();
+        let mut preview =
+            LivePreview::new(&config, &preview_observation(&mut registry, 0, 0)).unwrap();
+        publish_preview(
+            &mut registry,
+            "a",
+            1,
+            Payload::State {
+                state: "working".into(),
+                ttl_ms: 1000,
+            },
+            0,
+        );
+        publish_preview(
+            &mut registry,
+            "b",
+            1,
+            Payload::State {
+                state: "idle".into(),
+                ttl_ms: 3000,
+            },
+            0,
+        );
+        preview.observe(&preview_observation(
+            &mut registry,
+            preview.automation.event_cursor(),
+            0,
+        ));
+        let first = preview.frame(&config, Duration::ZERO);
+        assert!(
+            preview_colors(&first, Zone::Function)
+                .iter()
+                .any(|c| c[2] > 100 && c[2] > c[1] * 2)
+        );
+        assert_eq!(first["schema_version"], 1);
+        assert_eq!(
+            first["rgb"].as_array().unwrap().len(),
+            underglow::render::FRAME_BYTES
+        );
+        preview.observe(&preview_observation(
+            &mut registry,
+            preview.automation.event_cursor(),
+            700,
+        ));
+        let moving = preview.frame(&config, Duration::from_millis(700));
+        assert_ne!(
+            preview_colors(&first, Zone::Alpha),
+            preview_colors(&moving, Zone::Alpha),
+            "Matrix must keep advancing"
+        );
+        assert_ne!(
+            preview_colors(&first, Zone::Function),
+            preview_colors(&moving, Zone::Function),
+            "working sweep must keep advancing"
+        );
+        // Expiring the working instance exposes the other session's idle strip.
+        preview.observe(&preview_observation(
+            &mut registry,
+            preview.automation.event_cursor(),
+            1000,
+        ));
+        let idle = preview.frame(&config, Duration::from_millis(1000));
+        assert!(
+            preview_colors(&idle, Zone::Function)
+                .iter()
+                .all(|c| *c == [0, 25, 33])
+        );
+        publish_preview(
+            &mut registry,
+            "b",
+            2,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 2500,
+            },
+            1000,
+        );
+        preview.observe(&preview_observation(
+            &mut registry,
+            preview.automation.event_cursor(),
+            1000,
+        ));
+        let finished = preview.frame(&config, Duration::from_millis(1000));
+        assert!(
+            preview_colors(&finished, Zone::Function)
+                .iter()
+                .any(|c| c[1] > 100 && c[1] > c[2] * 2)
+        );
+        // Heartbeats do not restart timed alerts; profile changes baseline them away.
+        let mut switched =
+            LivePreview::new(&config, &preview_observation(&mut registry, 0, 1100)).unwrap();
+        let switched_frame = switched.frame(&config, Duration::from_millis(1100));
+        assert_eq!(
+            preview_colors(&switched_frame, Zone::Function),
+            preview_colors(&idle, Zone::Function)
+        );
+        preview.observe(&preview_observation(
+            &mut registry,
+            preview.automation.event_cursor(),
+            3000,
+        ));
+        let expired = preview.frame(&config, Duration::from_millis(3000));
+        assert!(expired["overlay_keys"].as_array().unwrap().is_empty());
+        // A reconnect reads the current state; it does not create a new runtime.
+        preview.observe(&preview_observation(
+            &mut registry,
+            preview.automation.event_cursor(),
+            3100,
+        ));
+        assert!(
+            preview.frame(&config, Duration::from_millis(3100))["overlay_keys"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn live_preview_never_builds_configured_command_providers_or_mutates_pause() {
+        let config = "effect='matrix'\n[signal]\nkind='command-pulse'\ncommand=['/missing-provider-must-not-run']\n".to_owned();
+        let mut runtime = runtime(config, std::env::temp_dir());
+        let before = runtime.saved.config.clone();
+        assert_eq!(runtime.preview().unwrap()["base_effect"], "matrix");
+        assert_eq!(runtime.status().state, "paused");
+        assert!(!runtime.saved.enabled);
+        assert!(runtime.active.is_none());
+        assert!(runtime.last_error.is_none());
+        assert_eq!(runtime.saved.config, before);
     }
 
     fn colors(base: Option<[u8; 3]>, ripple: Option<[u8; 3]>, reset: bool) -> Action {

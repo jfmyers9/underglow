@@ -29,6 +29,16 @@ or working directories are sent.
 
 ## 1. Build and preview without hardware
 
+**Recommended development flow:** run `make dev`, then run `pi` in another
+terminal in this checkout. Development state is seeded/upgraded automatically,
+Pi discovers the running engine, and the main GUI preview shows live source
+overlays while hardware remains disabled. Existing animations/settings and
+explicit Pi rules are preserved. Restart old watcher/Pi processes once after
+updating; Pi's normal project-extension trust prompt may appear. For keyboard
+output use `make dev DEV_HARDWARE=1`, then explicitly Resume lighting.
+
+The remaining steps describe standalone engines and isolated diagnostics.
+
 Run these from the repository root. Rust/Cargo is required. For the connector,
 use Pi with `agent_settled` support (validated against Pi 1.1.0) and its supported
 Node version (22.19+). There is no connector npm install or build step.
@@ -90,7 +100,9 @@ paths short, private to your user, and on a local filesystem.
 In terminal C, from the repository root:
 
 ```sh
-pi --extension "$PWD/connectors/pi/index.ts"
+# For a standalone engine, explicitly select its actual private socket.
+WOOTING_PI_SOCKET=/actual/engine/state/events.sock \
+  pi --extension "$PWD/connectors/pi/index.ts"
 ```
 
 In terminal B, inspect without resuming lighting:
@@ -117,25 +129,26 @@ running. See [connector lifecycle and discovery details](../connectors/pi/README
 
 ### Using `make dev` instead
 
-The default `make dev` is hardware-disabled simulation. Select this TOML in the
-GUI, inspect real sources with **Refresh connector diagnostics**, and use the
-separate synthetic preview to see the overlay. Simulation cannot be resumed onto
-hardware and does not animate live connector output in the ordinary base-effect
-preview.
+The default `make dev` is hardware-disabled simulation with live source overlays
+in the main keyboard preview. No profile selection, copied socket path, or Pi
+extension flag is needed: run `pi` from this checkout. The project-local extension
+reads private engine discovery that the watcher updates after successful starts.
+It waits if development is stopped, rather than falling back to installed
+lighting. Existing Pi sessions reconnect; completion events from a previous
+engine are not replayed.
 
-The watcher prints its state directory. Other terminals don't inherit it. Set
-that **actual printed path** for CLI operations and Pi, for example:
+The watcher still prints its state directory for optional CLI diagnostics:
 
 ```sh
 # Replace /actual/engine/state with the printed path, not a guessed default.
 export WOOTING_STATE_DIR=/actual/engine/state
 ./target/debug/underglow external inspect
-pi --extension "$PWD/connectors/pi/index.ts"
 ```
 
-Alternatively, `WOOTING_PI_SOCKET=/actual/engine/state/events.sock` overrides
-only Pi's destination. It takes precedence over `WOOTING_STATE_DIR`. Don't leave
-a stale socket override pointing at another engine. Hardware development is
+`WOOTING_PI_SOCKET=/actual/engine/state/events.sock` overrides only Pi's
+destination. It takes precedence over `WOOTING_STATE_DIR`, which also overrides
+automatic development discovery. Don't leave stale overrides pointing at
+another engine. Hardware development is
 explicit (`make dev DEV_HARDWARE=1`); see [development ownership and SDK setup](dev.md).
 
 ## 4. Explicit physical-keyboard opt-in

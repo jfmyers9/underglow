@@ -77,6 +77,7 @@ __attribute__((constructor)) static void loaded(void) {
             .env("HOME", self.dir.join("home"))
             .env("WOOTING_STATE_DIR", self.dir.join("runtime"))
             .env("WOOTING_DEV_SIMULATION", "1")
+            .env_remove("WOOTING_DEV_SUPERVISED")
             .env("WOOTING_RGB_SDK_PATH", &self.library)
             .env("WOOTING_ANALOG_SDK_PATH", &self.library)
             .env("MOCK_LOG", self.dir.join("sdk.log"));
@@ -84,15 +85,15 @@ __attribute__((constructor)) static void loaded(void) {
     }
 
     fn start(&mut self) {
-        let child = self
-            .command()
-            .args(["engine", "--paused"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(
-                File::create(self.dir.join("engine.log")).unwrap(),
-            ))
-            .spawn()
-            .unwrap();
+        self.start_mode(false);
+    }
+
+    fn start_mode(&mut self, supervised: bool) {
+        let mut command = self.command();
+        if supervised {
+            command.env("WOOTING_DEV_SUPERVISED", "1");
+        }
+        let child = self.start_command(command).spawn().unwrap();
         self.child = Some(child);
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -109,6 +110,16 @@ __attribute__((constructor)) static void loaded(void) {
             assert!(Instant::now() < deadline, "engine startup timeout");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    fn start_command(&self, mut command: Command) -> Command {
+        command
+            .args(["engine", "--paused"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(
+                File::create(self.dir.join("engine.log")).unwrap(),
+            ));
+        command
     }
 
     fn cli(&self, args: &[&str]) -> Value {
@@ -196,6 +207,170 @@ fn read_response(stream: UnixStream) -> Value {
         .read_until(b'\n', &mut bytes)
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+fn preview_zone(value: &Value, zone: underglow::layout::Zone) -> Vec<[u64; 3]> {
+    let info = underglow::device::DeviceInfo::synthetic_80he();
+    underglow::layout::KeyboardLayout::for_device(&info)
+        .keys()
+        .iter()
+        .filter(|key| key.zone == zone)
+        .map(|key| {
+            let index = (usize::from(key.coord.row) * 21 + usize::from(key.coord.column)) * 3;
+            std::array::from_fn(|channel| {
+                value["preview"]["rgb"][index + channel].as_u64().unwrap()
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn paused_live_preview_reads_real_external_sources_without_sdk_or_providers() {
+    use underglow::layout::Zone;
+    let mut h = Harness::new();
+    h.start();
+    let profile = h.dir.join("profile.toml");
+    // A side-effecting background exists, but preview must never initialize it.
+    let marker = h.dir.join("provider-ran");
+    let config = format!(
+        "{}\n[signal]\nkind='command-pulse'\ncommand=['touch','{}']\n",
+        include_str!("../examples/matrix-pi.toml"),
+        marker.display()
+    );
+    fs::write(&profile, config).unwrap();
+    h.cli(&["control", "select", "--config", profile.to_str().unwrap()]);
+    h.state("a", "1", "5000");
+    h.state("b", "1", "5000");
+    let working = h.cli(&["control", "preview"]);
+    assert!(
+        !working["preview"]["overlay_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        preview_zone(&working, Zone::Function)
+            .iter()
+            .any(|c| c[2] > 100 && c[2] > c[1] * 2)
+    );
+    h.cli(&[
+        "external",
+        "remove",
+        "--source",
+        "pi",
+        "--instance",
+        "a",
+        "--sequence",
+        "2",
+    ]);
+    let second = h.cli(&["control", "preview"]);
+    assert!(
+        preview_zone(&second, Zone::Function)
+            .iter()
+            .any(|c| c[2] > 100 && c[2] > c[1] * 2)
+    );
+    h.cli(&[
+        "external",
+        "event",
+        "--source",
+        "pi",
+        "--instance",
+        "b",
+        "--sequence",
+        "2",
+        "--event",
+        "finished",
+        "--ttl-ms",
+        "2500",
+    ]);
+    let finished = h.cli(&["control", "preview"]);
+    assert!(
+        preview_zone(&finished, Zone::Function)
+            .iter()
+            .any(|c| c[1] > 100 && c[1] > c[2] * 2)
+    );
+    // A new control connection sees the same active alert, not a fresh baseline.
+    let reconnect = h.cli(&["control", "preview"]);
+    assert!(
+        preview_zone(&reconnect, Zone::Function)
+            .iter()
+            .any(|c| c[1] > 100 && c[1] > c[2] * 2)
+    );
+    // Switching profile baselines events away while retaining current persistent state.
+    h.cli(&["control", "select", "--config", profile.to_str().unwrap()]);
+    let switched = h.cli(&["control", "preview"]);
+    assert!(
+        preview_zone(&switched, Zone::Function)
+            .iter()
+            .any(|c| c[2] > 100 && c[2] > c[1] * 2)
+    );
+    h.cli(&[
+        "external",
+        "state",
+        "--source",
+        "pi",
+        "--instance",
+        "b",
+        "--sequence",
+        "3",
+        "--state",
+        "idle",
+        "--ttl-ms",
+        "100",
+    ]);
+    let start = h.cli(&["control", "preview"]);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let expired = loop {
+        std::thread::sleep(Duration::from_millis(50));
+        let frame = h.cli(&["control", "preview"]);
+        if frame["preview"]["overlay_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+        {
+            break frame;
+        }
+        assert!(Instant::now() < deadline, "state did not expire: {frame}");
+    };
+    assert_ne!(
+        preview_zone(&start, Zone::Alpha),
+        preview_zone(&expired, Zone::Alpha)
+    );
+    assert!(!marker.exists(), "preview initialized configured provider");
+    h.assert_paused_and_no_sdk();
+    h.stop();
+}
+
+#[test]
+fn dev_setup_is_guarded_preserves_visuals_and_keeps_pi_when_effect_changes() {
+    let mut h = Harness::new();
+    h.start();
+    let rejected = h.command().args(["control", "dev-setup"]).output().unwrap();
+    assert!(!rejected.status.success());
+    h.stop();
+    h.start_mode(true);
+    let before = h.cli(&["control", "status"]);
+    h.cli(&["control", "dev-setup"]);
+    let after = h.cli(&["control", "status"]);
+    assert_eq!(before["status"], after["status"]);
+    h.state("a", "1", "5000");
+    assert!(
+        !h.cli(&["control", "preview"])["preview"]["overlay_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    h.cli(&["control", "select", "--preset", "aurora"]);
+    let changed = h.cli(&["control", "preview"]);
+    assert_eq!(changed["status"]["mode"], "aurora");
+    assert!(
+        !changed["preview"]["overlay_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    h.assert_paused_and_no_sdk();
+    h.stop();
 }
 
 #[test]

@@ -14,9 +14,32 @@ Python watcher cannot reload its renamed binary paths. Existing development
 settings and the per-checkout lock namespace are preserved; do not kill unrelated
 processes or delete their locks.
 
-The default is **simulation**: SDK access is blocked. Use the GUI keyboard preview
-to tune effects without taking over the physical keyboard. Saved selections,
-brightness, speed, FPS, and colors are private to this checkout and mode.
+The default is **simulation**: SDK access is blocked. Fresh development state
+starts with **Matrix + Pi**. Existing state keeps its selected animation,
+brightness, speed, FPS, colors, and custom rules; missing Pi rules are added to
+the saved development snapshot, not to your source TOML files. An explicit Pi
+rule configuration is left unchanged. Selecting another effect in the
+development GUI keeps the default Pi integration available.
+
+In another terminal, from this checkout, just run:
+
+```sh
+pi
+```
+
+Pi discovers the project-local extension and the current development engine.
+There are no copied paths, exports, extension flags, global extension installs,
+or login-service changes. Pi may ask you to trust this project's extensions.
+If Pi was already open before updating, restart it or use `/reload` once.
+Restart an old development watcher once as well; it cannot reload its Python code.
+
+The main keyboard preview shows **live reported Pi state** over the running
+animation: dim cyan function keys while idle, a blue sweep while working, and a
+brief green completion sweep. This is simulated lighting, not keyboard feedback.
+Unapplied visual edits temporarily use the local draft preview; Apply or Discard
+returns to live-source overlays. The isolated synthetic preview in Connector
+diagnostics remains available for testing sources without Pi.
+
 The preview uses the shared renderers with synthetic time/input; see
 [adding visualizations](visualizations.md) for module ownership and registration.
 
@@ -81,6 +104,16 @@ development settings. It contains:
 - `generations/`: private copies of each successful binary set. The GUI's sibling
   CLI always matches its generation; Cargo never overwrites running executables.
 - `supervisor.lock`: advisory lock prevents duplicate supervisors for one checkout.
+- `current.json`: private, atomically published engine discovery for this checkout.
+  It is published only after the engine and Pi rules are ready, replaced on engine
+  restart, and removed before shutdown. GUI-only restarts keep the same endpoint.
+
+The project connector waits harmlessly when `make dev` is not running; it does
+not silently connect to an installed engine. It can start before `make dev` and
+reconnect after engine restarts or a switch between simulation and hardware mode.
+Explicit `WOOTING_PI_SOCKET` or `WOOTING_STATE_DIR` overrides remain authoritative;
+unset stale overrides to use automatic development discovery. For a standalone
+engine, specify its socket/directory explicitly. See [Matrix + Pi](matrix-pi.md).
 
 The supervisor tracks only its own child processes; it does not use `pkill`, a
 service manager, or detached engines. Engine spawning in the supervised GUI is

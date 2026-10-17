@@ -193,7 +193,7 @@ python3 -m unittest scripts/tests/test_connectors.py -v
 make test-connectors
 ```
 
-`make test-connectors` runs both the Pi connector and starter-kit tests. It is an
+`make test-connectors` runs the Pi lifecycle/discovery and starter-kit tests. It is an
 optional target requiring Node 22.19+ and Python 3; `make check` is unchanged and
 does not require Node.
 

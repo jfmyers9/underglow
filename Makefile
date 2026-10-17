@@ -62,5 +62,5 @@ test-dev:
 	python3 -m unittest discover -s scripts/tests -p 'test_dev.py'
 
 test-connectors:
-	node --test connectors/pi/connector.test.mjs
+	node --test connectors/pi/*.test.mjs
 	python3 -m unittest discover -s scripts/tests -p 'test_connectors.py'

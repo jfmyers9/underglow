@@ -1,5 +1,6 @@
 """Development supervisor tests: no Rust binaries, SDKs, or real GUI are launched."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -209,6 +210,82 @@ class LifecycleTests(unittest.TestCase):
         self.initial = {'src/main.rs': b'one', 'src/bin/underglow-gui.rs': b'one'}
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(self.supervisor.close)
+
+    def test_pi_setup_and_private_discovery_are_automatic(self):
+        s = self.supervisor
+        with mock.patch.object(s, 'control', wraps=s.control) as control:
+            self.assertTrue(s.rebuild(self.initial))
+        self.assertIn(mock.call('dev-setup'), control.call_args_list)
+        self.assertNotIn(mock.call('resume'), control.call_args_list)
+        self.assertIn('--paused', s.engine.args)
+        index = s.engine.args.index('--config')
+        self.assertEqual(s.engine.args[index + 1], str(self.root / 'examples/matrix-pi.toml'))
+        descriptor = json.loads(s.discovery.read_text())
+        self.assertEqual(descriptor['schema_version'], 1)
+        self.assertEqual(descriptor['checkout'], str(self.root.resolve()))
+        self.assertEqual(descriptor['state_dir'], str(s.state.resolve()))
+        self.assertEqual(descriptor['socket'], str(s.state.resolve() / 'events.sock'))
+        self.assertEqual(descriptor['mode'], 'simulation')
+        self.assertEqual(descriptor['supervisor_pid'], os.getpid())
+        self.assertEqual(descriptor['engine_pid'], s.engine.pid)
+        self.assertEqual(s.discovery.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(len(descriptor['nonce']), 32)
+        self.assertFalse(list(s.runtime.glob('.current-*.tmp')))
+
+    def test_discovery_tracks_engine_replacements_not_gui_reloads(self):
+        s = self.supervisor
+        s.rebuild(self.initial)
+        original = s.discovery.read_bytes()
+        gui_change = dict(self.initial, **{'src/bin/underglow-gui.rs': b'two'})
+        s.rebuild(gui_change)
+        self.assertEqual(s.discovery.read_bytes(), original)
+        s.rebuild(dict(gui_change, **{'src/main.rs': b'two'}))
+        updated = json.loads(s.discovery.read_text())
+        self.assertNotEqual(updated['nonce'], json.loads(original)['nonce'])
+        self.assertNotEqual(updated['engine_pid'], json.loads(original)['engine_pid'])
+        self.assertEqual(updated['engine_pid'], s.engine.pid)
+        s.close()
+        self.assertFalse(s.discovery.exists())
+
+    def test_failed_build_preserves_discovery_of_last_working_engine(self):
+        s = self.supervisor
+        s.rebuild(self.initial)
+        original = s.discovery.read_bytes()
+        s.fail = True
+        self.assertFalse(s.rebuild(dict(self.initial, **{'src/main.rs': b'broken'})))
+        self.assertEqual(s.discovery.read_bytes(), original)
+
+    def test_discovery_is_not_published_before_pi_setup_succeeds(self):
+        s = self.supervisor
+        with mock.patch.object(s, 'control', side_effect=lambda action: action == 'status'):
+            with self.assertRaisesRegex(RuntimeError, 'Pi rules'):
+                s.rebuild(self.initial)
+        self.assertFalse(s.discovery.exists())
+        self.assertIsNone(s.gui)
+
+    def test_cleanup_preserves_replaced_discovery_but_stops_owned_children(self):
+        s = self.supervisor
+        s.rebuild(self.initial)
+        engine, gui = s.engine, s.gui
+        descriptor = json.loads(s.discovery.read_text())
+        descriptor['nonce'] = 'another-supervisor'
+        s.discovery.write_text(json.dumps(descriptor))
+        s.close()
+        self.assertEqual(json.loads(s.discovery.read_text()), descriptor)
+        self.assertIsNotNone(engine.poll())
+        self.assertIsNotNone(gui.poll())
+
+    def test_atomic_discovery_replaces_symlink_without_following_it(self):
+        s = self.supervisor
+        s.rebuild(self.initial)
+        original = self.root / 'unrelated'
+        original.write_text('do not change')
+        s.discovery.unlink()
+        s.discovery.symlink_to(original)
+        s.publish_discovery()
+        self.assertFalse(s.discovery.is_symlink())
+        self.assertEqual(original.read_text(), 'do not change')
+        self.assertEqual(s.discovery.stat().st_mode & 0o777, 0o600)
 
     def test_failure_keeps_working_processes_and_generation(self):
         s = self.supervisor

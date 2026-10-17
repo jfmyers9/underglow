@@ -59,6 +59,8 @@ function request(path, message, timeoutMs) {
 export class PiConnector {
   constructor(options = {}) {
     this.path = options.path ?? socketPath();
+    this.resolveTarget = options.resolveTarget ?? (() => ({ path: this.path, key: this.path }));
+    this.target = undefined;
     this.heartbeatMs = options.heartbeatMs ?? 5000;
     this.timeoutMs = options.timeoutMs ?? 500;
     this.shutdownMs = options.shutdownMs ?? 250;
@@ -116,7 +118,24 @@ export class PiConnector {
   }
 
   pump() {
-    if (this.stopped || this.inflight || this.retry) return;
+    if (this.stopped) return;
+    const target = this.currentTarget();
+    if (target?.key !== this.target?.key) {
+      // Restart/mode changes must not replay a completion from the previous engine.
+      this.inflight?.cancel();
+      this.inflight = undefined;
+      clearTimeout(this.retry);
+      this.retry = undefined;
+      this.pendingEvent = undefined;
+      this.pendingState = true;
+      this.target = target;
+    }
+    if (this.inflight || this.retry) return;
+    if (!target) {
+      this.pendingEvent = undefined;
+      this.defer();
+      return;
+    }
     let payload;
     if (this.pendingState) {
       this.pendingState = false;
@@ -132,7 +151,7 @@ export class PiConnector {
       this.stop();
       return;
     }
-    const operation = request(this.path, message, this.timeoutMs);
+    const operation = request(target.path, message, this.timeoutMs);
     this.inflight = operation;
     operation.promise.then((ok) => {
       if (this.inflight !== operation) return;
@@ -145,14 +164,28 @@ export class PiConnector {
         // Events are at-most-once attempts. An absent ACK could mean the engine
         // applied one, then restarted; retrying would replay a stale completion.
         this.pendingState = true;
-        this.retry = setTimeout(() => {
-          this.retry = undefined;
-          this.pump();
-        }, this.backoffMs);
-        this.retry.unref();
-        this.backoffMs = Math.min(this.backoffMs * 2, this.backoffMaxMs);
+        this.defer();
       }
     });
+  }
+
+  currentTarget() {
+    try {
+      const target = this.resolveTarget();
+      if (target && typeof target.path === "string" && target.path &&
+          typeof target.key === "string" && target.key) return target;
+    } catch { /* Discovery failure is an unavailable engine, never a Pi error. */ }
+    return undefined;
+  }
+
+  defer() {
+    this.pendingState = true;
+    this.retry = setTimeout(() => {
+      this.retry = undefined;
+      this.pump();
+    }, this.backoffMs);
+    this.retry.unref();
+    this.backoffMs = Math.min(this.backoffMs * 2, this.backoffMaxMs);
   }
 
   stop() {
@@ -166,8 +199,11 @@ export class PiConnector {
     this.inflight?.cancel();
     this.inflight = undefined;
     const message = this.started ? this.message({ kind: "remove" }) : undefined;
-    if (!message) return this.stopPromise = Promise.resolve();
-    const operation = request(this.path, message, this.shutdownMs);
+    const target = this.currentTarget();
+    if (!message || !target || target.key !== this.target?.key) {
+      return this.stopPromise = Promise.resolve();
+    }
+    const operation = request(target.path, message, this.shutdownMs);
     this.inflight = operation;
     this.stopPromise = operation.promise.then(() => { this.inflight = undefined; });
     return this.stopPromise;
@@ -177,8 +213,34 @@ export class PiConnector {
 // Factory registration is inert: no client, timer, socket, or session inspection.
 // Ignore event/context arguments deliberately: only lifecycle facts leave Pi.
 export function registerPiConnector(pi, options) {
+  // APIs are per-extension wrappers, but Pi's event bus is shared and scoped to
+  // the runtime. Arbitrate before session_start, including separately loaded
+  // copies of this module. Project discovery outranks a generic installed copy.
+  const channel = "underglow:pi-connector:claim:v1";
+  const priority = options?.resolveTarget ? 1 : 0;
+  let enabled = true;
+  if (pi.events) {
+    const claim = { priority, occupied: false };
+    pi.events.emit(channel, claim);
+    enabled = !claim.occupied;
+    pi.events.on(channel, (other) => {
+      if (!enabled) return;
+      if (other.priority > priority) enabled = false;
+      else other.occupied = true;
+    });
+  } else {
+    // Minimal test hosts may not expose the shared bus.
+    const key = Symbol.for("underglow.pi-connector.claim.v1");
+    const previous = pi[key];
+    if (previous && previous.priority >= priority) enabled = false;
+    else {
+      previous?.disable();
+      pi[key] = { priority, disable: () => { enabled = false; } };
+    }
+  }
   let client;
   pi.on("session_start", async () => {
+    if (!enabled) return;
     await client?.stop();
     client = new PiConnector(options);
     client.start();

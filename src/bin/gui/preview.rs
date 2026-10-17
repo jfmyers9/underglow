@@ -34,6 +34,7 @@ pub fn fixed_color_note(mode: &str) -> Option<&'static str> {
 }
 
 pub struct KeyboardPreview {
+    pub live: Option<super::devpreview::Sample>,
     animation: underglow::animation::AnimationClock,
     effect_tick: Option<f64>,
     effect_seconds: f64,
@@ -52,6 +53,7 @@ pub struct KeyboardPreview {
 impl Default for KeyboardPreview {
     fn default() -> Self {
         Self {
+            live: None,
             animation: Default::default(),
             effect_tick: None,
             effect_seconds: 0.0,
@@ -183,8 +185,18 @@ impl KeyboardPreview {
             colors.0,
             colors.1,
         );
-        for ((rect, hid), rgb) in keys.iter().zip(frame) {
-            let color = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+        for (((rect, hid), rgb), key) in keys.iter().zip(frame).zip(&geometry) {
+            let color = self
+                .live
+                .as_ref()
+                .and_then(|sample| {
+                    sample.color(MatrixCoord {
+                        row: key.row,
+                        column: key.column,
+                    })
+                })
+                .map(|c| Color32::from_rgb(c.red, c.green, c.blue))
+                .unwrap_or_else(|| Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
             ui.painter()
                 .rect_filled(rect.expand(unit * 0.055), 5, color.gamma_multiply(0.15));
             ui.painter()
@@ -241,6 +253,10 @@ pub fn keyboard(
     });
     keyboard_preview.select_reactive(reactive_kind);
     let Some(visualization) = catalog::find(mode) else {
+        if let Some(live) = keyboard_preview.live.clone() {
+            paint_frame(ui, live.frame(), timing.fps);
+            return;
+        }
         ui.label("Preview unavailable for this custom or unsupported mode.");
         ui.small("No command, provider, or hardware is started by this preview.");
         return;
@@ -335,10 +351,17 @@ pub fn keyboard(
     } else {
         preview_frame(mode, palette, brightness, time, &info, &layout)
     };
-    let Some(frame) = frame else {
+    let Some(mut frame) = frame else {
         ui.label("Preview unavailable for this palette or renderer.");
         return;
     };
+    if let Some(live) = &keyboard_preview.live {
+        for key in layout.keys() {
+            if let Some(color) = live.color(key.coord) {
+                frame.set_coord(key.coord, color);
+            }
+        }
+    }
     let painter = ui.painter();
     brand::keyboard_shell(painter, board, unit * 0.12);
     for key in layout.keys() {
@@ -382,6 +405,45 @@ pub fn keyboard(
 /// Describes a synthetic device; constructing this value performs no SDK calls.
 fn preview_device() -> DeviceInfo {
     DeviceInfo::synthetic_80he()
+}
+
+/// Custom provider profiles use the engine's explicitly synthetic fallback.
+fn paint_frame(ui: &mut egui::Ui, frame: &Frame, fps: u32) {
+    let info = preview_device();
+    let layout = KeyboardLayout::for_device(&info);
+    let width = ui.available_width().min(600.0);
+    let unit = width / 18.5;
+    let (space, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), unit * 6.4), Sense::hover());
+    let board = Rect::from_min_size(
+        Pos2::new(space.center().x - width / 2.0, space.top()),
+        Vec2::new(width, unit * 6.4),
+    );
+    let origin = board.min + Vec2::splat(unit * 0.25);
+    brand::keyboard_shell(ui.painter(), board, unit * 0.12);
+    for key in layout.keys() {
+        let rect = Rect::from_min_size(
+            origin + Vec2::new(key.x * unit, key.y * unit),
+            Vec2::splat(unit * 0.88),
+        );
+        ui.painter().rect(
+            rect,
+            4,
+            frame_color(frame, key.coord),
+            Stroke::new(1.0, brand::BORDER),
+            StrokeKind::Inside,
+        );
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            key_label(key.coord),
+            FontId::monospace((unit * 0.23).clamp(7.0, 12.0)),
+            Color32::WHITE,
+        );
+    }
+    ui.small("Synthetic background fallback · configured providers are not run by preview");
+    ui.ctx()
+        .request_repaint_after(Duration::from_secs_f64(1.0 / f64::from(fps.clamp(1, 120))));
 }
 
 fn preview_frame(

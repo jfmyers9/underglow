@@ -52,7 +52,17 @@ while the engine owns hardware; pause it before using `doctor` or a standalone t
 
 ### Matrix + Pi starter
 
-Use [`examples/matrix-pi.toml`](examples/matrix-pi.toml) for Matrix everywhere,
+For development, run **`make dev`**, then **`pi`** in another terminal in this
+checkout. The project extension discovers the engine automatically, and the
+main GUI preview shows live Pi overlays without hardware access. Fresh state
+starts with Matrix; existing animation/settings are preserved and missing Pi
+rules are added automatically. No environment exports or extension flags are
+needed. Restart older watchers/Pi sessions once after updating.
+
+Use `make dev DEV_HARDWARE=1` and explicitly Resume lighting to use the physical
+keyboard. No global extension or login service is installed.
+
+For standalone/manual setup, [`examples/matrix-pi.toml`](examples/matrix-pi.toml) gives Matrix everywhere,
 dim cyan function keys while Pi is open, a blue sweep while working, and a brief
 green sweep at final settlement (not task-success detection). Preview it without
 SDKs or an engine:
