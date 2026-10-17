@@ -46,11 +46,14 @@ fn headless_validation_explicit_binding_store_and_cancel_never_change_editor_or_
         ..Default::default()
     };
     assert!(panel.candidate(&view(&doc, &registry, true)).is_err());
-    assert!(
-        test_ui::click(&ctx, "Share setups safely", |ui| panel
-            .show(ui, view(&doc, &registry, true)))
-        .is_none()
-    );
+    let (output, action) = test_ui::draw(&ctx, vec![], |ui| {
+        panel.show(ui, view(&doc, &registry, true))
+    });
+    assert!(action.is_none());
+    // The explicit sharing window needs no second disclosure click.
+    test_ui::position(&output, "Share setups");
+    test_ui::position(&output, "Export declarative setup");
+    test_ui::position(&output, "Validate pasted setup");
     assert!(
         test_ui::click(&ctx, "Validate pasted setup", |ui| panel
             .show(ui, view(&doc, &registry, true)))
@@ -124,7 +127,7 @@ fn invalid_import_and_registry_revision_change_invalidate_previous_approval() {
     assert!(panel.candidate(&view(&doc, &registry, true)).is_ok());
     registry.revision += 1;
     let ctx = egui::Context::default();
-    test_ui::click(&ctx, "Share setups safely", |ui| {
+    test_ui::draw(&ctx, vec![], |ui| {
         panel.show(ui, view(&doc, &registry, true))
     });
     assert!(panel.candidate(&view(&doc, &registry, true)).is_err());
@@ -132,6 +135,76 @@ fn invalid_import_and_registry_revision_change_invalidate_previous_approval() {
     assert!(panel.reviewed.is_none());
     assert!(panel.choices.is_empty());
     assert!(panel.message.is_some());
+}
+
+#[test]
+fn disabled_layer_and_variant_still_require_independent_local_binding_approval() {
+    let mut doc = document();
+    let layer = &mut doc.layers[1];
+    layer.enabled = false;
+    layer.variants.push(underglow::setup::BehaviorVariant {
+        id: "disabled-event".into(),
+        name: "Disabled event".into(),
+        enabled: false,
+        activation: Activation::OnEvent {
+            source: "pi".into(),
+            instance: Some("original-private-instance".into()),
+            event: "unknown-event".into(),
+            duration_ms: 500,
+        },
+        renderer: layer.renderer.clone(),
+        brightness: None,
+    });
+    let registry = ConnectionRegistry::default();
+    let mut panel = Panel::default();
+    panel.review(ImportPreview::parse(
+        doc.to_toml().unwrap().as_bytes(),
+        Format::Toml,
+    ));
+    panel.registry_revision = Some(registry.revision);
+    assert_eq!(panel.choices.len(), 2);
+    let ctx = egui::Context::default();
+    let (output, action) = test_ui::draw(&ctx, vec![], |ui| {
+        panel.show(ui, view(&doc, &registry, true))
+    });
+    assert!(action.is_none());
+    test_ui::position(
+        &output,
+        "Pi activity / base · role pi (disabled, mapping still required)",
+    );
+    test_ui::position(
+        &output,
+        "Pi activity / Disabled event · role pi (disabled, mapping still required)",
+    );
+
+    panel.choices[0].source = Some("pi".into());
+    panel.choices[0].exact = Some(false);
+    assert!(panel.candidate(&view(&doc, &registry, true)).is_err());
+    assert!(
+        test_ui::click(&ctx, "Store imported new copy (do not switch)", |ui| {
+            panel.show(ui, view(&doc, &registry, true))
+        })
+        .is_none()
+    );
+    panel.choices[1].source = Some("pi".into());
+    assert!(panel.candidate(&view(&doc, &registry, true)).is_err());
+    panel.choices[1].exact = Some(true);
+    panel.choices[1].instance = "   ".into();
+    assert!(panel.candidate(&view(&doc, &registry, true)).is_err());
+    panel.choices[1].instance = "local-session".into();
+    let candidate = panel.candidate(&view(&doc, &registry, true)).unwrap();
+    assert!(!candidate.document.layers[1].enabled);
+    assert!(!candidate.document.layers[1].variants[0].enabled);
+    assert_eq!(
+        candidate.document.layers[1].variants[0].activation,
+        Activation::OnEvent {
+            source: "pi".into(),
+            instance: Some("local-session".into()),
+            event: "unknown-event".into(),
+            duration_ms: 500,
+        }
+    );
+    assert!(panel.preview.sample().is_none());
 }
 
 #[test]

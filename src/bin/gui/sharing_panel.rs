@@ -195,88 +195,195 @@ impl Panel {
 
     pub fn show(&mut self, ui: &mut egui::Ui, view: View<'_>) -> Option<SetupDocument> {
         let mut store = None;
-        ui.collapsing("Share setups safely", |ui| {
-            ui.label("Declarative v1 only · 256 KiB maximum · no credentials, executable trust or producer installation. No automatic activation.");
-            ui.horizontal(|ui| {
-                let before = self.format;
-                ui.selectable_value(&mut self.format, Format::Toml, "TOML");
-                ui.selectable_value(&mut self.format, Format::Json, "JSON");
-                if before != self.format { self.cancel(); }
-            });
-            ui.strong("Export a new file");
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.export_draft, false, "Applied setup");
-                ui.selectable_value(&mut self.export_draft, true, "Validated current draft (includes unsaved edits)");
-            });
-            ui.add(egui::TextEdit::singleline(&mut self.export_path).char_limit(4096).hint_text("Explicit new destination path; existing files are never overwritten"));
-            let document = if self.export_draft { view.draft } else { view.applied };
-            if ui.add_enabled(document.is_some() && !self.export_path.trim().is_empty(), egui::Button::new("Export declarative setup")).clicked() {
-                self.message = Some(match setup_sharing::export_file(Path::new(&self.export_path), document.unwrap(), self.format) {
-                    Ok(()) => "Exported private new file. Review names, fact and instance labels before sharing.".into(),
-                    Err(error) => error,
-                });
+        ui.heading("Share setups");
+        ui.label("Current setup format (v1) only · 256 KiB maximum.");
+        ui.label("Connections, credentials and executable trust stay on this machine. Import never starts producers or activates lighting.");
+        ui.horizontal(|ui| {
+            let before = self.format;
+            ui.selectable_value(&mut self.format, Format::Toml, "TOML");
+            ui.selectable_value(&mut self.format, Format::Json, "JSON");
+            if before != self.format {
+                self.cancel();
             }
-            ui.separator();
-            ui.strong("Import and preview before storing a new copy");
-            let changed = ui.add(egui::TextEdit::multiline(&mut self.text).char_limit(MAX_DOCUMENT_BYTES).desired_rows(4).hint_text("Paste a strict SetupDocument, not application/connection configuration")).changed();
-            let path_changed = ui.add(egui::TextEdit::singleline(&mut self.import_path).char_limit(4096).hint_text("Or a regular local file path; URLs are never fetched")).changed();
-            if changed || path_changed { self.cancel(); }
-            ui.horizontal(|ui| {
-                if ui.button("Validate pasted setup").clicked() {
-                    self.review(ImportPreview::parse(self.text.as_bytes(), self.format));
-                }
-                if ui.button("Read setup file for preview").clicked() {
-                    self.review(ImportPreview::read(Path::new(&self.import_path), self.format));
-                }
-                if ui.button("Cancel import").clicked() { self.cancel(); self.message = None; }
+        });
+        ui.strong("Export a new file");
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.export_draft, false, "Applied setup");
+            ui.selectable_value(
+                &mut self.export_draft,
+                true,
+                "Validated current draft (includes unsaved edits)",
+            );
+        });
+        ui.add(
+            egui::TextEdit::singleline(&mut self.export_path)
+                .char_limit(4096)
+                .hint_text("Explicit new destination path; existing files are never overwritten"),
+        );
+        let document = if self.export_draft {
+            view.draft
+        } else {
+            view.applied
+        };
+        if ui
+            .add_enabled(
+                document.is_some() && !self.export_path.trim().is_empty(),
+                egui::Button::new("Export declarative setup"),
+            )
+            .clicked()
+        {
+            self.message = Some(match setup_sharing::export_file(Path::new(&self.export_path), document.unwrap(), self.format) {
+                Ok(()) => "Exported private new file. Review names, fact and instance labels before sharing.".into(),
+                Err(error) => error,
             });
-            let revision = view.registry.map(|r| r.revision);
-            if revision != self.registry_revision {
-                for choice in &mut self.choices { choice.source = None; choice.exact = None; }
-                self.registry_revision = revision;
+        }
+        ui.separator();
+        ui.strong("Import and preview before storing a new copy");
+        let changed = ui
+            .add(
+                egui::TextEdit::multiline(&mut self.text)
+                    .char_limit(MAX_DOCUMENT_BYTES)
+                    .desired_rows(4)
+                    .hint_text(
+                        "Paste a strict SetupDocument, not application/connection configuration",
+                    ),
+            )
+            .changed();
+        let path_changed = ui
+            .add(
+                egui::TextEdit::singleline(&mut self.import_path)
+                    .char_limit(4096)
+                    .hint_text("Or a regular local file path; URLs are never fetched"),
+            )
+            .changed();
+        if changed || path_changed {
+            self.cancel();
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Validate pasted setup").clicked() {
+                self.review(ImportPreview::parse(self.text.as_bytes(), self.format));
             }
-            if let Some(reviewed) = &self.reviewed {
-                let document = reviewed.document();
-                ui.strong(format!("Preview: {} · {} layers (bottom → top)", document.name, document.layers.len()));
-                ui.small("Isolated synthetic preview only; no live-source subscription. Conditional appearances remain absent until synthetic facts match. Configured connections may be disconnected; import does not start them.");
-                self.preview.show_controls(ui);
-                self.preview.update(Some(document), 255);
-                setup_targets::composition_preview(ui, self.preview.frame(), None, None);
-                for (binding, choice) in reviewed.bindings().iter().zip(&mut self.choices) {
-                    ui.push_id((&choice.key.layer_id, &choice.key.variant_id), |ui| {
-                        ui.label(format!("{} / {} · role {}{}", binding.layer_name, binding.variant_name.unwrap_or("base"), binding.source, if binding.enabled { "" } else { " (disabled, mapping still required)" }));
-                        ui.small(format!("Original condition: {:?}", binding.activation));
-                        if ui.button("Simulate original condition (isolated)").clicked()
-                            && let Err(error) = Self::simulate(&mut self.preview, document, binding.activation) { self.message = Some(error); }
-                        egui::ComboBox::from_id_salt("destination").selected_text(choice.source.as_deref().unwrap_or("Unresolved — choose local connection")).show_ui(ui, |ui| {
+            if ui.button("Read setup file for preview").clicked() {
+                self.review(ImportPreview::read(
+                    Path::new(&self.import_path),
+                    self.format,
+                ));
+            }
+            if ui.button("Cancel import").clicked() {
+                self.cancel();
+                self.message = None;
+            }
+        });
+        let revision = view.registry.map(|r| r.revision);
+        if revision != self.registry_revision {
+            for choice in &mut self.choices {
+                choice.source = None;
+                choice.exact = None;
+            }
+            self.registry_revision = revision;
+        }
+        if let Some(reviewed) = &self.reviewed {
+            let document = reviewed.document();
+            ui.strong(format!(
+                "Preview: {} · {} layers (bottom → top)",
+                document.name,
+                document.layers.len()
+            ));
+            ui.small("Isolated synthetic preview only; no live-source subscription. Conditional appearances remain absent until synthetic facts match. Configured connections may be disconnected; import does not start them.");
+            self.preview.show_controls(ui);
+            self.preview.update(Some(document), 255);
+            setup_targets::composition_preview(ui, self.preview.frame(), None, None);
+            for (binding, choice) in reviewed.bindings().iter().zip(&mut self.choices) {
+                ui.push_id((&choice.key.layer_id, &choice.key.variant_id), |ui| {
+                    ui.label(format!(
+                        "{} / {} · role {}{}",
+                        binding.layer_name,
+                        binding.variant_name.unwrap_or("base"),
+                        binding.source,
+                        if binding.enabled {
+                            ""
+                        } else {
+                            " (disabled, mapping still required)"
+                        }
+                    ));
+                    ui.small(format!("Original condition: {:?}", binding.activation));
+                    if ui
+                        .button("Simulate original condition (isolated)")
+                        .clicked()
+                        && let Err(error) =
+                            Self::simulate(&mut self.preview, document, binding.activation)
+                    {
+                        self.message = Some(error);
+                    }
+                    egui::ComboBox::from_id_salt("destination")
+                        .selected_text(
+                            choice
+                                .source
+                                .as_deref()
+                                .unwrap_or("Unresolved — choose local connection"),
+                        )
+                        .show_ui(ui, |ui| {
                             if let Some(registry) = view.registry {
                                 for connection in &registry.connections {
-                                    ui.selectable_value(&mut choice.source, Some(connection.descriptor.source.clone()), format!("{} · {}", connection.descriptor.display_name, connection.descriptor.source));
+                                    ui.selectable_value(
+                                        &mut choice.source,
+                                        Some(connection.descriptor.source.clone()),
+                                        format!(
+                                            "{} · {}",
+                                            connection.descriptor.display_name,
+                                            connection.descriptor.source
+                                        ),
+                                    );
                                 }
                             }
                         });
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(&mut choice.exact, Some(false), "Any instance (explicit)");
-                            ui.selectable_value(&mut choice.exact, Some(true), "Exact local instance");
-                            if choice.exact == Some(true) {
-                                ui.add(egui::TextEdit::singleline(&mut choice.instance).char_limit(128).hint_text("Local instance ID"));
-                            }
-                        });
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(
+                            &mut choice.exact,
+                            Some(false),
+                            "Any instance (explicit)",
+                        );
+                        ui.selectable_value(&mut choice.exact, Some(true), "Exact local instance");
+                        if choice.exact == Some(true) {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut choice.instance)
+                                    .char_limit(128)
+                                    .hint_text("Local instance ID"),
+                            );
+                        }
                     });
-                }
-                ui.add(egui::TextEdit::singleline(&mut self.new_id).char_limit(128).hint_text("New local setup ID (cannot replace existing entries)"));
-                let candidate = self.candidate(&view);
-                match &candidate {
-                    Ok(candidate) => for warning in &candidate.warnings { ui.label(format!("Capability warning (facts preserved): {warning:?}")); },
-                    Err(error) => { ui.label(format!("Not ready to store: {error}")); }
-                }
-                if ui.add_enabled(view.can_store && candidate.is_ok(), egui::Button::new("Store imported new copy (do not switch)")).clicked() {
-                    store = candidate.ok().map(|c| c.document);
-                }
-                ui.small("Store changes only the library. Your current editor draft stays intact. Explicit Switch loads it paused; only explicit Resume can activate lighting. Executable trust is managed separately in Connections.");
+                });
             }
-            if let Some(message) = &self.message { ui.label(message); }
-        });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_id)
+                    .char_limit(128)
+                    .hint_text("New local setup ID (cannot replace existing entries)"),
+            );
+            let candidate = self.candidate(&view);
+            match &candidate {
+                Ok(candidate) => {
+                    for warning in &candidate.warnings {
+                        ui.label(format!("Capability warning (facts preserved): {warning:?}"));
+                    }
+                }
+                Err(error) => {
+                    ui.label(format!("Not ready to store: {error}"));
+                }
+            }
+            if ui
+                .add_enabled(
+                    view.can_store && candidate.is_ok(),
+                    egui::Button::new("Store imported new copy (do not switch)"),
+                )
+                .clicked()
+            {
+                store = candidate.ok().map(|c| c.document);
+            }
+            ui.small("Store changes only the library. Your current editor draft stays intact. Explicit Switch loads it paused; only explicit Resume can activate lighting. Executable trust is managed separately in Connections.");
+        }
+        if let Some(message) = &self.message {
+            ui.label(message);
+        }
         store
     }
 }

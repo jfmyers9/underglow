@@ -185,7 +185,7 @@ impl Editor {
                             {
                                 self.selected = Some(layer.id.clone());
                             }
-                            ui.menu_button("⋯", |ui| self.layer_menu(ui, &doc, &layer.id))
+                            ui.menu_button("...", |ui| self.layer_menu(ui, &doc, &layer.id))
                                 .response
                                 .on_hover_text("Layer actions");
                         });
@@ -247,6 +247,15 @@ impl Editor {
             let tab = *tab;
             if select_keys {
                 self.select_keys_mode();
+            }
+            for notice in &self.connection_notices {
+                ui.small(&notice.message);
+                if ui
+                    .button(format!("Connections: {}", notice.label))
+                    .clicked()
+                {
+                    self.connection_request = Some(notice.source.clone());
+                }
             }
             let mut groups = doc.groups.clone();
             match tab {

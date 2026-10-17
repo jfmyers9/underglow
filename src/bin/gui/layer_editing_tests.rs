@@ -273,12 +273,12 @@ fn compact_stack_overflow_actions_follow_top_first_display_and_stable_ids() {
     click(&mut h, &mut app, "Add layer");
     click(&mut h, &mut app, "Matrix layer");
     let top = app.setup_editor.selected.clone().unwrap();
-    click(&mut h, &mut app, "⋯");
+    click(&mut h, &mut app, "...");
     click(&mut h, &mut app, "Enabled");
     assert!(!app.setup_editor.draft.as_ref().unwrap().layers[1].enabled);
     assert_eq!(app.setup_editor.draft.as_ref().unwrap().layers[0], bottom);
     click(&mut h, &mut app, "Composition preview");
-    click(&mut h, &mut app, "⋯");
+    click(&mut h, &mut app, "...");
     click(&mut h, &mut app, "Toward bottom");
     let doc = app.setup_editor.draft.as_ref().unwrap();
     assert_eq!(doc.layers[0].id, top);
@@ -290,7 +290,7 @@ fn compact_stack_overflow_actions_follow_top_first_display_and_stable_ids() {
     let lower = texts.iter().find(|t| t.text == "1 · New layer").unwrap();
     assert!(upper.fully_visible() && lower.fully_visible());
     assert!(upper.rect.top() < lower.rect.top());
-    click(&mut h, &mut app, "⋯");
+    click(&mut h, &mut app, "...");
     click(&mut h, &mut app, "Rename layer");
     h.run(
         vec![

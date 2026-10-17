@@ -690,7 +690,7 @@ mod tests {
             ],
         );
         assert_eq!(editor.draft.as_ref().unwrap().layers[1].name, "Top renamed");
-        click(&ctx, &mut editor, "⋯", 0);
+        click(&ctx, &mut editor, "...", 0);
         click(&ctx, &mut editor, "Enabled", 0); // topmost layer is displayed first
         assert!(!editor.draft.as_ref().unwrap().layers[1].enabled);
         assert_eq!(editor.draft.as_ref().unwrap().layers[0], unrelated);
@@ -701,7 +701,7 @@ mod tests {
         let mut copy = before.layers[2].clone();
         copy.id = top.clone();
         assert_eq!(copy, before.layers[1]);
-        click(&ctx, &mut editor, "⋯", 0);
+        click(&ctx, &mut editor, "...", 0);
         click(&ctx, &mut editor, "Toward bottom", 0);
         assert_eq!(editor.draft.as_ref().unwrap().layers[1].id, copy_id);
         assert_eq!(editor.selected.as_deref(), Some(copy_id.as_str()));
@@ -728,6 +728,8 @@ pub struct Editor {
     pub base_revision: u64,
     pub dirty: bool,
     pub selected: Option<String>,
+    pub connection_notices: Vec<super::connections_screen::LayerNotice>,
+    pub connection_request: Option<String>,
     pub canvas_mode: setup_targets::CanvasMode,
     canvas_selection: Option<String>,
     empty_canvas: setup_targets::TargetSelection,

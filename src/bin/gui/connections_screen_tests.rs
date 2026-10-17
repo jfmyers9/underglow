@@ -71,40 +71,50 @@ fn setup() -> SetupDocument {
             "renderer":{"kind":"solid","color":[3,2,1]}}]}]})).unwrap()
 }
 fn draw(panel: &mut Panel, view: View<'_>) -> String {
-    let context = egui::Context::default();
-    let output = context.run(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1500.0, 12000.0),
-            )),
-            ..Default::default()
-        },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                assert!(panel.show(ui, view).is_none());
-            });
-        },
-    );
-    fn collect(shape: &egui::Shape, text: &mut String) {
-        match shape {
-            egui::Shape::Text(s) => {
-                text.push_str(s.galley.text());
-                text.push('\n');
-            }
-            egui::Shape::Vec(shapes) => {
-                for shape in shapes {
-                    collect(shape, text);
-                }
-            }
-            _ => {}
+    // Detail-content checks open real disclosures. Primary reachability uses
+    // realistic default/minimum sizes in secondary_flow_tests.
+    let mut harness = super::super::workspace_test_ui::Harness::new(egui::vec2(1500.0, 18000.0));
+    let mut show = |ctx: &egui::Context| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            assert!(panel.show(ui, view).is_none());
+        });
+    };
+    harness.click("Connection report details", None, &mut show);
+    for _ in 0..20 {
+        harness.run(vec![], &mut show);
+    }
+    let count = harness
+        .settle(&mut show)
+        .texts()
+        .iter()
+        .filter(|t| t.text == "Connection details")
+        .count();
+    for index in 0..count {
+        let frame = harness.settle(&mut show);
+        let pos = frame
+            .texts()
+            .into_iter()
+            .filter(|t| t.text == "Connection details")
+            .nth(index)
+            .unwrap()
+            .rect
+            .center();
+        harness.click_at(pos, &mut show);
+        for _ in 0..20 {
+            harness.run(vec![], &mut show);
         }
     }
-    let mut text = String::new();
-    for shape in &output.shapes {
-        collect(&shape.shape, &mut text);
+    harness.click("Connection administration", None, &mut show);
+    for _ in 0..20 {
+        harness.run(vec![], &mut show);
     }
-    text
+    harness
+        .settle(show)
+        .texts()
+        .into_iter()
+        .map(|t| t.text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 #[test]
 fn running_but_stale_is_not_process_death_or_fresh_state() {
@@ -129,13 +139,30 @@ fn running_but_stale_is_not_process_death_or_fresh_state() {
         "restarts=3",
         "Not reporting",
         "last seen / not reporting",
-        "process health: Unknown",
+        "Process health: unknown",
         "Connector error:",
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }
     assert!(!text.contains("SECRET"));
     assert!(text.contains("no fresh state lease"));
+}
+
+#[test]
+fn old_health_capture_never_becomes_current_process_health() {
+    let mut panel = Panel::default();
+    panel.receive_report(Ok(report()));
+    assert!(
+        panel
+            .process_summary("custom", true)
+            .contains("running at last check")
+    );
+    panel.captured = Some(Instant::now() - Duration::from_secs(11));
+    assert_eq!(
+        panel.process_summary("custom", true),
+        "Process health: unknown"
+    );
+    assert_eq!(panel.process_summary("pi", true), "Process health: unknown");
 }
 #[test]
 fn fresh_multiple_instances_explain_selector_mismatch_and_missing_variant_impact() {

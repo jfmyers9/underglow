@@ -221,9 +221,7 @@ pub fn show_advanced(ui: &mut Ui, layer: &mut Layer) {
         });
     ui.small("One transition for this logical layer, shared by base/fallback and all variants. 0 ms switches instantly; the curve eases the crossfade.");
     ui.small(super::setup_explanation::TRANSITION_HELP);
-    ui.small(
-        "Draft only: transition edits never activate hardware; explicit Resume is still required.",
-    );
+    ui.small("Preview only; saving and lighting activation are separate.");
 }
 
 pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {
@@ -260,7 +258,8 @@ pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {
                 ui.small("Diagnostic effect: preserved from this setup, not offered as an everyday effect.");
             }
         } else {
-            ui.small("Scene primitive: RGB color only, with a period for Pulse/Sweep. Palettes and effect speed are not supported.");
+            ui.small("Uses a fixed color. Pulse and Sweep also have a timing control.")
+                .on_hover_text("Palettes and effect speed do not apply to these appearances.");
         }
         match renderer {
             Renderer::Effect { palette, speed, .. } => {
@@ -314,7 +313,7 @@ pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {
         if let Err(error) = renderer.validate() {
             ui.colored_label(egui::Color32::YELLOW, format!("Unsupported settings: {error}. Choose another effect to reset incompatible appearance settings."));
         }
-        ui.small("Appearance edits never activate hardware. Physical lighting stays paused until explicit Resume.");
+        ui.small("Preview only; lighting activation is separate.");
     });
     before != *renderer
 }

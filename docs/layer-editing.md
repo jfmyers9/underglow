@@ -20,10 +20,11 @@ enable keyboard lighting; save explicitly and enable lighting separately.
 
 **Add layer** opens a non-mutating menu: choose **Aurora layer**, **Matrix layer**,
 **Solid color layer**, **Pi status layer**, or another catalog effect. The new
-editable layer is appended above the current stack. **More → New blank
-composition** remains a separate explicit draft-replacement action.
+editable layer is appended above the current stack. To begin a different setup,
+choose **Browse setups**, then **Blank**. Unsaved drafts get Save / Discard /
+Cancel protection before replacement.
 
-Stack checkboxes enable/mute individual layers. Each row's **⋯** menu provides
+Stack checkboxes enable/mute individual layers. Each row's **...** menu provides
 rename, duplicate, reorder and delete; the compact layout offers **Layer
 actions**. The selected inspector also exposes its name and Duplicate/Delete
 buttons. **Toward top** moves a layer visually upward, giving it precedence on

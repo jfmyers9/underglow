@@ -21,6 +21,15 @@ use underglow::source_capabilities::SourceDescriptor;
 
 const MAX_REPORT_BYTES: usize = 512 * 1024;
 const MAX_HISTORY: usize = 256;
+const HEALTH_AGE: Duration = Duration::from_secs(10);
+
+/// Derived read-only inspector context; never synthetic preview facts.
+#[derive(Clone, Debug)]
+pub struct LayerNotice {
+    pub source: String,
+    pub label: String,
+    pub message: String,
+}
 
 /// Secret-bearing registry stays private to Connections, never generic diagnostics.
 #[derive(Deserialize)]
@@ -88,14 +97,79 @@ pub struct Panel {
     generation: Option<(u64, u64)>,
     states: BTreeMap<Identity, StateSnapshot>,
     events: BTreeMap<u64, EventSnapshot>,
+    focused_source: Option<String>,
+    focused_layer: Option<String>,
 }
 
 impl Panel {
+    pub fn focus(&mut self, source: String, layer: String) {
+        self.focused_source = Some(source);
+        self.focused_layer = Some(layer);
+    }
+
+    pub fn layer_notices(
+        &self,
+        document: &SetupDocument,
+        selected: &str,
+        sample: Option<SourceSample<'_>>,
+    ) -> Vec<LayerNotice> {
+        bindings(document).into_iter().filter(|binding| binding.layer_id == selected)
+            .map(|binding| binding.source.to_owned()).collect::<BTreeSet<_>>()
+            .into_iter().map(|source| {
+                let connection = self.registry().and_then(|registry| registry.connection(&source));
+                let label = connection.map_or_else(|| source.clone(), |connection| connection.descriptor.display_name.clone());
+                let recent = recent_facts(sample, &source);
+                let message = if self.report.is_some() && connection.is_none() {
+                    "Connection missing from the last registry report. Open Connections to repair the layer binding."
+                } else if sample.is_some_and(|sample| sample.stale) {
+                    "Live data delayed. Last observations are not current."
+                } else if recent {
+                    "Recent data available. Process health is separate."
+                } else if self.report.is_none() {
+                    "Connection details unavailable; no recent data. Refresh Connections to check."
+                } else {
+                    "No recent data. This does not mean the application stopped."
+                };
+                LayerNotice { source, label, message: message.into() }
+            }).collect()
+    }
+
+    fn process_summary(&self, source: &str, connected: bool) -> &'static str {
+        let current = connected
+            && self.error.is_none()
+            && self
+                .captured
+                .is_some_and(|captured| captured.elapsed() < HEALTH_AGE);
+        let Some(connection) = self
+            .registry()
+            .and_then(|registry| registry.connection(source))
+        else {
+            return "Process health: unknown";
+        };
+        if connection.producer.is_none() || !current {
+            return "Process health: unknown";
+        }
+        match self
+            .report
+            .as_ref()
+            .and_then(|report| report.runtime_index.get(source))
+            .filter(|runtime| runtime.kind == "managed")
+            .and_then(|runtime| runtime.producer.as_ref())
+        {
+            Some(health) if health.running && health.healthy => {
+                "Process: running at last check; recent facts are separate"
+            }
+            Some(health) if health.running => "Process: running; reporting needs attention",
+            Some(_) => "Process: not running at last check",
+            None => "Process health: unknown",
+        }
+    }
+
     pub fn binding_repaired(&mut self, result: Result<(), String>) {
         self.binding_notice = Some(match result {
             Ok(()) => {
                 self.binding_editor = None;
-                "Binding repaired in composition draft — not yet saved. Open Layers to review and explicitly Save. Repair does not resume lighting.".into()
+                "Binding repaired in draft — not yet saved. Open Editor to review and Save. Lighting is unchanged.".into()
             }
             Err(error) => format!("Binding repair not applied: {error}"),
         });
@@ -227,9 +301,8 @@ impl Panel {
         if let Some(notice) = &self.binding_notice {
             ui.label(notice);
         }
-        ui.label("Connectors provide facts. Layers turn those facts into visuals.");
         ui.small(
-            "Inspection never starts producers. Explicit controls below change process intent, never resume lighting.",
+            "Recent data and process health are separate. Browsing never starts a connection.",
         );
         if ui
             .add_enabled(!view.busy, egui::Button::new("Refresh connections"))
@@ -243,29 +316,37 @@ impl Panel {
                 format!("Connection health: {error}"),
             );
         }
-        if let Some(captured) = self.captured {
-            ui.small(format!(
-                "Registry/producer health captured {:.1}s ago{}",
-                captured.elapsed().as_secs_f32(),
-                if view.connected {
-                    ""
-                } else {
-                    " · engine unavailable; health is last known, not current"
-                }
-            ));
-        }
+        ui.collapsing("Connection report details", |ui| {
+            if let Some(captured) = self.captured {
+                ui.small(format!(
+                    "Registry/producer health captured {:.1}s ago{}",
+                    captured.elapsed().as_secs_f32(),
+                    if view.connected {
+                        ""
+                    } else {
+                        " · engine unavailable; health is last known, not current"
+                    }
+                ));
+            }
+            if let Some(report) = &self.report {
+                ui.small(format!(
+                    "Connection registry revision {}",
+                    report.registry.revision
+                ));
+            }
+        });
         let now = view.sample.as_ref().map(|s| s.now);
         // The facts endpoint and control/health transport can fail independently.
         let fresh_sample = view.sample.as_ref().is_some_and(|s| !s.stale);
         if !fresh_sample {
-            ui.label("Live facts unavailable or delayed. Retained observations are not proof of a live application or process.");
+            ui.label("Live facts unavailable or delayed. Process health remains separate.");
         }
         if view.sample.as_ref().is_some_and(|s| s.events.gap) {
             ui.label(
                 "Event history has a gap; some events expired or were evicted before inspection.",
             );
         }
-        let sources: BTreeSet<String> = self
+        let mut sources: BTreeSet<String> = self
             .report
             .iter()
             .flat_map(|r| {
@@ -286,29 +367,49 @@ impl Panel {
         if sources.is_empty() {
             ui.label("No configured sources yet. Refresh to load the machine-local registry.");
         }
-        if let Some(report) = &self.report {
-            ui.small(format!(
-                "Connection registry revision {}",
-                report.registry.revision
-            ));
+        if let Some(source) = self.focused_source.clone() {
+            ui.label(format!("Selected connection: {source}"));
+            if ui.button("Show all connections").clicked() {
+                self.focused_source = None;
+                self.focused_layer = None;
+            } else {
+                sources.retain(|item| item == &source);
+                sources.insert(source);
+            }
         }
         for source in sources {
+            let process_summary = self.process_summary(&source, view.connected);
             let connection = self.report.as_ref().and_then(|r| {
                 r.registry
                     .connections
                     .iter()
                     .find(|c| c.descriptor.source == source)
             });
-            let label = connection.map_or_else(
-                || source.clone(),
-                |c| format!("{} · {}", c.descriptor.display_name, source),
-            );
+            let label =
+                connection.map_or_else(|| source.clone(), |c| c.descriptor.display_name.clone());
             ui.push_id(&source, |ui| {
-                egui::CollapsingHeader::new(label).default_open(true).show(ui, |ui| {
+                ui.group(|ui| {
+                    ui.strong(label);
+                    ui.label(if recent_facts(view.sample, &source) { "Recent data available" } else { "No recent data" });
+                    ui.label(process_summary);
+                    if connection.is_none() && self.report.is_some() { ui.label("Missing connection binding"); }
+                    let focused = view.setup.into_iter().flat_map(bindings).find(|binding| {
+                        binding.source == source && self.focused_layer.as_deref() == Some(binding.layer_id)
+                    });
+                    if let Some(binding) = focused {
+                        ui.label(format!("Affected layer: {}", binding.layer_name));
+                        if ui.add_enabled(self.report.is_some() && !view.busy, egui::Button::new("Repair layer binding")).clicked()
+                            && let Some(setup) = view.setup {
+                            self.binding_editor = Some(binding_editor::Editor::new(setup,
+                                underglow::binding_repair::BindingKey { layer_id: binding.layer_id.into(), variant_id: binding.variant.map(|variant| variant.0.into()) }, binding.activation));
+                        }
+                    }
+                    egui::CollapsingHeader::new("Connection details").id_salt(&source).default_open(false).show(ui, |ui| {
+                    ui.small(format!("Source ID: {source}"));
                     match connection {
                         Some(connection) => {
                             show_process(ui, connection, self.report.as_ref().and_then(|r| r.runtime_index.get(&source)),
-                                self.error.is_some() || !view.connected);
+                                self.error.is_some() || !view.connected || self.captured.is_none_or(|captured| captured.elapsed() >= HEALTH_AGE));
                             show_capabilities(ui, &connection.descriptor);
                         }
                         None if self.report.is_some() => {
@@ -357,6 +458,7 @@ impl Panel {
                             }
                         });
                     }
+                    });
                 });
             });
         }
@@ -371,34 +473,51 @@ impl Panel {
                 self.binding_editor = None;
             }
         }
-        if let Some(report) = &self.report
-            && let Some(replacement) = self.manifest_editor.show(
-                ui,
-                &report.registry,
-                view.connected && !view.busy && self.error.is_none(),
-            )
-        {
-            self.metadata_write = true;
-            request = Some(Request::Replace {
-                revision: replacement.revision,
-                registry: replacement.registry,
-            });
-        }
-        if let Some(report) = &self.report
-            && let Some(replacement) = self.producer_editor.show(
-                ui,
-                &report.registry,
-                view.connected && !view.busy && self.error.is_none(),
-            )
-        {
-            self.metadata_write = false;
-            request = Some(Request::Replace {
-                revision: replacement.revision,
-                registry: replacement.registry,
-            });
-        }
+        ui.collapsing("Connection administration", |ui| {
+            if let Some(report) = &self.report
+                && let Some(replacement) = self.manifest_editor.show(
+                    ui,
+                    &report.registry,
+                    view.connected && !view.busy && self.error.is_none(),
+                )
+            {
+                self.metadata_write = true;
+                request = Some(Request::Replace {
+                    revision: replacement.revision,
+                    registry: replacement.registry,
+                });
+            }
+            if let Some(report) = &self.report
+                && let Some(replacement) = self.producer_editor.show(
+                    ui,
+                    &report.registry,
+                    view.connected && !view.busy && self.error.is_none(),
+                )
+            {
+                self.metadata_write = false;
+                request = Some(Request::Replace {
+                    revision: replacement.revision,
+                    registry: replacement.registry,
+                });
+            }
+        });
         request
     }
+}
+
+fn recent_facts(sample: Option<SourceSample<'_>>, source: &str) -> bool {
+    sample.filter(|sample| !sample.stale).is_some_and(|sample| {
+        sample
+            .snapshot
+            .states
+            .iter()
+            .any(|state| state.identity.source == source && state.expires_at > sample.now)
+            || sample
+                .events
+                .events
+                .iter()
+                .any(|event| event.identity.source == source && event.expires_at > sample.now)
+    })
 }
 
 fn s_now(view: &View<'_>) -> Duration {

@@ -14,6 +14,9 @@ mod gui_preview;
 #[cfg(test)]
 #[path = "gui/navigation_tests.rs"]
 mod navigation_tests;
+#[cfg(test)]
+#[path = "gui/secondary_flow_tests.rs"]
+mod secondary_flow_tests;
 #[path = "gui/setup_behavior.rs"]
 mod setup_behavior;
 #[path = "gui/setup_coverage.rs"]
@@ -709,6 +712,10 @@ struct Controller {
     setup_library: setup_library_panel::Panel,
     setup_sharing: sharing_panel::Panel,
     setup_workflow: setup_workflow::Workflow,
+    sharing_open: bool,
+    legacy_controls: bool,
+    pending_adoption: Option<Action>,
+    adoption_approved: bool,
     live_sources: Option<setup_preview::LiveSourceWorker>,
     setup_checked: bool,
 }
@@ -791,6 +798,10 @@ impl Controller {
             setup_library: setup_library_panel::Panel::default(),
             setup_sharing: sharing_panel::Panel::default(),
             setup_workflow: setup_workflow::Workflow::default(),
+            sharing_open: false,
+            legacy_controls: false,
+            pending_adoption: None,
+            adoption_approved: false,
             live_sources,
             setup_checked: false,
         }
@@ -817,6 +828,8 @@ impl Controller {
             }
             Err(_) => {
                 self.setup_workflow.abort();
+                self.pending_adoption = None;
+                self.adoption_approved = false;
                 self.pending = false;
                 self.message =
                     "Background worker stopped; draft retained. Reopen this window".into();
@@ -1179,7 +1192,8 @@ impl Controller {
         let sample = self
             .live_sources
             .as_ref()
-            .and_then(|worker| worker.sample());
+            .and_then(|worker| worker.sample())
+            .or_else(|| self.setup_editor.preview.sample().cloned());
         let live_preview = self.setup_editor.preview.mode == setup_preview::Mode::Live;
         if live_preview {
             self.setup_editor.preview.set_sample(sample.clone());
@@ -1279,14 +1293,71 @@ impl Controller {
                         _ => "Pausing lighting…",
                     }
                     .into();
-                    self.dispatch(action);
+                    self.dispatch_workflow(action);
                 }
             }
             Err(error) => {
+                self.pending_adoption = None;
+                self.adoption_approved = false;
                 self.message = error.clone();
                 self.setup_editor.save_error(error);
             }
         }
+        if !self.setup_workflow.pending() && self.setup_workflow.prompt().is_none() {
+            self.adoption_approved = false;
+        }
+    }
+
+    fn dispatch_workflow(&mut self, action: Action) {
+        let replaces_visuals = matches!(
+            &action,
+            Action::SetupReplace { .. }
+                | Action::LibraryUpdate {
+                    mutation: underglow::setup_library::LibraryMutation::Switch { .. },
+                    ..
+                }
+        ) || matches!(&action, Action::Control(args) if args.len() == 1 && args[0] == "pause");
+        let adopting =
+            self.setup_checked && self.setup_editor.applied.is_none() && replaces_visuals;
+        if adopting && !self.adoption_approved {
+            // Hold the exact workflow action BEFORE any pause, switch or Save.
+            // Store/import copies never pass through this path.
+            self.pending_adoption = Some(action);
+            self.message = "Review setup adoption before changing existing lighting.".into();
+        } else {
+            self.dispatch(action);
+        }
+    }
+
+    fn show_adoption_prompt(&mut self, context: &egui::Context) {
+        if self.pending_adoption.is_none() {
+            return;
+        }
+        let response = egui::Modal::new(egui::Id::new("legacy-setup-adoption")).show(context, |ui| {
+            ui.set_width((context.screen_rect().width() - 64.0).min(420.0));
+            ui.heading("Replace legacy lighting with this setup?");
+            ui.label("This replaces legacy notifications, automation rules and visuals in the engine's private snapshot. Unsupported legacy behavior is not carried into the new setup.");
+            ui.label("Your original source file and machine-local Connections, credentials and trust remain unchanged. Lighting is never automatically resumed.");
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Confirm setup adoption").clicked()
+                    && let Some(action) = self.pending_adoption.take() {
+                    self.adoption_approved = true;
+                    self.dispatch(action);
+                }
+                if ui.button("Cancel adoption").clicked() { self.cancel_adoption(); }
+            });
+        });
+        if response.should_close() {
+            self.cancel_adoption();
+        }
+    }
+
+    fn cancel_adoption(&mut self) {
+        self.pending_adoption = None;
+        self.adoption_approved = false;
+        self.setup_workflow.abort();
+        self.message =
+            "Adoption cancelled. Existing lighting and the local draft are unchanged.".into();
     }
 
     fn save_setup(&mut self) {
@@ -1339,20 +1410,45 @@ impl Controller {
 
     fn show_setup_editor(&mut self, ui: &mut egui::Ui) {
         self.setup_editor.preview_brightness = Some(self.brightness);
-        self.setup_editor.preview.set_sample(
-            self.live_sources
-                .as_ref()
-                .and_then(|worker| worker.sample()),
-        );
+        if let Some(worker) = &self.live_sources {
+            self.setup_editor.preview.set_sample(worker.sample());
+        }
+        self.setup_editor.connection_notices =
+            match (&self.setup_editor.draft, &self.setup_editor.selected) {
+                (Some(document), Some(selected)) => {
+                    let sample = self.setup_editor.preview.sample();
+                    self.connections_panel.layer_notices(
+                        document,
+                        selected,
+                        sample.map(|sample| connections_screen::SourceSample {
+                            snapshot: &sample.snapshot,
+                            events: &sample.events,
+                            now: sample.extrapolated_now(),
+                            stale: sample.is_stale(),
+                            generation: sample.generation,
+                        }),
+                    )
+                }
+                _ => vec![],
+            };
         ui.add_enabled_ui(!self.pending && !self.setup_workflow.pending(), |ui| {
             self.setup_editor.show_hosted(ui);
         });
+        if let Some(source) = self.setup_editor.connection_request.take()
+            && let Some(layer) = self.setup_editor.selected.clone()
+        {
+            self.connections_panel.focus(source, layer);
+            self.page = Page::Connections;
+            if !self.pending && self.last_connections.elapsed() >= Duration::from_secs(5) {
+                self.refresh_connections();
+            }
+        }
     }
 
     fn show_setup_library(&mut self, ui: &mut egui::Ui) {
         use setup_library_panel::Intent;
         if self.setup_checked && self.setup_editor.applied.is_none() {
-            ui.small("Saving a starter replaces legacy notifications and automation rules. The source profile and Connections are not changed.");
+            ui.small("New setups stay local drafts until you confirm adoption. Existing lighting is unchanged.");
         }
         let intent = self.setup_library.show(
             ui,
@@ -1417,34 +1513,57 @@ impl Controller {
             }
             None => {}
         }
-        let existing_ids = self
-            .setup_library
-            .report
-            .as_ref()
-            .map(|report| {
-                report
-                    .setups
-                    .iter()
-                    .map(|setup| setup.id.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let candidate = self.setup_sharing.show(
-            ui,
-            sharing_panel::View {
-                applied: self.setup_editor.applied.as_ref(),
-                draft: self.setup_editor.draft.as_ref(),
-                registry: self.connections_panel.registry(),
-                existing_ids: &existing_ids,
-                can_store: self.connected
-                    && self.setup_checked
-                    && !self.pending
-                    && self.setup_library.report.is_some(),
-            },
-        );
-        if let Some(document) = candidate {
-            self.store_imported_copy(document);
-        }
+    }
+
+    fn show_sharing(&mut self, context: &egui::Context) {
+        let mut open = self.sharing_open;
+        let bounds = context.screen_rect().shrink(16.0);
+        egui::Window::new("Import and export setups")
+            .open(&mut open)
+            .collapsible(false)
+            .default_width(520.0)
+            .max_width(bounds.width())
+            .max_height(bounds.height() - 40.0)
+            .constrain_to(bounds)
+            .show(context, |ui| {
+                if ui.button("Close sharing").clicked() {
+                    self.sharing_open = false;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("sharing-body")
+                    .max_height(ui.available_height())
+                    .show(ui, |ui| {
+                        let existing_ids = self
+                            .setup_library
+                            .report
+                            .as_ref()
+                            .map(|report| {
+                                report
+                                    .setups
+                                    .iter()
+                                    .map(|setup| setup.id.clone())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let candidate = self.setup_sharing.show(
+                            ui,
+                            sharing_panel::View {
+                                applied: self.setup_editor.applied.as_ref(),
+                                draft: self.setup_editor.draft.as_ref(),
+                                registry: self.connections_panel.registry(),
+                                existing_ids: &existing_ids,
+                                can_store: self.connected
+                                    && self.setup_checked
+                                    && !self.pending
+                                    && self.setup_library.report.is_some(),
+                            },
+                        );
+                        if let Some(document) = candidate {
+                            self.store_imported_copy(document);
+                        }
+                    });
+            });
+        self.sharing_open &= open;
     }
 
     fn store_imported_copy(&mut self, document: underglow::setup::SetupDocument) {
@@ -1637,6 +1756,10 @@ impl Controller {
                 if ui.button("Close setup browser").clicked() {
                     self.setup_library.open = false;
                 }
+                if ui.button("Share setups").clicked() {
+                    self.sharing_open = true;
+                    self.setup_library.open = false;
+                }
                 ui.small("Browsing does not change your draft or keyboard lighting. Open explicitly; unsaved drafts get Save / Discard / Cancel.");
                 // Keep dismissal reachable even when a picker scrolls its selection into view.
                 egui::ScrollArea::vertical()
@@ -1757,9 +1880,23 @@ impl Controller {
                 self.show_setup_editor(ui);
             } else {
                 egui::ScrollArea::vertical().id_salt("legacy-editor").auto_shrink([false, false]).show(ui, |ui| {
-                    if let Some(warning) = self.status.as_ref().and_then(|s| s.migration_warning.as_ref()) { ui.colored_label(brand::WARNING, warning); }
                     if !self.setup_checked { ui.small("Loading canonical setup from engine…"); }
-
+                    if self.setup_checked {
+                        ui.heading("Keep existing lighting or begin a setup");
+                        ui.label("Your current profile uses legacy behavior. Nothing changes until you choose and confirm a replacement.");
+                    } else {
+                        ui.heading("Choose a setup to edit");
+                        ui.label("Saved setup details are unavailable. You can begin a local draft without changing existing lighting.");
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        if self.setup_checked && ui.button("Keep current behavior").clicked() { self.legacy_controls = true; }
+                        if ui.button("Begin new setup").clicked() { self.setup_library.open = true; }
+                    });
+                    if let Some(warning) = self.status.as_ref().and_then(|s| s.migration_warning.as_ref()) {
+                        ui.collapsing("Legacy compatibility details", |ui| { ui.label(warning); });
+                    }
+                    if !self.legacy_controls { return; }
+                    ui.small("Existing whole-profile controls. Beginning a new setup leaves this behavior intact until confirmed adoption.");
                 ui.small("Legacy compatibility view · whole-preset controls");
                 card().show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -1866,10 +2003,6 @@ impl Controller {
                         });
                     }
                 });
-                ui.collapsing("Layer editor · create a new composition", |ui| {
-                    ui.small("This profile has no canonical setup (or uses unsupported legacy behavior). These controls replace whole presets. Create a blank composition to start a layer stack explicitly.");
-                    self.show_setup_editor(ui);
-                });
                     ui.small(if self.dev_supervised { "Development session · Ctrl-C stops owned processes" } else { "Pause returns control to your keyboard. Closing this window keeps your lighting running." });
                 });
             }
@@ -1883,7 +2016,11 @@ impl Controller {
         if self.setup_library.open {
             self.show_setup_browser(context);
         }
+        if self.sharing_open {
+            self.show_sharing(context);
+        }
         self.show_workflow_prompt(context);
+        self.show_adoption_prompt(context);
     }
 }
 
@@ -2643,6 +2780,15 @@ mod tests {
         }
     }
 
+    fn legacy_controller_fixture() -> (Controller, Receiver<Action>) {
+        let (mut app, incoming) = controller_fixture();
+        // Compatibility checks enter through the actual explicit legacy choice.
+        let mut harness = workspace_test_ui::Harness::new(workspace_test_ui::DEFAULT_SIZE);
+        harness.click("Keep current behavior", None, |ctx| app.show_lighting(ctx));
+        assert!(incoming.try_recv().is_err());
+        (app, incoming)
+    }
+
     pub(super) fn controller_fixture() -> (Controller, Receiver<Action>) {
         let (requests, incoming) = mpsc::channel();
         let (_outgoing, replies) = mpsc::channel();
@@ -2684,6 +2830,10 @@ mod tests {
             setup_library: setup_library_panel::Panel::default(),
             setup_sharing: sharing_panel::Panel::default(),
             setup_workflow: setup_workflow::Workflow::default(),
+            sharing_open: false,
+            legacy_controls: false,
+            pending_adoption: None,
+            adoption_approved: false,
             page: Page::Editor,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
@@ -2784,7 +2934,7 @@ mod tests {
             .map(|index| [231, 17, 199][index % 3])
             .collect();
         for mode in ["matrix", "ripples", "heatmap"] {
-            let (mut app, requests) = controller_fixture();
+            let (mut app, requests) = legacy_controller_fixture();
             app.preset = mode.into();
             app.dev_supervised = true;
             app.dev_simulation = true;
@@ -2913,7 +3063,7 @@ mod tests {
 
     #[test]
     fn polling_and_dirty_edits_do_not_shift_the_controls() {
-        let (mut app, _incoming) = controller_fixture();
+        let (mut app, _incoming) = legacy_controller_fixture();
         let context = egui::Context::default();
         configure_style(&context);
         let frame = |app: &mut Controller| {
@@ -2973,7 +3123,7 @@ mod tests {
         for visualization in catalog::all() {
             let mode = visualization.id;
             for two_tone in [false, true] {
-                let (mut app, _incoming) = controller_fixture();
+                let (mut app, _incoming) = legacy_controller_fixture();
                 app.preset = mode.into();
                 app.ripple_colors.enabled = two_tone;
                 let context = egui::Context::default();
@@ -3015,7 +3165,7 @@ mod tests {
 
     #[test]
     fn renders_compact_and_desktop_without_dispatching_commands() {
-        let (mut app, incoming) = controller_fixture();
+        let (mut app, incoming) = legacy_controller_fixture();
         for size in [egui::vec2(620.0, 640.0), egui::vec2(940.0, 850.0)] {
             for settings_open in [false, true] {
                 let context = egui::Context::default();
@@ -3275,7 +3425,7 @@ mod tests {
 
     #[test]
     fn ripple_color_pickers_render_on_the_main_page() {
-        let (mut app, incoming) = controller_fixture();
+        let (mut app, incoming) = legacy_controller_fixture();
         app.preset = "ripples".into();
         app.ripple_colors.enabled = true;
         let context = egui::Context::default();
@@ -3433,6 +3583,10 @@ mod tests {
             setup_library: setup_library_panel::Panel::default(),
             setup_sharing: sharing_panel::Panel::default(),
             setup_workflow: setup_workflow::Workflow::default(),
+            sharing_open: false,
+            legacy_controls: false,
+            pending_adoption: None,
+            adoption_approved: false,
             page: Page::Editor,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
