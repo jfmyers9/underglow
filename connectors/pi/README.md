@@ -89,6 +89,12 @@ task success**. `agent_end` is intentionally ignored because retries, compaction
 or follow-ups can continue after it. Duplicate settle notifications while idle
 do not create another event. Terminal/window focus is not detected.
 
+Generic editors can discover these facts from the declarative
+[Pi capability descriptor](../../examples/pi-source-capabilities.toml), exposed
+by `underglow::source_capabilities::pi_descriptor()`. It declares only `idle`
+and `working` states and the `finished` event, not focus, success, or approval.
+See [descriptor schema and validation](../../docs/source-capabilities.md).
+
 - Each running session gets an unrelated UUID; two terminals do not overwrite
   each other. No session filenames or historical session IDs are sent.
 - State leases last 15 seconds and renew every 5 seconds. A killed/crashed Pi

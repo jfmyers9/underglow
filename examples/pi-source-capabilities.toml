@@ -1,0 +1,36 @@
+schema_version = 1
+source = "pi"
+display_name = "Pi"
+
+[instances]
+semantics = "session"
+selectors = ["any", "exact"]
+
+[lifecycle]
+presence = "live-state-lease"
+absence = "no-live-state"
+expiry = "at-deadline-no-synthetic-fact"
+renewal = "higher-sequence-state"
+events = "occurrence-only"
+removal = "drops-state-keeps-events"
+renewal_interval_ms = 5000
+
+[lifecycle.state_ttl]
+min_ms = 15000
+max_ms = 15000
+
+[lifecycle.event_ttl]
+min_ms = 1
+max_ms = 2000
+
+[[states]]
+id = "idle"
+label = "Idle"
+
+[[states]]
+id = "working"
+label = "Working"
+
+[[events]]
+id = "finished"
+label = "Finished (settled, not success)"

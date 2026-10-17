@@ -63,6 +63,9 @@ missing while-state state means source presence. Source IDs are external fact
 selectors, not executable definitions. Missing/offline sources are allowed and
 hide conditional layers. Capability checking and variant behaviors can extend
 this neutral activation/appearance split without connector-specific renderers.
+Editors can use the separate [source capability registry](source-capabilities.md)
+for declared choices and repairable activation warnings; canonical setup
+validation remains source-neutral and retains unknown/offline selectors.
 
 ## Validation and safe replacement
 
