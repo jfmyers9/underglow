@@ -177,13 +177,18 @@ test("unreachable daemon never blocks activity and reconnect publishes only curr
   for (let i = 0; i < 10000; i++) { c.working(); c.settled(); }
   c.working();
   assert.ok(performance.now() - start < 300, "activity must not wait for network delivery");
-  await delay(120);
+  // Sequence is monotonic: reaching attempt three proves the absent engine has
+  // caused retries, regardless of whether we sample a request or its backoff.
+  // pendingState is not an invariant: pump clears it while a request is in flight.
+  await until(() => c.sequence >= 3);
   assert.ok(c.backoffMs <= 40);
-  assert.equal(c.pendingState, true);
-  assert.equal(c.pendingEvent, undefined);
   await f.listen();
-  await until(() => f.messages.length > 0);
-  assert.equal(f.messages[0].payload.state, "working");
+  // Observe convergence and a subsequent renewal on the wire, not a transient
+  // queue flag. Shutdown drains/cancels pending work before checking the history.
+  await until(() => f.messages.filter((m) => m.payload.kind === "state").length >= 2);
+  await c.stop();
+  const states = f.messages.filter((m) => m.payload.kind === "state");
+  assert.ok(states.every((m) => m.payload.state === "working"));
   assert.equal(f.messages.some((m) => m.payload.kind === "event"), false);
 });
 
