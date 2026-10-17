@@ -74,6 +74,24 @@ Editors can use the separate [source capability registry](source-capabilities.md
 for declared choices and repairable activation warnings; canonical setup
 validation remains source-neutral and retains unknown/offline selectors.
 
+The GUI's **Behavior appearances** form edits the selected logical layer's base
+condition and its appearances without TOML or rule IDs. Choose Always, While a
+source matches (presence or state), When an event occurs, or When a state changes.
+Source metadata supplies state/event choices and supported any/exact instance
+selectors. Optional live observations are marked **unknown/observed**, never
+promoted to supported metadata. Missing or undeclared saved selectors remain
+visible with repair warnings; simply opening the form does not rewrite them.
+Exact IDs can be typed or chosen from observations and may name ephemeral
+producer sessions, not windows or focus. Transient durations are 1..60000 ms.
+
+Select **Base / fallback appearance** to choose whether the base remains visible
+offline (Always) or hides with source absence/expiry (While source is present).
+Appearances share the layer target and can inherit its brightness or explicitly
+override it. Changing an appearance's renderer preserves brightness inheritance.
+Add, rename, enable, delete and change appearance priority in the same form;
+these are draft edits governed by the existing Save/Discard controls. No form
+starts a connector, grants executable trust, or resumes physical lighting.
+
 ## Logical behavior variants
 
 `variants` defaults to an empty list (omitted when saving an old setup). Each

@@ -87,7 +87,10 @@ pub struct Panel {
 
 impl Panel {
     /// Metadata-only handoff for condition forms; never exposes producer trust/argv.
-    #[allow(dead_code)] // JIM-26 host wiring follows independently; also exercised below.
+    pub fn has_report(&self) -> bool {
+        self.report.is_some()
+    }
+
     pub fn capabilities(&self) -> Option<underglow::source_capabilities::CapabilityRegistry> {
         let report = self.report.as_ref()?;
         let mut registry = underglow::source_capabilities::CapabilityRegistry::new();

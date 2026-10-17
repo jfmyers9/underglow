@@ -50,15 +50,35 @@ draft. The fixed Pause/Resume control remains separate and explicit.
 - **New blank composition → Create blank** creates an independently identified,
   empty setup. Added layers are explicitly always-on, Whole-keyboard Aurora
   layers using catalog defaults; no Pi behavior is injected.
-- Conditions and behavior appearances remain readable but read-only here.
-  Condition forms and faithful composited draft preview are separate work.
-- **Apply & persist composition** explicitly submits the validated declarative
+- **Behavior appearances** edits the selected layer's base/fallback condition and
+  its reusable appearances. Choose **Always**, **While a source matches** (presence
+  or state), **When an event occurs**, or **When a state changes**. Capability
+  metadata supplies valid source, state, event and supported any/exact-instance
+  choices; transient duration is bounded to 1–60000 ms and capped by source/event
+  leases. Exact IDs can be typed or picked from read-only observations and may
+  identify ephemeral producer sessions, not focus/windows.
+- Add, rename, enable, delete and reorder appearances. Transients outrank
+  persistent appearances; later matching appearances win within each class.
+  All appearances share the logical layer's target. Appearance brightness may
+  inherit the layer value or explicitly override it; changing the renderer keeps
+  inheritance intact. The base/fallback can remain visible offline with Always,
+  or hide on absence/expiry with While source is present.
+- Missing/undeclared saved selectors remain visible with repair warnings rather
+  than being silently reset. Unknown observed facts are explicitly labeled
+  **unknown/observed**, not advertised as supported. Pi declares only Idle/Working
+  states and Finished (settled, not success). No form publishes facts or grants
+  executable trust.
+- **Save composition** explicitly submits the validated declarative
   draft via bounded stdin JSON and the last engine revision. It never resumes
   paused lighting, replaces executable trust, or automatically retries a stale
   revision. Failed saves retain the draft. The editor is disabled while a save is
   pending; only acknowledgment of the submitted draft clears its dirty state.
-- The target canvas is an editing aid, not device feedback or a composited preview.
-  Neither editing nor rendering the editor opens an SDK or starts input producers.
+  Save requires paused lighting; offline drafts remain editable. **Discard draft**
+  restores the last acknowledged composition locally without an engine write.
+- **Composition preview** renders the complete draft through the shared renderer,
+  distinct from the target-editing canvas. Sources are read-only; **Isolated input demo**
+  uses isolated synthetic inputs. Neither editing nor preview opens an SDK,
+  starts input producers, or changes physical lighting. Resume remains explicit.
 
 Profiles without canonical setups use the clearly labeled **Legacy compatibility
 view** below, including migration warnings when supplied by the engine. Expand

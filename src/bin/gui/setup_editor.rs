@@ -1,10 +1,11 @@
 //! Hardware-free layer draft and stable-ID operations. Transport belongs to the host.
-use super::{setup_inspector, setup_preview, setup_targets};
+use super::{setup_behavior, setup_inspector, setup_preview, setup_targets};
 use eframe::egui;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use underglow::setup::{Activation, Layer, SetupDocument, Target};
 use underglow::setup_edits::{LayerEdit, LayerPatch, apply_edits};
+use underglow::source_capabilities::CapabilityRegistry;
 
 pub enum Intent {
     Apply {
@@ -290,6 +291,66 @@ mod tests {
     }
 
     #[test]
+    fn mounted_behavior_forms_use_custom_metadata_preserve_content_and_discard() {
+        use underglow::source_capabilities::{FactDescriptor, pi_descriptor};
+        let ctx = egui::Context::default();
+        let original = document();
+        let id = original.layers[0].id.clone();
+        let mut editor = Editor::default();
+        editor.load(Some(original.clone()));
+        editor.selected = Some(id.clone());
+        editor.can_save = true;
+        let mut descriptor = pi_descriptor();
+        descriptor.source = "build".into();
+        descriptor.display_name = "Build server".into();
+        descriptor.events = vec![FactDescriptor {
+            id: "artifact".into(),
+            label: "Artifact ready".into(),
+        }];
+        let mut registry = CapabilityRegistry::new();
+        registry.insert(descriptor).unwrap();
+        editor.set_capabilities(registry);
+        click(&ctx, &mut editor, "Always", 0);
+        click(&ctx, &mut editor, "When an event occurs", 0);
+        let changed = editor.draft.as_ref().unwrap();
+        assert!(
+            matches!(&changed.layers[0].activation, Activation::OnEvent { source, event, .. } if source == "build" && event == "artifact")
+        );
+        let mut expected = original.clone();
+        expected.layers[0].activation = changed.layers[0].activation.clone();
+        assert_eq!(changed, &expected);
+        assert_eq!(editor.applied.as_ref(), Some(&original));
+        click(&ctx, &mut editor, "Add behavior appearance", 0);
+        click(&ctx, &mut editor, "Always", 0);
+        click(&ctx, &mut editor, "When an event occurs", 0);
+        let changed = editor.draft.as_ref().unwrap();
+        assert_eq!(changed.layers[0].variants.len(), 2);
+        assert!(
+            matches!(&changed.layers[0].variants[1].activation, Activation::OnEvent { source, event, .. } if source == "build" && event == "artifact")
+        );
+        assert_eq!(changed.layers[0].variants[1].brightness, None);
+        assert_eq!(
+            changed.layers[0].variants[0],
+            original.layers[0].variants[0]
+        );
+        assert_eq!(changed.layers[0].target, original.layers[0].target);
+        assert_eq!(changed.layers[0].id, id);
+        assert_eq!(&changed.layers[1..], &original.layers[1..]);
+        assert_eq!(changed.groups, original.groups);
+        assert!(editor.dirty);
+        click(&ctx, &mut editor, "Save composition", 0);
+        assert_eq!(
+            editor.applied.as_ref(),
+            Some(&original),
+            "Save is only an intent until acknowledged"
+        );
+        click(&ctx, &mut editor, "Discard draft", 0);
+        assert_eq!(editor.draft.as_ref(), Some(&original));
+        assert!(!editor.dirty);
+        assert!(editor.error.is_none(), "{:?}", editor.error);
+    }
+
+    #[test]
     fn headless_build_select_rename_mute_duplicate_reorder_and_delete_stack() {
         let ctx = egui::Context::default();
         let mut editor = Editor::default();
@@ -371,6 +432,8 @@ pub struct Editor {
     pub dirty: bool,
     pub selected: Option<String>,
     targets: BTreeMap<String, setup_targets::TargetSelection>,
+    behaviors: setup_behavior::BehaviorEditor,
+    capabilities: Option<CapabilityRegistry>,
     error: Option<String>,
     confirm_blank: bool,
 }
@@ -389,6 +452,11 @@ fn fresh_id(prefix: &str) -> String {
 }
 
 impl Editor {
+    /// Declarative metadata from Connections; never starts a producer or grants trust.
+    pub fn set_capabilities(&mut self, registry: CapabilityRegistry) {
+        self.capabilities = Some(registry);
+    }
+
     /// Only acknowledge the exact draft submitted, never erase subsequent edits.
     pub fn accept_saved(&mut self, submitted: &SetupDocument, saved: SetupDocument) -> bool {
         if self.draft.as_ref() != Some(submitted) {
@@ -403,6 +471,9 @@ impl Editor {
 
     /// Background status/setup refreshes must never replace an unsaved draft.
     pub fn load(&mut self, document: Option<SetupDocument>) {
+        if self.capabilities.is_none() {
+            self.set_capabilities(CapabilityRegistry::with_builtins());
+        }
         if self.dirty {
             return;
         }
@@ -695,25 +766,16 @@ impl Editor {
                 }
             });
             ui.small(format!("Stable ID: {id}"));
-            ui.small(format!(
-                "Condition (read-only): {}",
-                serde_json::to_string(&layer.activation).unwrap_or_default()
-            ));
-            if !layer.variants.is_empty() {
-                ui.collapsing(
-                    format!("{} behavior appearances (read-only)", layer.variants.len()),
-                    |ui| {
-                        for variant in &layer.variants {
-                            ui.label(format!(
-                                "{} · {}",
-                                variant.name,
-                                serde_json::to_string(&variant.activation).unwrap_or_default()
-                            ));
-                        }
-                    },
-                );
-            }
-            setup_inspector::show(ui, &mut edited);
+            // sample() is raw real-source transport data even in synthetic preview modes.
+            let sample = self.preview.sample().filter(|sample| !sample.is_stale());
+            self.behaviors.show(
+                ui,
+                &mut edited,
+                self.capabilities
+                    .get_or_insert_with(CapabilityRegistry::with_builtins),
+                sample.map(|sample| &sample.snapshot),
+                sample.map(|sample| &sample.events),
+            );
             ui.separator();
             let others: Vec<_> = doc
                 .layers
@@ -740,7 +802,9 @@ impl Editor {
                     brightness: (edited.brightness != layer.brightness)
                         .then_some(edited.brightness),
                     target: (edited.target != layer.target).then_some(edited.target),
-                    ..Default::default()
+                    activation: (edited.activation != layer.activation)
+                        .then_some(edited.activation),
+                    variants: (edited.variants != layer.variants).then_some(edited.variants),
                 };
                 match apply_edits(
                     &current,

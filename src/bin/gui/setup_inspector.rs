@@ -78,14 +78,19 @@ fn primitive_color(renderer: &Renderer) -> Option<[u8; 3]> {
 /// Switch only appearance, retaining parameters supported by both renderers.
 /// Fixed colors discard palettes; incompatible input/timing settings are not
 /// carried over. Unknown IDs and reselecting the current effect are no-ops.
+#[cfg(test)]
 pub fn switch_renderer(layer: &mut Layer, id: &str) -> bool {
-    if renderer_id(&layer.renderer) == id {
+    switch_appearance(&mut layer.renderer, id)
+}
+
+pub fn switch_appearance(renderer: &mut Renderer, id: &str) -> bool {
+    if renderer_id(renderer) == id {
         return false;
     }
     let Some(mut next) = default_renderer(id) else {
         return false;
     };
-    let old = &layer.renderer;
+    let old = &*renderer;
     if entry(old).is_some_and(|e| e.palette_available(false))
         && entry(&next).is_some_and(|e| e.palette_available(false))
     {
@@ -130,7 +135,7 @@ pub fn switch_renderer(layer: &mut Layer, id: &str) -> bool {
     {
         *period_ms = (*previous).clamp(1, 60_000);
     }
-    layer.renderer = next;
+    *renderer = next;
     true
 }
 
@@ -164,9 +169,19 @@ fn color_control(ui: &mut Ui, label: &str, color: &mut [u8; 3]) {
 /// Stable layer ID scopes all widget state; names and document order are untouched.
 pub fn show(ui: &mut Ui, layer: &mut Layer) -> bool {
     let before = (layer.renderer.clone(), layer.brightness);
-    ui.push_id(("layer-appearance", layer.id.clone()), |ui| {
-        let mut selected = renderer_id(&layer.renderer);
-        let title = entry(&layer.renderer).map(|e| e.title)
+    ui.push_id(("layer-appearance", &layer.id), |ui| {
+        show_renderer(ui, &mut layer.renderer);
+        ui.add(egui::Slider::new(&mut layer.brightness, 0..=255).text("Layer brightness"));
+        ui.small("Only this layer's visual intensity. Global brightness and safety limits remain independent.");
+    });
+    before != (layer.renderer.clone(), layer.brightness)
+}
+
+pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {
+    let before = renderer.clone();
+    ui.push_id("appearance", |ui| {
+        let mut selected = renderer_id(renderer);
+        let title = entry(renderer).map(|e| e.title)
             .or_else(|| PRIMITIVES.iter().find(|(id, _)| *id == selected).map(|(_, title)| *title))
             .unwrap_or("Unknown renderer");
         egui::ComboBox::from_id_salt("renderer").selected_text(title)
@@ -179,11 +194,9 @@ pub fn show(ui: &mut Ui, layer: &mut Layer) -> bool {
                     ui.selectable_value(&mut selected, id, title);
                 }
             });
-        switch_renderer(layer, selected);
-        ui.add(egui::Slider::new(&mut layer.brightness, 0..=255).text("Layer brightness"));
-        ui.small("Only this layer's visual intensity. Global brightness and safety limits remain independent and still cap physical output.");
+        switch_appearance(renderer, selected);
 
-        let metadata = entry(&layer.renderer);
+        let metadata = entry(renderer);
         if let Some(entry) = metadata {
             ui.label(entry.description);
             if entry.palette == PaletteControl::Fixed {
@@ -200,7 +213,7 @@ pub fn show(ui: &mut Ui, layer: &mut Layer) -> bool {
         } else {
             ui.small("Scene primitive: RGB color only, with a period for Pulse/Sweep. Palettes and effect speed are not supported.");
         }
-        match &mut layer.renderer {
+        match renderer {
             Renderer::Effect { palette, speed, .. } => {
                 if let Some(entry) = metadata {
                     if entry.palette_available(false) { palette_control(ui, palette, entry); }
@@ -249,12 +262,12 @@ pub fn show(ui: &mut Ui, layer: &mut Layer) -> bool {
                 ui.small("Input: timer only. Preview simulates its phase, not a live timer. Timer pause is independent of physical lighting Resume.");
             }
         }
-        if let Err(error) = layer.renderer.validate() {
+        if let Err(error) = renderer.validate() {
             ui.colored_label(egui::Color32::YELLOW, format!("Unsupported settings: {error}. Choose another effect to reset incompatible appearance settings."));
         }
         ui.small("Appearance edits never activate hardware. Physical lighting stays paused until explicit Resume.");
     });
-    before != (layer.renderer.clone(), layer.brightness)
+    before != *renderer
 }
 
 #[cfg(test)]

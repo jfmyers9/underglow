@@ -11,6 +11,8 @@ mod connectors;
 mod devpreview;
 #[path = "gui/preview.rs"]
 mod gui_preview;
+#[path = "gui/setup_behavior.rs"]
+mod setup_behavior;
 #[path = "gui/setup_editor.rs"]
 mod setup_editor;
 #[path = "gui/setup_inspector.rs"]
@@ -716,6 +718,9 @@ impl Controller {
                 Action::ConnectionsShow => {
                     // Never place the secret-bearing registry JSON in generic diagnostics.
                     self.connections_panel.receive_report(completion.result);
+                    if let Some(registry) = self.connections_panel.capabilities() {
+                        self.setup_editor.set_capabilities(registry);
+                    }
                 }
                 action @ (Action::SetupShow | Action::SetupReplace { .. }) => {
                     self.setup_checked = true;
@@ -1377,7 +1382,8 @@ impl eframe::App for Controller {
         self.receive();
         if self.connected && !self.setup_checked && !self.pending && !self.poll_pending {
             self.dispatch(Action::SetupShow);
-        } else if self.page == Page::Connections
+        } else if (self.page == Page::Connections || !self.connections_panel.has_report())
+            && self.connected
             && !self.pending
             && !self.poll_pending
             && self.last_connections.elapsed() >= Duration::from_secs(5)
