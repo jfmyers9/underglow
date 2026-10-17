@@ -14,7 +14,7 @@ pub(crate) fn wrap(
     sources: Option<SharedSources>,
 ) -> Result<Box<dyn SignalProgram>, Box<dyn std::error::Error>> {
     config.validate()?;
-    if config.rules.is_empty() {
+    if config.rules.is_empty() && !config.has_named_targets() {
         return Ok(base);
     }
     Ok(Box::new(ExternalRulesProgram {
@@ -47,7 +47,9 @@ impl SignalProgram for ExternalRulesProgram {
     }
 
     fn validate_device(&self, info: &DeviceInfo) -> ProgramResult {
-        self.base.validate_device(info)
+        self.base.validate_device(info)?;
+        self.runtime.validate_layout(info)?;
+        Ok(())
     }
 
     fn tick(&mut self, interrupted: &AtomicBool) -> ProgramResult {
@@ -228,6 +230,40 @@ zones=['function']
             Color::new(0, 0, 90)
         );
         program.shutdown(true).unwrap();
+    }
+
+    #[test]
+    fn live_device_validation_rejects_unsupported_named_layout_even_without_rules() {
+        for input in [
+            "[scenes.x]\nkeys=['F1']",
+            "[groups]\nWASD=['W','A','S','D']\n[scenes.x]\ngroups=['WASD']",
+        ] {
+            let config: AutomationConfig = toml::from_str(input).unwrap();
+            assert!(config.rules.is_empty());
+            let program = wrap(
+                Box::new(StaticEffectSignal::new(EffectKind::Matrix)),
+                &config,
+                None,
+            )
+            .unwrap();
+            let mut info = crate::preview::preview_device();
+            program.validate_device(&info).unwrap();
+            info.layout = underglow::device::Layout::Iso;
+            let error = program.validate_device(&info).unwrap_err().to_string();
+            assert!(error.contains("80HE ANSI 6x17"), "{error}");
+            info.layout = underglow::device::Layout::Ansi;
+            info.device_type = underglow::device::DeviceType::Keyboard60;
+            assert!(program.validate_device(&info).is_err());
+        }
+        let program = wrap(
+            Box::new(StaticEffectSignal::new(EffectKind::Matrix)),
+            &config(),
+            None,
+        )
+        .unwrap();
+        let mut info = crate::preview::preview_device();
+        info.layout = underglow::device::Layout::Iso;
+        program.validate_device(&info).unwrap();
     }
 
     #[test]

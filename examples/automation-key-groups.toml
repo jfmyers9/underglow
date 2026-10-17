@@ -1,0 +1,63 @@
+# 80HE ANSI only. Each explicit Pi instance gets its own physical status key.
+# Matrix continues on every key not covered by an active scene.
+effect = "matrix"
+palette = "terminal"
+brightness = 128
+continuous = true
+
+[automation.groups]
+WASD = ["W", "A", "S", "D"]
+agent-strip = ["F1", "F2", "F3", "F4"]
+
+[[automation.rules]]
+id = "pi-session-a"
+source = "pi"
+instance = "sessionA"
+mode = "while-state"
+state = "working"
+scene = "session-a"
+priority = 10
+
+[[automation.rules]]
+id = "pi-session-b"
+source = "pi"
+instance = "sessionB"
+mode = "while-state"
+state = "working"
+scene = "session-b"
+priority = 10
+
+[[automation.rules]]
+id = "focus-working"
+source = "focus"
+mode = "while-state"
+state = "working"
+scene = "focus-wasd"
+
+[[automation.rules]]
+id = "agent-finished"
+source = "pi"
+mode = "on-event"
+event = "finished"
+scene = "done-strip"
+priority = 20
+duration_ms = 1500
+
+[automation.scenes.session-a]
+keys = ["F1"]
+kind = "pulse"
+color = [0, 80, 255]
+
+[automation.scenes.session-b]
+keys = ["F2"]
+kind = "pulse"
+color = [255, 0, 120]
+
+[automation.scenes.focus-wasd]
+groups = ["WASD"]
+color = [255, 160, 0]
+
+[automation.scenes.done-strip]
+groups = ["agent-strip"]
+kind = "sweep"
+color = [0, 255, 64]

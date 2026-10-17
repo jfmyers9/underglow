@@ -8,9 +8,11 @@
 //! intermediate state changes between observations. First appearance, expiry,
 //! removal, and same-state lease renewals are not transitions.
 use crate::compositor::{KeyMask, Layer, winning_layer};
+use crate::device::DeviceInfo;
 use crate::effects::EffectKind;
 use crate::external::{EventBatch, Identity, Snapshot, StateSnapshot};
-use crate::layout::Zone;
+use crate::key_targets::canonical_coord;
+use crate::layout::{KeyboardLayout, Zone};
 use crate::render::{Color, Frame, PaletteName, RenderContext};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,6 +23,8 @@ use std::time::Duration;
 pub struct AutomationConfig {
     pub rules: Vec<Rule>,
     pub scenes: BTreeMap<String, Scene>,
+    /// Flat, reusable groups of physical key names (no recursive groups).
+    pub groups: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -92,8 +96,10 @@ pub struct Scene {
     pub effect: Option<EffectKind>,
     pub palette: Option<PaletteName>,
     pub brightness: Option<u8>,
-    /// Empty means the whole keyboard; never silently substitute other keys.
+    /// The union of zones, keys, and groups. All three empty means whole keyboard.
     pub zones: Vec<SceneZone>,
+    pub keys: Vec<String>,
+    pub groups: Vec<String>,
 }
 
 impl Default for Scene {
@@ -105,6 +111,8 @@ impl Default for Scene {
             palette: None,
             brightness: None,
             zones: Vec::new(),
+            keys: Vec::new(),
+            groups: Vec::new(),
         }
     }
 }
@@ -122,14 +130,35 @@ fn token(value: &str) -> bool {
 
 impl AutomationConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.rules.len() > 64 || self.scenes.len() > 64 {
-            return Err("automation supports at most 64 rules and 64 scenes".into());
+        if self.rules.len() > 64 || self.scenes.len() > 64 || self.groups.len() > 64 {
+            return Err("automation supports at most 64 rules, 64 scenes, and 64 groups".into());
+        }
+        for (name, keys) in &self.groups {
+            if !token(name) || keys.is_empty() || keys.len() > 128 {
+                return Err(format!(
+                    "automation group {name}: requires a valid name and 1..128 keys"
+                ));
+            }
+            for key in keys {
+                if canonical_coord(key).is_none() {
+                    return Err(format!(
+                        "automation group {name}: unknown or unsupported key {key:?}"
+                    ));
+                }
+            }
         }
         let mut ids = BTreeSet::new();
         for (name, scene) in &self.scenes {
             if !label(name) || scene.zones.len() > 5 {
                 return Err("automation scene name or zones invalid".into());
             }
+            if scene.keys.len() > 128 || scene.groups.len() > 64 {
+                return Err(format!(
+                    "automation scene {name}: at most 128 keys and 64 group references"
+                ));
+            }
+            self.scene_mask(scene)
+                .map_err(|error| format!("automation scene {name}: {error}"))?;
             if (scene.kind == SceneKind::Effect) != scene.effect.is_some()
                 || (scene.kind != SceneKind::Effect && scene.palette.is_some())
             {
@@ -176,6 +205,24 @@ impl AutomationConfig {
         }
         Ok(())
     }
+
+    /// Resolve custom groups as well as direct keys. Call after `validate`.
+    pub fn scene_mask(&self, scene: &Scene) -> Result<KeyMask, String> {
+        scene.resolve_mask(&self.groups)
+    }
+
+    /// Zones/whole-keyboard retain legacy support; physical names require the
+    /// canonical ANSI map, even when their rule is currently inactive.
+    pub fn validate_layout(&self, info: &DeviceInfo) -> Result<(), String> {
+        if self.has_named_targets() {
+            crate::key_targets::validate_device(info)?;
+        }
+        Ok(())
+    }
+
+    pub fn has_named_targets(&self) -> bool {
+        self.scenes.values().any(Scene::has_named_targets)
+    }
 }
 
 impl Rule {
@@ -218,6 +265,8 @@ pub struct RuleDiagnostic {
 
 pub struct AutomationRuntime {
     config: AutomationConfig,
+    /// Resolve selectors once, not on every frame or diagnostic request.
+    masks: BTreeMap<String, KeyMask>,
     previous: BTreeMap<Identity, StateSnapshot>,
     activations: Vec<Option<Activation>>,
     matched: Vec<bool>,
@@ -229,7 +278,13 @@ pub struct AutomationRuntime {
 impl AutomationRuntime {
     pub fn new(config: AutomationConfig) -> Result<Self, String> {
         config.validate()?;
+        let masks = config
+            .scenes
+            .iter()
+            .map(|(name, scene)| Ok((name.clone(), config.scene_mask(scene)?)))
+            .collect::<Result<_, String>>()?;
         Ok(Self {
+            masks,
             activations: vec![None; config.rules.len()],
             matched: vec![false; config.rules.len()],
             config,
@@ -242,6 +297,10 @@ impl AutomationRuntime {
 
     pub fn event_cursor(&self) -> u64 {
         self.cursor
+    }
+
+    pub fn validate_layout(&self, info: &DeviceInfo) -> Result<(), String> {
+        self.config.validate_layout(info)
     }
 
     /// Discard transient history while keeping currently leased persistent state.
@@ -366,9 +425,14 @@ impl AutomationRuntime {
                     .filter(|a| a.expires.is_none_or(|e| self.now < e))
                     .map(|activation| {
                         let scene = &self.config.scenes[&rule.scene];
+                        let mask = &self.masks[&rule.scene];
                         Layer {
-                            frame: scene.render(ctx, self.now.saturating_sub(activation.started)),
-                            mask: scene.mask(),
+                            frame: scene.render_masked(
+                                ctx,
+                                self.now.saturating_sub(activation.started),
+                                mask,
+                            ),
+                            mask: mask.clone(),
                             priority: rule.priority,
                             expires: activation.expires,
                         }
@@ -388,7 +452,7 @@ impl AutomationRuntime {
                 let activation =
                     self.activations[index].filter(|a| a.expires.is_none_or(|e| self.now < e));
                 let active = activation.is_some();
-                let mask = self.config.scenes[&rule.scene].mask();
+                let mask = &self.masks[&rule.scene];
                 let visible_keys = if active {
                     let current = layer_index;
                     layer_index += 1;
@@ -421,15 +485,61 @@ impl AutomationRuntime {
 }
 
 impl Scene {
-    pub fn mask(&self) -> KeyMask {
-        if self.zones.is_empty() {
-            KeyMask::Whole
-        } else {
-            KeyMask::Zones(self.zones.iter().copied().map(Into::into).collect())
-        }
+    fn has_named_targets(&self) -> bool {
+        !self.keys.is_empty() || !self.groups.is_empty()
     }
 
+    /// Standalone direct-key/zone mask. Group references require
+    /// `AutomationConfig::scene_mask`; unresolved selectors fail closed.
+    pub fn mask(&self) -> KeyMask {
+        self.resolve_mask(&BTreeMap::new())
+            .unwrap_or_else(|_| KeyMask::Coordinates(Vec::new()))
+    }
+
+    fn resolve_mask(&self, groups: &BTreeMap<String, Vec<String>>) -> Result<KeyMask, String> {
+        let zones: Vec<Zone> = self.zones.iter().copied().map(Into::into).collect();
+        if !self.has_named_targets() {
+            return Ok(if zones.is_empty() {
+                KeyMask::Whole
+            } else {
+                KeyMask::Zones(zones)
+            });
+        }
+        let mut names: Vec<&String> = self.keys.iter().collect();
+        for name in &self.groups {
+            let keys = groups
+                .get(name)
+                .ok_or_else(|| format!("unknown group {name:?}"))?;
+            if keys.is_empty() {
+                return Err(format!("group {name:?} is empty"));
+            }
+            names.extend(keys);
+        }
+        let mut coords = Vec::new();
+        for name in names {
+            let coord = canonical_coord(name)
+                .ok_or_else(|| format!("unknown or unsupported key {name:?}"))?;
+            if !coords.contains(&coord) {
+                coords.push(coord);
+            }
+        }
+        if !zones.is_empty() {
+            let layout = KeyboardLayout::for_device(&DeviceInfo::synthetic_80he());
+            for key in layout.keys().iter().filter(|key| zones.contains(&key.zone)) {
+                if !coords.contains(&key.coord) {
+                    coords.push(key.coord);
+                }
+            }
+        }
+        Ok(KeyMask::Coordinates(coords))
+    }
+
+    #[cfg(test)]
     fn render(&self, ctx: &RenderContext<'_>, elapsed: Duration) -> Frame {
+        self.render_masked(ctx, elapsed, &self.mask())
+    }
+
+    fn render_masked(&self, ctx: &RenderContext<'_>, elapsed: Duration, mask: &KeyMask) -> Frame {
         let mut ctx = ctx.clone();
         ctx.brightness = ctx.brightness.min(self.brightness.unwrap_or(255));
         ctx.palette = self.palette.unwrap_or(ctx.palette);
@@ -440,7 +550,6 @@ impl Scene {
         let mut frame = Frame::black();
         let [r, g, b] = self.color;
         let color = Color::new(r, g, b).scale(ctx.brightness);
-        let mask = self.mask();
         let mut keys: Vec<_> = ctx
             .layout
             .keys()
@@ -801,6 +910,186 @@ zones = ['function']
                     .all(|channel| *channel <= 30)
             );
         }
+    }
+
+    #[test]
+    fn key_groups_preserve_old_defaults_and_resolve_union_without_duplicates() {
+        assert_eq!(Scene::default().mask(), KeyMask::Whole);
+        let old: AutomationConfig = toml::from_str("[scenes.old]\nzones=['function']").unwrap();
+        old.validate().unwrap();
+        assert!(old.groups.is_empty());
+        assert_eq!(
+            old.scenes["old"].mask(),
+            KeyMask::Zones(vec![Zone::Function])
+        );
+        let config: AutomationConfig = toml::from_str(
+            r#"
+[groups]
+WASD = ['W', 'A', 'S', 'D', 'w']
+[scenes.selected]
+keys = ['F1', 'f1', 'W']
+groups = ['WASD', 'WASD']
+[scenes.combined]
+zones = ['arrows']
+keys = ['Escape']
+groups = ['WASD']
+"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        let mask = config.scene_mask(&config.scenes["selected"]).unwrap();
+        let KeyMask::Coordinates(coords) = &mask else {
+            panic!("expected coordinate mask")
+        };
+        assert_eq!(coords.len(), 5);
+        for key in ["F1", "W", "A", "S", "D"] {
+            assert!(coords.contains(&canonical_coord(key).unwrap()));
+        }
+        assert!(!coords.contains(&canonical_coord("F2").unwrap()));
+        let layout = KeyboardLayout::for_device(&info());
+        let mask = config.scene_mask(&config.scenes["combined"]).unwrap();
+        for key in layout.keys() {
+            let expected = key.zone == Zone::Arrows
+                || ["Escape", "W", "A", "S", "D"]
+                    .iter()
+                    .any(|name| canonical_coord(name) == Some(key.coord));
+            assert_eq!(mask.contains(key), expected);
+        }
+        // Standalone calls cannot resolve a config's groups: fail closed.
+        assert_eq!(
+            config.scenes["selected"].mask(),
+            KeyMask::Coordinates(vec![])
+        );
+        let direct: Scene = toml::from_str("keys=['F1']").unwrap();
+        assert_eq!(
+            direct.mask(),
+            KeyMask::Coordinates(vec![canonical_coord("F1").unwrap()])
+        );
+    }
+
+    #[test]
+    fn named_target_validation_reports_unknown_keys_groups_and_bounds() {
+        for (input, expected) in [
+            ("[scenes.x]\nkeys=['Fn']", "unsupported key"),
+            ("[scenes.x]\nkeys=['F1-F4']", "unsupported key"),
+            ("[scenes.x]\ngroups=['missing']", "unknown group"),
+            ("[groups]\nempty=[]", "1..128 keys"),
+            ("[groups]\nWASD=['W','bogus']", "unsupported key"),
+            ("[groups]\n'bad name'=['F1']", "valid name"),
+        ] {
+            let config: AutomationConfig = toml::from_str(input).unwrap();
+            let error = config.validate().unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+        let mut config = AutomationConfig::default();
+        config
+            .groups
+            .insert("too-many".into(), vec!["F1".into(); 129]);
+        assert!(config.validate().is_err());
+        config.groups.clear();
+        config.scenes.insert(
+            "too-many".into(),
+            Scene {
+                keys: vec!["F1".into(); 129],
+                ..Scene::default()
+            },
+        );
+        assert!(config.validate().is_err());
+        config.scenes.get_mut("too-many").unwrap().keys.clear();
+        config.scenes.get_mut("too-many").unwrap().groups = vec!["g".into(); 65];
+        assert!(config.validate().is_err());
+        config.scenes.clear();
+        config.groups = (0..65)
+            .map(|i| (format!("group-{i}"), vec!["F1".into()]))
+            .collect();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn named_layout_restriction_does_not_change_zone_only_profiles() {
+        let named: AutomationConfig = toml::from_str("[scenes.x]\nkeys=['F1']").unwrap();
+        let runtime = AutomationRuntime::new(named.clone()).unwrap();
+        assert!(runtime.validate_layout(&info()).is_ok());
+        let mut unsupported = info();
+        unsupported.layout = Layout::Iso;
+        assert!(named.validate_layout(&unsupported).is_err());
+        assert!(runtime.validate_layout(&unsupported).is_err());
+        assert!(config().validate_layout(&unsupported).is_ok());
+        unsupported.layout = Layout::Ansi;
+        unsupported.device_type = DeviceType::Keyboard60;
+        assert!(named.validate_layout(&unsupported).is_err());
+        let grouped: AutomationConfig =
+            toml::from_str("[groups]\ng=['F1']\n[scenes.x]\ngroups=['g']").unwrap();
+        assert!(grouped.validate_layout(&unsupported).is_err());
+    }
+
+    #[test]
+    fn explicit_sessions_keep_individual_keys_and_group_events_compose_over_matrix() {
+        #[derive(Deserialize)]
+        struct Profile {
+            automation: AutomationConfig,
+        }
+        let profile: Profile =
+            toml::from_str(include_str!("../examples/automation-key-groups.toml")).unwrap();
+        let mut config = profile.automation;
+        for name in ["session-a", "session-b"] {
+            config.scenes.get_mut(name).unwrap().kind = SceneKind::Solid;
+        }
+        let mut runtime = AutomationRuntime::new(config).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), ms(0));
+        state(&mut registry, "sessionA", 1, "working", 10, 1000);
+        state(&mut registry, "sessionB", 1, "idle", 10, 3000);
+        observe(&mut runtime, &mut registry, 10);
+        let info = info();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: 128,
+            palette: PaletteName::Ocean,
+            tick: 0,
+            animation_seconds: 3.0,
+        };
+        assert_eq!(runtime.diagnostics(&ctx)[0].visible_keys, 1);
+        assert_eq!(runtime.diagnostics(&ctx)[1].visible_keys, 0);
+        state(&mut registry, "sessionB", 2, "working", 20, 3000);
+        observe(&mut runtime, &mut registry, 20);
+        let layers = runtime.layers(&ctx);
+        assert_eq!(layers.len(), 2);
+        let base = EffectKind::Matrix.render(&ctx);
+        let frame = crate::compositor::compose(base.clone(), &layout, &layers, ms(20));
+        for key in layout.keys() {
+            let expected = if canonical_coord("F1") == Some(key.coord) {
+                Color::new(0, 80, 255).scale(128)
+            } else if canonical_coord("F2") == Some(key.coord) {
+                Color::new(255, 0, 120).scale(128)
+            } else {
+                base.get_coord(key.coord)
+            };
+            assert_eq!(frame.get_coord(key.coord), expected);
+        }
+        publish(
+            &mut registry,
+            "sessionB",
+            3,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 15000,
+            },
+            30,
+        );
+        observe(&mut runtime, &mut registry, 30);
+        let diagnostic = runtime.diagnostics(&ctx);
+        assert_eq!(diagnostic[0].visible_keys, 0);
+        assert_eq!(diagnostic[1].visible_keys, 0);
+        assert_eq!(diagnostic[3].targeted_keys, 4);
+        assert_eq!(diagnostic[3].visible_keys, 4);
+        observe(&mut runtime, &mut registry, 1530);
+        let diagnostic = runtime.diagnostics(&ctx);
+        assert_eq!(diagnostic[0].visible_keys, 0); // sessionA expired.
+        assert_eq!(diagnostic[1].visible_keys, 1); // sessionB remains independent.
+        assert_eq!(diagnostic[3].visible_keys, 0); // Completion overlay expired.
     }
 
     #[test]
