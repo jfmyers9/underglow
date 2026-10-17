@@ -179,6 +179,38 @@ stop a normal persistent engine; explicitly pause or stop it.
 
 ## Customize the display
 
+### Editable layer template (no TOML)
+
+In **Layer composition**, select **Add Pi template**. This appends **one logical
+layer** above your existing layers, initially targeting the function zone; it
+does not replace Matrix, Aurora, custom targets, or other layers. Use the target
+canvas, zones, keys or groups to move all Pi appearances together. Stack order is
+bottom to top, so place it above whichever supported background you prefer.
+
+The base/fallback appearance is dim cyan while a Pi session is present. In
+**Behavior appearances**, select Working to change its blue sweep or Finished
+to change its green sweep and two-second event duration. Colors, renderers,
+brightness, sweep periods and conditions are ordinary editable data. The
+finished event means **settled, not success**; there are no approval/focus facts.
+By default each condition selects any session. To bind one exact session, choose
+its instance in the base condition and both appearance conditions; exact IDs can
+be ephemeral. Any working session beats idle; a completion briefly wins over
+working. Presence and variants disappear on source lease expiry/removal.
+
+Delete Working or Finished independently, or delete the whole Pi layer. Saving
+and restarting never restores these defaults. A new blank composition has no Pi.
+Fresh `make dev` starter state uses the same single-layer template once; existing
+canonical setups (even empty ones) are authoritative. Only the exact, untouched
+bundled Pi trio is folded during one-time development migration. Other legacy Pi
+rules retain independent migrated layers rather than being guessed into a
+template. No source TOML is rewritten.
+
+Adding/editing/previewing is hardware-free and never starts a connector or
+changes executable trust. Save while paused, then explicitly Resume only when
+ready for physical output through the single engine writer.
+
+### Legacy standalone profile
+
 Edit `[automation.scenes.pi-*]` in a copy of the starter, then select that file.
 `zones = ["function"]` targets a subset. Other named zones are `alpha`,
 `navigation`, `arrows`, and `system`; multiple zones form a union. `zones = []`

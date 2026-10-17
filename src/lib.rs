@@ -19,6 +19,7 @@ pub mod scenes;
 pub mod setup;
 pub mod setup_edits;
 pub mod source_capabilities;
+pub mod templates;
 
 /// Full brightness (100%); CLI/config values use RGB channels, not percentages.
 pub const DEFAULT_BRIGHTNESS: u8 = 255;

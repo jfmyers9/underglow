@@ -267,9 +267,22 @@ fn make_dev_discovers_pi_and_previews_lifecycle_without_resuming_hardware() {
     let profile = h.profile();
     assert_eq!(profile["effect"].as_str(), Some("matrix"));
     let layers = profile["setup"]["layers"].as_array().unwrap();
-    assert_eq!(layers.len(), 4);
+    assert_eq!(layers.len(), 2);
     assert_eq!(layers[0]["renderer"]["effect"].as_str(), Some("matrix"));
     assert_eq!(layers[1]["activation"]["source"].as_str(), Some("pi"));
+    assert_eq!(layers[1]["variants"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        layers[1]["variants"][0]["activation"]["state"].as_str(),
+        Some("working")
+    );
+    assert_eq!(
+        layers[1]["variants"][1]["activation"]["event"].as_str(),
+        Some("finished")
+    );
+    assert_eq!(
+        layers[1]["variants"][1]["activation"]["duration_ms"].as_integer(),
+        Some(2000)
+    );
     let mut pi = h.pi();
     pi.action("session_start");
     h.preview_until(cyan);
@@ -307,14 +320,14 @@ fn make_dev_discovers_pi_and_previews_lifecycle_without_resuming_hardware() {
 }
 
 #[test]
-fn make_dev_keeps_saved_animation_settings_while_adding_pi_rules() {
+fn make_dev_keeps_saved_animation_settings_while_adding_pi_template() {
     let h = Harness::start(true);
     let profile = h.profile();
     assert_eq!(profile["effect"].as_str(), Some("breath"));
     assert_eq!(profile["brightness"].as_integer(), Some(73));
     assert_eq!(profile["speed"].as_integer(), Some(65));
     let layers = profile["setup"]["layers"].as_array().unwrap();
-    assert_eq!(layers.len(), 4);
+    assert_eq!(layers.len(), 2);
     assert_eq!(layers[0]["renderer"]["effect"].as_str(), Some("breath"));
     assert_eq!(layers[0]["renderer"]["speed"].as_integer(), Some(65));
     assert_eq!(layers[0]["brightness"].as_integer(), Some(255));
@@ -346,6 +359,39 @@ fn make_dev_keeps_saved_animation_settings_while_adding_pi_rules() {
 }
 
 #[test]
+fn make_dev_does_not_restore_deleted_pi_appearance_after_restart() {
+    let mut h = Harness::start(true);
+    let document = h.cli(&["control", "setup", "show"])["setup"]["document"].clone();
+    let pi = &document["layers"][1];
+    let mut variants = pi["variants"].as_array().unwrap().clone();
+    assert_eq!(variants.remove(1)["id"], "finished");
+    let edited = h.edit(
+        vec![json!({
+            "op": "update", "id": pi["id"], "patch": {"variants": variants}
+        })],
+        0,
+    )["setup"]["document"]
+        .clone();
+    assert_eq!(edited["layers"][0], document["layers"][0]);
+    assert_eq!(edited["layers"][1]["variants"].as_array().unwrap().len(), 1);
+    for rebuild in ["gui", "engine", "engine"] {
+        h.supervisor.action(rebuild);
+        assert_eq!(
+            h.cli(&["control", "setup", "show"])["setup"]["document"],
+            edited
+        );
+        assert!(!h.state.join("hardware.lock").exists());
+    }
+    let mut pi = h.pi();
+    pi.action("session_start");
+    pi.action("agent_start");
+    h.preview_until(blue);
+    pi.action("agent_settled");
+    h.preview_until(cyan); // Deleted green appearance is not silently re-created.
+    pi.action("session_shutdown");
+}
+
+#[test]
 fn make_dev_does_not_reinject_deleted_pi_after_gui_and_engine_rebuilds() {
     let mut h = Harness::start(true);
     let document = h.cli(&["control", "setup", "show"])["setup"]["document"].clone();
@@ -356,7 +402,7 @@ fn make_dev_does_not_reinject_deleted_pi_after_gui_and_engine_rebuilds() {
         .filter(|layer| layer["activation"]["source"] == "pi")
         .map(|layer| json!({"op":"remove","id":layer["id"]}))
         .collect();
-    assert_eq!(edits.len(), 3);
+    assert_eq!(edits.len(), 1);
     let edited = h.edit(edits, 0)["setup"]["document"].clone();
     assert_eq!(edited["layers"].as_array().unwrap().len(), 1);
     for rebuild in ["gui", "engine", "engine"] {

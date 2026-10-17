@@ -3,7 +3,7 @@ use super::{setup_behavior, setup_inspector, setup_preview, setup_targets};
 use eframe::egui;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use underglow::setup::{Activation, Layer, SetupDocument, Target};
+use underglow::setup::{Activation, Layer, SetupDocument, Target, TargetZone};
 use underglow::setup_edits::{LayerEdit, LayerPatch, apply_edits};
 use underglow::source_capabilities::CapabilityRegistry;
 
@@ -351,6 +351,59 @@ mod tests {
     }
 
     #[test]
+    fn headless_pi_template_appends_retargets_and_deletes_without_reset_or_save() {
+        let ctx = egui::Context::default();
+        let mut editor = Editor::default();
+        editor.blank();
+        click(&ctx, &mut editor, "Add layer", 0); // Aurora, not Matrix.
+        let original = editor.draft.clone().unwrap();
+        assert_eq!(original.layers[0].renderer.catalog_id(), Some("aurora"));
+        assert!(!editor.can_save);
+        click(&ctx, &mut editor, "Add Pi template", 0);
+        let id = editor.selected.clone().unwrap();
+        let draft = editor.draft.as_ref().unwrap();
+        assert_eq!(draft.layers.len(), 2);
+        assert_eq!(draft.layers[0], original.layers[0]);
+        assert_eq!(draft.groups, original.groups);
+        assert_eq!(draft.id, original.id);
+        assert_eq!(draft.layers[1].variants.len(), 2);
+        assert_eq!(draft.layers[1].id, id);
+        assert!(editor.dirty);
+        assert!(editor.applied.is_none(), "Add is a draft-only action");
+        assert!(
+            !editor
+                .preview
+                .runtime()
+                .unwrap()
+                .requirements()
+                .analog_input
+        );
+        // Mounted physical-key canvas retargets every appearance together.
+        click(&ctx, &mut editor, "Whole keyboard", 0);
+        click(&ctx, &mut editor, "F1", 1);
+        assert_eq!(
+            editor.draft.as_ref().unwrap().layers[1].target,
+            Target::Selection {
+                zones: vec![],
+                keys: vec!["F1".into()],
+                groups: vec![]
+            }
+        );
+        assert_eq!(editor.draft.as_ref().unwrap().layers[0], original.layers[0]);
+        click(&ctx, &mut editor, "Delete layer", 0);
+        assert_eq!(editor.draft.as_ref(), Some(&original));
+        let saved = editor.draft.clone().unwrap();
+        let mut reopened = Editor::default();
+        reopened.load(Some(saved.clone()));
+        run(&ctx, &mut reopened, vec![]);
+        assert_eq!(reopened.draft, Some(saved));
+        assert!(!reopened.dirty);
+        reopened.blank();
+        assert!(reopened.draft.as_ref().unwrap().layers.is_empty());
+        assert!(editor.error.is_none(), "{:?}", editor.error);
+    }
+
+    #[test]
     fn headless_build_select_rename_mute_duplicate_reorder_and_delete_stack() {
         let ctx = egui::Context::default();
         let mut editor = Editor::default();
@@ -568,6 +621,30 @@ impl Editor {
         Ok(())
     }
 
+    fn add_pi_template(&mut self) -> Result<(), String> {
+        let id = fresh_id("pi");
+        let index = self
+            .draft
+            .as_ref()
+            .ok_or("No composition loaded")?
+            .layers
+            .len();
+        self.apply(LayerEdit::Create {
+            index,
+            layer: underglow::templates::pi_status_layer(
+                id.clone(),
+                Target::Selection {
+                    zones: vec![TargetZone::Function],
+                    keys: vec![],
+                    groups: vec![],
+                },
+                None,
+            ),
+        })?;
+        self.selected = Some(id);
+        Ok(())
+    }
+
     /// No source polling, engine requests, SDK ownership or preview producers.
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<Intent> {
         let mut intent = None;
@@ -582,6 +659,9 @@ impl Editor {
             }
             if self.draft.is_some() && ui.button("Add layer").clicked() {
                 self.error = self.add().err();
+            }
+            if self.draft.is_some() && ui.button("Add Pi template").clicked() {
+                self.error = self.add_pi_template().err();
             }
             if ui
                 .add_enabled(

@@ -57,13 +57,22 @@ simulation. See [development workflow](docs/dev.md) for explicit hardware testin
 No service or login startup is enabled automatically. Foreground commands refuse
 while the engine owns hardware; pause it before using `doctor` or a standalone toy.
 
-### Matrix + Pi starter
+### Editable Pi status template
+
+In **Layer composition**, choose **Add Pi template** to append one editable
+logical layer over Aurora, Matrix, or any supported background. Retarget it with
+the keyboard canvas; edit cyan presence, blue working, and green finished
+appearances, colors, sweep periods, completion duration, and any/exact session
+conditions with the generic forms. Delete an appearance or the layer without
+hidden restoration. New blank compositions contain no Pi. Save while paused;
+physical lighting still requires explicit **Resume**. Adding/previewing a
+template does not connect Pi, execute providers, grant trust, or access SDKs.
 
 For development, run **`make dev`**, then **`pi`** in another terminal in this
 checkout. The project extension discovers the engine automatically, and the
 main GUI preview shows live Pi overlays without hardware access. Fresh state
-starts with Matrix + Pi; supported existing profiles migrate once while keeping
-their animation/settings. Deleted Pi layers stay deleted across rebuilds and
+starts with Matrix + one Pi layer; supported existing profiles migrate once while
+keeping their animation/settings. Deleted Pi layers stay deleted across rebuilds and
 restarts. Unsupported legacy profiles remain intact with a compatibility warning.
 No environment exports or extension flags are needed. Restart older watchers/Pi
 sessions once after updating.
