@@ -384,7 +384,14 @@ fn dev_setup_is_once_only_and_pi_deletion_survives_edits_selection_and_restart()
         .filter(|layer| layer["activation"]["source"] == "pi")
         .map(|layer| json!({"op":"remove","id":layer["id"]}))
         .collect();
-    assert_eq!(operations.len(), 3);
+    assert_eq!(operations.len(), 1, "Pi is one logical layer");
+    let pi = setup["document"]["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["activation"]["source"] == "pi")
+        .unwrap();
+    assert_eq!(pi["variants"].as_array().unwrap().len(), 2);
     h.control(json!({"action":"setup-edit","expected_revision":0,"edits":operations}));
     h.control(json!({"action":"setup-edit","expected_revision":1,"edits":[{
         "op":"update","id":"legacy-base","patch":{"renderer":{"kind":"effect","effect":"aurora","palette":"ocean","speed":100}}
