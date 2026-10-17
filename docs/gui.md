@@ -66,6 +66,35 @@ view** below, including migration warnings when supplied by the engine. Expand
 Legacy profile import remains in Settings with its separate executable-trust
 acknowledgment; persist a dirty composition before replacing the profile.
 
+### Connections and source health
+
+Use the separate **Connections** tab to inspect registered sources without
+leaving or replacing the current layer draft. Registry/producer health refreshes
+through the bounded control worker while this page is visible; live facts reuse
+the preview's read-only source worker. Neither tab changes physical activation.
+
+- Each source retains its human name, stable ID, declared state/event vocabulary,
+  instance selectors, TTLs, and expected renewal cadence. Observed values do not
+  invent declared capabilities. Missing/offline sources stay visible.
+- Managed process running/protocol health is separate from fresh application
+  leases and selected draft appearances. A healthy connector may report stale
+  state; fresh state may fail an exact instance/state selector or lose to another
+  behavior variant. External process health is **Unknown**, not inferred from
+  traffic absence, application focus, or task completion.
+- Inspect per-instance values, update ages, lease freshness, bounded event
+  history/gaps, restarts, retry timing, and connector errors without raw logs.
+  Expired/removed facts are marked last-seen, and retained observations are
+  cleared when the source engine generation changes. Failed health refreshes do
+  not hide independently fresh facts or become generic lighting errors.
+- Missing binding repair lists original layer IDs and variant names/IDs. Click
+  an affected layer to return to its editor; restore the source registration or
+  edit the binding rather than deleting layers. Preview selection is potential
+  composition, not proof of visible hardware output. Input-demo/scenario facts
+  never replace observed source health.
+- This page is read-only: it does not import capabilities, edit producer commands,
+  authorize trust, start producers, publish events, or resume lighting. Default
+  health views discard executable argv/environment fields entirely.
+
 ### Legacy compatibility controls
 
 The controller shares the app icon's visual identity: graphite surfaces,

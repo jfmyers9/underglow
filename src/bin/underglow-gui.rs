@@ -3,6 +3,8 @@ use clap::Parser;
 use eframe::egui;
 #[path = "gui/brand.rs"]
 mod brand;
+#[path = "gui/connections_screen.rs"]
+mod connections_screen;
 #[path = "gui/connectors.rs"]
 mod connectors;
 #[path = "gui/devpreview.rs"]
@@ -101,6 +103,7 @@ fn parse_reply(bytes: &[u8]) -> Result<Reply, String> {
 
 #[derive(Clone, Debug)]
 enum Action {
+    ConnectionsShow,
     SetupShow,
     SetupReplace {
         revision: u64,
@@ -114,7 +117,8 @@ enum Action {
 
 impl Action {
     fn is_status(&self) -> bool {
-        matches!(self, Self::Control(args) if args.len() == 1 && args[0] == "status")
+        matches!(self, Self::ConnectionsShow)
+            || matches!(self, Self::Control(args) if args.len() == 1 && args[0] == "status")
     }
 }
 
@@ -150,6 +154,13 @@ impl Backend {
                 .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
         );
         match action {
+            Action::ConnectionsShow => {
+                command.arg("control");
+                if let Some(directory) = &self.state_dir {
+                    command.arg("--state-dir").arg(directory);
+                }
+                command.args(["connections", "show"]);
+            }
             Action::SetupShow | Action::SetupReplace { .. } => {
                 command.arg("control");
                 if let Some(directory) = &self.state_dir {
@@ -330,7 +341,8 @@ impl Backend {
 fn read_pipe(mut pipe: impl Read) -> Vec<u8> {
     let mut bytes = Vec::new();
     let _ = (&mut pipe)
-        .take((underglow::setup::MAX_DOCUMENT_BYTES + 64 * 1024) as u64)
+        // A registry plus health/status envelope can exceed the setup-only limit.
+        .take(512 * 1024)
         .read_to_end(&mut bytes);
     bytes
 }
@@ -537,6 +549,13 @@ impl MenuBar {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Page {
+    #[default]
+    Layers,
+    Connections,
+}
+
 struct Controller {
     #[cfg(target_os = "macos")]
     menu_bar: Option<MenuBar>,
@@ -569,6 +588,9 @@ struct Controller {
     keyboard_preview: gui_preview::KeyboardPreview,
     live_preview: Option<devpreview::Worker>,
     connector_panel: connectors::Panel,
+    connections_panel: connections_screen::Panel,
+    page: Page,
+    last_connections: Instant,
     setup_editor: setup_editor::Editor,
     live_sources: Option<setup_preview::LiveSourceWorker>,
     setup_checked: bool,
@@ -644,6 +666,9 @@ impl Controller {
             keyboard_preview: gui_preview::KeyboardPreview::default(),
             live_preview,
             connector_panel: connectors::Panel::default(),
+            connections_panel: connections_screen::Panel::default(),
+            page: Page::Layers,
+            last_connections: Instant::now() - Duration::from_secs(10),
             setup_editor: setup_editor::Editor::default(),
             live_sources,
             setup_checked: false,
@@ -688,6 +713,10 @@ impl Controller {
             // Leave an interactive interval even when the previous poll was slow.
             self.last_poll = Instant::now();
             match completion.action {
+                Action::ConnectionsShow => {
+                    // Never place the secret-bearing registry JSON in generic diagnostics.
+                    self.connections_panel.receive_report(completion.result);
+                }
                 action @ (Action::SetupShow | Action::SetupReplace { .. }) => {
                     self.setup_checked = true;
                     match completion
@@ -926,6 +955,54 @@ fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egu
 }
 
 impl Controller {
+    fn refresh_connections(&mut self) {
+        self.last_connections = Instant::now();
+        self.dispatch(Action::ConnectionsShow);
+    }
+
+    fn show_connections(&mut self, ui: &mut egui::Ui) {
+        // Facts come from the shared read worker, not simulated preview scenarios.
+        let sample = self
+            .live_sources
+            .as_ref()
+            .and_then(|worker| worker.sample());
+        let live_preview = self.setup_editor.preview.mode == setup_preview::Mode::Live;
+        if live_preview {
+            self.setup_editor.preview.set_sample(sample.clone());
+            self.setup_editor
+                .preview
+                .update(self.setup_editor.draft.as_ref(), self.brightness);
+        } else {
+            ui.small("Preview uses simulated input. Connections still shows observed facts; simulated selections are not source health.");
+        }
+        let request = self.connections_panel.show(
+            ui,
+            connections_screen::View {
+                sample: sample.as_ref().map(|s| connections_screen::SourceSample {
+                    snapshot: &s.snapshot,
+                    events: &s.events,
+                    now: s.extrapolated_now(),
+                    stale: s.is_stale(),
+                    generation: s.generation,
+                }),
+                setup: self.setup_editor.draft.as_ref(),
+                runtime: live_preview
+                    .then(|| self.setup_editor.preview.runtime())
+                    .flatten(),
+                connected: self.connected,
+                busy: self.pending || self.poll_pending,
+            },
+        );
+        match request {
+            Some(connections_screen::Request::Refresh) => self.refresh_connections(),
+            Some(connections_screen::Request::OpenLayer(id)) => {
+                self.setup_editor.selected = Some(id);
+                self.page = Page::Layers;
+            }
+            None => {}
+        }
+    }
+
     fn show_setup_editor(&mut self, ui: &mut egui::Ui) {
         self.setup_editor.can_save = !self.pending
             && self.setup_checked
@@ -1142,7 +1219,18 @@ impl Controller {
                 if let Some(error) = self.status.as_ref().and_then(|s| s.last_error.as_ref()) {
                     ui.colored_label(brand::WARNING, if self.connected { error.clone() } else { format!("Last seen: {error}") });
                 }
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.page, Page::Layers, "Layers");
+                if ui.selectable_value(&mut self.page, Page::Connections, "Connections").clicked()
+                    && self.last_connections.elapsed() >= Duration::from_secs(5) {
+                    self.refresh_connections();
+                }
+            });
+            egui::ScrollArea::vertical().id_salt(match self.page { Page::Layers => "layers", Page::Connections => "connections" }).auto_shrink([false, false]).show(ui, |ui| {
+                if self.page == Page::Connections {
+                    self.show_connections(ui);
+                    return;
+                }
                 if let Some(warning) = self.status.as_ref().and_then(|status| status.migration_warning.as_ref()) {
                     ui.colored_label(brand::WARNING, warning);
                 }
@@ -1289,6 +1377,12 @@ impl eframe::App for Controller {
         self.receive();
         if self.connected && !self.setup_checked && !self.pending && !self.poll_pending {
             self.dispatch(Action::SetupShow);
+        } else if self.page == Page::Connections
+            && !self.pending
+            && !self.poll_pending
+            && self.last_connections.elapsed() >= Duration::from_secs(5)
+        {
+            self.refresh_connections();
         } else if !self.pending
             && !self.poll_pending
             && self.last_poll.elapsed() >= Duration::from_secs(3)
@@ -1341,6 +1435,130 @@ fn application_icon(bundled_app: bool) -> egui::IconData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connections_transport_is_read_only_and_uses_explicit_private_state_directory() {
+        let backend = Backend {
+            directory: "/sibling tools".into(),
+            state_dir: Some("/private/state with spaces".into()),
+        };
+        let command = backend.command(&Action::ConnectionsShow);
+        assert_eq!(command.get_program(), "/sibling tools/underglow");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "control",
+                "--state-dir",
+                "/private/state with spaces",
+                "connections",
+                "show"
+            ]
+        );
+        assert!(Action::ConnectionsShow.is_status());
+    }
+
+    #[test]
+    fn connections_navigation_and_health_poll_preserve_draft_selection_and_lighting_state() {
+        let (mut app, incoming) = controller_fixture();
+        let (outgoing, replies) = mpsc::channel();
+        app.replies = replies;
+        app.setup_editor.load(Some(setup_document()));
+        let id = app.setup_editor.draft.as_ref().unwrap().layers[0]
+            .id
+            .clone();
+        app.setup_editor.selected = Some(id.clone());
+        app.setup_editor
+            .apply(underglow::setup_edits::LayerEdit::Enable {
+                id: id.clone(),
+                enabled: false,
+            })
+            .unwrap();
+        let draft = app.setup_editor.draft.clone();
+        let base_revision = app.setup_editor.base_revision;
+        app.status = Some(serde_json::from_str(STATUS).unwrap());
+        let enabled = app.status.as_ref().unwrap().enabled;
+        let message = app.message.clone();
+        app.diagnostics = "prior status only".into();
+        let context = egui::Context::default();
+        let input = |events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(940.0, 1000.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let click = |app: &mut Controller, label: &str| {
+            let output = context.run(input(vec![]), |ctx| app.show_lighting(ctx));
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing tab {label}"));
+            for pressed in [true, false] {
+                let _ = context.run(
+                    input(vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]),
+                    |ctx| app.show_lighting(ctx),
+                );
+            }
+        };
+        click(&mut app, "Connections");
+        assert!(app.page == Page::Connections);
+        assert!(matches!(incoming.try_recv(), Ok(Action::ConnectionsShow)));
+        let mut registry = underglow::connection_registry::ConnectionRegistry::default();
+        registry.connections[0].producer = Some(underglow::connection_registry::ConnectorConfig {
+            id: "local".into(),
+            source: "pi".into(),
+            command: vec!["SECRET_ARGV".into()],
+            ..Default::default()
+        });
+        outgoing.send(Completion {action:Action::ConnectionsShow,result:Ok(serde_json::json!({"ok":true,"connections":{"registry":registry,"runtime_index":{}}}).to_string())}).unwrap();
+        app.receive();
+        assert!(
+            app.connections_panel
+                .capabilities()
+                .unwrap()
+                .descriptor("pi")
+                .is_some()
+        );
+        assert_eq!(app.diagnostics, "prior status only");
+        assert_eq!(app.message, message);
+        outgoing
+            .send(Completion {
+                action: Action::ConnectionsShow,
+                result: Err("source health timeout".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(
+            app.connected,
+            "source health failure cannot disconnect lighting control"
+        );
+        click(&mut app, "Layers");
+        assert!(app.page == Page::Layers);
+        assert_eq!(app.setup_editor.draft, draft);
+        assert!(app.setup_editor.dirty);
+        assert_eq!(app.setup_editor.base_revision, base_revision);
+        assert_eq!(app.setup_editor.selected.as_deref(), Some(id.as_str()));
+        assert_eq!(app.status.as_ref().unwrap().enabled, enabled);
+        assert!(
+            incoming.try_recv().is_err(),
+            "navigation must not save, resume, start producers or write lighting"
+        );
+    }
 
     fn setup_document() -> underglow::setup::SetupDocument {
         underglow::setup::SetupDocument::from_toml(include_str!("../../examples/layer-setup.toml"))
@@ -1813,6 +2031,9 @@ mod tests {
             live_preview: None,
             connector_panel: connectors::Panel::default(),
             setup_editor: setup_editor::Editor::default(),
+            connections_panel: connections_screen::Panel::default(),
+            page: Page::Layers,
+            last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
             setup_checked: true,
         };
@@ -2477,6 +2698,9 @@ mod tests {
             live_preview: None,
             connector_panel: connectors::Panel::default(),
             setup_editor: setup_editor::Editor::default(),
+            connections_panel: connections_screen::Panel::default(),
+            page: Page::Layers,
+            last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
             setup_checked: true,
         };
