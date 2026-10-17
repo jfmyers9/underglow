@@ -1,0 +1,48 @@
+# Matrix everywhere; Pi lifecycle occupies only the 80HE function zone.
+# Setup and hardware-free preview: docs/matrix-pi.md
+schema_version = 1
+effect = "matrix"
+palette = "terminal"
+brightness = 180
+fps = 30
+speed = 100
+continuous = true
+
+[[automation.rules]]
+id = "pi-present"
+source = "pi"
+mode = "while-state"
+scene = "pi-idle"
+priority = 10
+
+[[automation.rules]]
+id = "pi-working"
+source = "pi"
+mode = "while-state"
+state = "working"
+scene = "pi-working"
+priority = 20
+
+[[automation.rules]]
+id = "pi-finished"
+source = "pi"
+mode = "on-event"
+event = "finished"
+scene = "pi-finished"
+priority = 30
+duration_ms = 2000
+
+[automation.scenes.pi-idle]
+kind = "solid"
+color = [0, 36, 48]
+zones = ["function"]
+
+[automation.scenes.pi-working]
+kind = "sweep"
+color = [0, 100, 255]
+zones = ["function"]
+
+[automation.scenes.pi-finished]
+kind = "sweep"
+color = [0, 255, 80]
+zones = ["function"]

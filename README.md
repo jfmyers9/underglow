@@ -45,9 +45,25 @@ simulation. See [development workflow](docs/dev.md) for explicit hardware testin
 - [Self-contained macOS app and disk image](docs/macos-release.md)
 - [Dependency license audit and documented caveats](docs/license-audit.md)
 - [Opt-in build/CI/timer notifications over a base effect](docs/notifications.md)
+- [Matrix + Pi: keep Matrix running with a function-row session indicator](docs/matrix-pi.md)
 
 No service or login startup is enabled automatically. Foreground commands refuse
 while the engine owns hardware; pause it before using `doctor` or a standalone toy.
+
+### Matrix + Pi starter
+
+Use [`examples/matrix-pi.toml`](examples/matrix-pi.toml) for Matrix everywhere,
+dim cyan function keys while Pi is open, a blue sweep while working, and a brief
+green sweep at final settlement (not task-success detection). Preview it without
+SDKs or an engine:
+
+```sh
+cargo run -- diagnostics preview --config examples/matrix-pi.toml --source pi --state working
+```
+
+Follow the [end-to-end setup](docs/matrix-pi.md) to select the profile, load the Pi
+extension, inspect delivery, and explicitly opt into keyboard lighting. Physical
+80HE visual acceptance remains pending; the automated pipeline uses a fake SDK.
 
 ## First toy: pressure-driven ripples
 

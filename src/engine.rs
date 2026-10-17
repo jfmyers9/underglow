@@ -652,6 +652,8 @@ pub fn run(
             };
             let mut diagnostics = None;
             let result = (|| -> ProgramResult {
+                // Darwin can inherit the listener's O_NONBLOCK on accepted sockets.
+                stream.set_nonblocking(false)?;
                 stream.set_read_timeout(Some(Duration::from_millis(500)))?;
                 stream.set_write_timeout(Some(Duration::from_secs(2)))?;
                 let mut bytes = Vec::new();
