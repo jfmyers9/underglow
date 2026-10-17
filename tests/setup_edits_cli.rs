@@ -224,3 +224,139 @@ fn compatibility_show_is_read_only_and_replacement_is_validated_before_save() {
     assert_eq!(result["status"]["enabled"], false);
     assert!(!harness.dir.join("runtime/hardware.lock").exists());
 }
+
+#[test]
+fn named_library_duplicate_dismantle_switch_and_restart_are_atomic_and_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut h = Harness::new(include_str!("../examples/layers-profile.toml"));
+    let original = h.show()["document"].clone();
+    let original_id = original["id"].as_str().unwrap();
+    let connections_path = h.dir.join("runtime/connections.json");
+    let connections = fs::read(&connections_path).unwrap();
+    let list = h.call(&["library", "list"], None, true);
+    assert_eq!(list["library"]["revision"], 0);
+    assert_eq!(list["library"]["setups"].as_array().unwrap().len(), 1);
+    assert!(list["library"]["document"].is_null());
+    assert_eq!(
+        fs::metadata(h.dir.join("runtime/state.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let update = |revision: &str, mutation: Value, ok: bool| {
+        h.call(
+            &["library", "update", "--expected-revision", revision],
+            Some(&mutation.to_string()),
+            ok,
+        )
+    };
+    update(
+        "0",
+        json!({"op":"duplicate","id":original_id,"new_id":"custom/../copy","name":"Mine"}),
+        true,
+    );
+    let copy =
+        h.call(&["library", "get", "custom/../copy"], None, true)["library"]["document"].clone();
+    assert_eq!(copy["layers"], original["layers"]);
+    update(
+        "1",
+        json!({"op":"switch","id":"custom/../copy","expected_setup_revision":0}),
+        true,
+    );
+    let mut custom = h.show()["document"].clone();
+    custom["name"] = json!("Dismantled by user");
+    custom["layers"] = json!([]);
+    custom["groups"] = json!({});
+    let result = h.call(
+        &["setup", "replace", "--expected-revision", "1"],
+        Some(&custom.to_string()),
+        true,
+    );
+    assert_eq!(result["library"]["revision"], 3);
+    custom["revision"] = json!(2);
+    assert_eq!(
+        h.call(&["library", "get", "custom/../copy"], None, true)["library"]["document"],
+        custom
+    );
+    let before = h.disk();
+    for (revision, mutation) in [
+        ("0", json!({"op":"delete","id":original_id})),
+        ("3", json!({"op":"delete","id":"custom/../copy"})),
+        (
+            "3",
+            json!({"op":"switch","id":original_id,"expected_setup_revision":1}),
+        ),
+        ("3", json!({"op":"rename","id":"custom/../copy","name":""})),
+    ] {
+        update(revision, mutation, false);
+        assert_eq!(h.disk(), before);
+        assert_eq!(h.show()["document"], custom);
+    }
+    update(
+        "3",
+        json!({"op":"switch","id":original_id,"expected_setup_revision":2}),
+        true,
+    );
+    let returned = h.show()["document"].clone();
+    assert_eq!(returned["layers"], original["layers"]);
+    assert_eq!(
+        h.call(&["library", "get", original_id], None, true)["library"]["document"],
+        original
+    );
+    update(
+        "4",
+        json!({"op":"create","starter":"matrix-pi","id":"starter","name":"Reusable"}),
+        true,
+    );
+    let starter = h.call(&["library", "get", "starter"], None, true)["library"]["document"].clone();
+    assert_eq!(starter["layers"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        h.show()["document"],
+        returned,
+        "creating a saved template cannot switch or activate it"
+    );
+    update(
+        "5",
+        json!({"op":"switch","id":"starter","expected_setup_revision":3}),
+        true,
+    );
+    let mut dismantled = h.show()["document"].clone();
+    dismantled["layers"] = json!([]);
+    dismantled["name"] = json!("User-owned empty setup");
+    h.call(
+        &["setup", "replace", "--expected-revision", "4"],
+        Some(&dismantled.to_string()),
+        true,
+    );
+    update(
+        "7",
+        json!({"op":"switch","id":original_id,"expected_setup_revision":5}),
+        true,
+    );
+    let returned = h.show()["document"].clone();
+    assert_eq!(fs::read(&connections_path).unwrap(), connections);
+    assert!(!h.dir.join("runtime/hardware.lock").exists());
+    assert!(
+        !h.dir.join("custom").exists(),
+        "document IDs must not become paths"
+    );
+    h.stop();
+    h.start();
+    assert_eq!(
+        h.call(&["library", "list"], None, true)["library"]["revision"],
+        8
+    );
+    assert_eq!(
+        h.call(&["library", "get", "custom/../copy"], None, true)["library"]["document"],
+        custom
+    );
+    assert_eq!(h.show()["document"], returned);
+    let reopened_starter =
+        h.call(&["library", "get", "starter"], None, true)["library"]["document"].clone();
+    assert_eq!(reopened_starter["layers"], json!([]));
+    assert_eq!(reopened_starter["name"], "User-owned empty setup");
+    assert_eq!(fs::read(connections_path).unwrap(), connections);
+    assert_eq!(h.call(&["status"], None, true)["status"]["state"], "paused");
+}

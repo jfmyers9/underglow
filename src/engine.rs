@@ -17,6 +17,7 @@ use underglow::connection_registry::ConnectionRegistry;
 use underglow::layer_runtime::CompiledSetup;
 use underglow::setup::SetupDocument;
 use underglow::setup_edits::{self, LayerEdit};
+use underglow::setup_library::{self, LibraryMutation, SetupLibrary};
 
 const LIMIT: u64 = 1024 * 1024;
 const RETRIES: u32 = 5;
@@ -41,6 +42,11 @@ pub struct ControlOptions {
 #[derive(Debug, Subcommand)]
 enum ControlCommand {
     Status,
+    /// Saved declarative compositions, independent of machine connections.
+    Library {
+        #[command(subcommand)]
+        command: LibraryCommand,
+    },
     /// Read or explicitly replace local connections (may authorize executables).
     Connections {
         #[command(subcommand)]
@@ -127,6 +133,18 @@ enum SetupCommand {
         expected_revision: u64,
     },
 }
+#[derive(Debug, Subcommand)]
+enum LibraryCommand {
+    List,
+    Get {
+        id: String,
+    },
+    /// Read a typed library mutation JSON from bounded stdin (256 KiB).
+    Update {
+        #[arg(long)]
+        expected_revision: u64,
+    },
+}
 #[derive(Serialize, Deserialize)]
 struct Request {
     schema_version: u32,
@@ -137,6 +155,14 @@ struct Request {
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 enum Action {
     Status,
+    LibraryList,
+    LibraryGet {
+        id: String,
+    },
+    LibraryUpdate {
+        expected_revision: u64,
+        mutation: LibraryMutation,
+    },
     ConnectionsShow,
     ConnectionsReplace {
         expected_revision: u64,
@@ -189,6 +215,26 @@ struct Saved {
     dev_starter_migrated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     migration_warning: Option<String>,
+    /// None is the one-time migration marker, distinct from an empty library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    setup_library: Option<SetupLibrary>,
+}
+
+fn initialize_library(saved: &mut Saved) -> ProgramResult {
+    if saved.setup_library.is_none() {
+        let config: AppConfig = toml::from_str(&saved.config)?;
+        saved.setup_library = Some(SetupLibrary {
+            schema_version: 1,
+            revision: 0,
+            documents: config.setup.into_iter().collect(),
+        });
+    }
+    saved
+        .setup_library
+        .as_ref()
+        .expect("initialized library")
+        .validate()?;
+    Ok(())
 }
 
 /// Only private snapshots migrate. Source paths and TOML files are never written.
@@ -242,6 +288,8 @@ struct Response {
     setup: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     connections: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    library: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<&'static str>,
 }
@@ -350,6 +398,13 @@ fn preset(name: &str) -> Result<String, Error> {
         .ok_or_else(|| format!("unknown visualization preset: {name}").into())
 }
 fn save(dir: &Path, state: &Saved) -> ProgramResult {
+    if let Some(library) = &state.setup_library {
+        library.validate()?;
+    }
+    let bytes = serde_json::to_vec(state)?;
+    if bytes.len() as u64 + 1 > LIMIT {
+        return Err("saved state exceeds 1 MiB; remove saved setups before saving".into());
+    }
     // Create a new private file, sync contents, atomically rename, then sync the directory.
     // Never truncate the last valid snapshot on a failed edit or process crash.
     let temp = dir.join(format!(".state-{}.tmp", std::process::id()));
@@ -360,7 +415,7 @@ fn save(dir: &Path, state: &Saved) -> ProgramResult {
             .create_new(true)
             .mode(0o600)
             .open(&temp)?;
-        serde_json::to_writer(&mut file, state)?;
+        file.write_all(&bytes)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
         fs::rename(&temp, dir.join("state.json"))?;
@@ -488,7 +543,11 @@ impl LivePreview {
             // Provider-driven backgrounds are deliberately not evaluated here.
             config.effect
         };
-        let layers = self.automation.layers(&ctx);
+        let layers = if self.setup.is_none() {
+            self.automation.layers(&ctx)
+        } else {
+            Vec::new()
+        };
         let overlay_keys: Vec<_> = layout
             .keys()
             .iter()
@@ -631,13 +690,134 @@ impl Runtime {
     }
 
     fn install_setup(&mut self, document: SetupDocument) -> ProgramResult {
-        // Replace only declarative setup data. Preserve connectors, trust,
-        // profile globals, notifications, sources, and executable definitions.
+        let mut saved = self.saved.clone();
+        initialize_library(&mut saved)?;
+        let library = saved.setup_library.expect("initialized library");
+        let library = library.update(
+            library.revision,
+            &LibraryMutation::Store {
+                document: document.clone(),
+            },
+        )?;
+        self.install_setup_with_library(document, library)
+    }
+
+    fn library(&self) -> Result<&SetupLibrary, Error> {
+        self.saved
+            .setup_library
+            .as_ref()
+            .ok_or_else(|| "setup library not initialized".into())
+    }
+
+    fn library_report(&self, id: Option<&str>) -> Result<serde_json::Value, Error> {
+        let library = self.library()?;
+        Ok(serde_json::json!({
+            "schema_version": 1,
+            "revision": library.revision,
+            "current_id": self.config.setup.as_ref().map(|document| &document.id),
+            "setups": library.summaries(),
+            "document": id.map(|id| library.get(id)).transpose()?,
+        }))
+    }
+
+    fn update_library(
+        &mut self,
+        expected_revision: u64,
+        mutation: LibraryMutation,
+    ) -> ProgramResult {
+        let library = self.library()?.update(expected_revision, &mutation)?;
+        let current = self.config.setup.as_ref();
+        match &mutation {
+            LibraryMutation::Delete { id }
+                if current.is_some_and(|document| &document.id == id) =>
+            {
+                return Err(
+                    "cannot delete the current setup; switch to another saved setup first".into(),
+                );
+            }
+            LibraryMutation::Store { document }
+                if current.is_some_and(|current| {
+                    current.id == document.id && !setup_library::same_content(current, document)
+                }) =>
+            {
+                return Err("cannot overwrite current setup via library store; use setup replace with its revision".into());
+            }
+            LibraryMutation::Switch {
+                id,
+                expected_setup_revision,
+            } => {
+                if self.saved.enabled || self.active.is_some() {
+                    return Err(
+                        "Pause lighting before switching setups; Resume explicitly afterwards"
+                            .into(),
+                    );
+                }
+                if let Some(current) = current {
+                    let stored = self.library()?.get(&current.id)?;
+                    if !setup_library::same_content(current, stored) {
+                        return Err("save the current composition before switching setups".into());
+                    }
+                }
+                let document = setup_edits::replace_setup(
+                    current,
+                    *expected_setup_revision,
+                    library.get(id)?,
+                )?;
+                return self.install_setup_with_library(document, library);
+            }
+            LibraryMutation::Rename { id, .. }
+                if current.is_some_and(|document| &document.id == id) =>
+            {
+                if self.saved.enabled || self.active.is_some() {
+                    return Err("Pause lighting before renaming the current setup".into());
+                }
+                let document = setup_edits::replace_setup(
+                    current,
+                    current.map_or(0, |document| document.revision),
+                    library.get(id)?,
+                )?;
+                return self.install_setup_with_library(document, library);
+            }
+            _ => {}
+        }
+        let candidate = Saved {
+            setup_library: Some(library),
+            ..self.saved.clone()
+        };
+        save(&self.dir, &candidate)?;
+        self.saved = candidate;
+        Ok(())
+    }
+
+    fn install_setup_with_library(
+        &mut self,
+        document: SetupDocument,
+        library: SetupLibrary,
+    ) -> ProgramResult {
+        let adopting = self.config.setup.is_none();
+        if adopting && (self.saved.enabled || self.active.is_some()) {
+            return Err(
+                "Pause lighting before replacing legacy behavior with a canonical setup".into(),
+            );
+        }
+        // An explicit first adoption replaces the entire legacy visual stack,
+        // not just its background. Automatic migration remains all-or-nothing.
+        // Connections, trust, source files, and dormant source definitions stay
+        // unchanged; canonical execution does not evaluate legacy providers.
         let mut value: toml::Value = toml::from_str(&self.saved.config)?;
-        value
+        let table = value
             .as_table_mut()
-            .ok_or("configuration must be a table")?
-            .insert("setup".into(), toml::Value::try_from(&document)?);
+            .ok_or("configuration must be a table")?;
+        if adopting {
+            table.remove("notifications");
+            if let Some(automation) = table
+                .get_mut("automation")
+                .and_then(toml::Value::as_table_mut)
+            {
+                automation.remove("rules");
+            }
+        }
+        table.insert("setup".into(), toml::Value::try_from(&document)?);
         let config = toml::to_string(&value)?;
         let parsed = validate(&config)?;
         let preview_candidate = CompiledSetup::compile(&document)?;
@@ -660,9 +840,18 @@ impl Runtime {
         let preview_observation = self
             .sources
             .observe(self.preview.automation.event_cursor())?;
+        let preview_automation = if adopting {
+            let mut automation =
+                underglow::automation::AutomationRuntime::new(parsed.automation.clone())?;
+            automation.baseline(&preview_observation.snapshot, preview_observation.now);
+            Some(automation)
+        } else {
+            None
+        };
         let candidate = Saved {
             config,
             migration_warning: None,
+            setup_library: Some(library),
             ..self.saved.clone()
         };
         save(&self.dir, &candidate)?;
@@ -675,6 +864,9 @@ impl Runtime {
                 &observation.events,
                 observation.now,
             );
+        }
+        if let Some(automation) = preview_automation {
+            self.preview.automation = automation;
         }
         if let Some(runtime) = &mut self.preview.setup {
             runtime.reconfigure(
@@ -844,7 +1036,15 @@ impl Runtime {
             | Action::Preview
             | Action::Connectors
             | Action::ConnectionsShow
+            | Action::LibraryList
+            | Action::LibraryGet { .. }
             | Action::SetupShow => {}
+            Action::LibraryUpdate {
+                expected_revision,
+                mutation,
+            } => {
+                self.update_library(expected_revision, mutation)?;
+            }
             Action::ConnectionsReplace {
                 expected_revision,
                 registry,
@@ -1063,6 +1263,7 @@ pub fn run(
             enabled: false,
             dev_starter_migrated: false,
             migration_warning: None,
+            setup_library: None,
             config: options
                 .config
                 .as_deref()
@@ -1082,6 +1283,7 @@ pub fn run(
     let connections = crate::connection_store::load_or_migrate(&dir, &legacy.connectors)?;
     saved.config = crate::connection_store::visual_config(&saved.config)?;
     let config = validate(&saved.config)?;
+    initialize_library(&mut saved)?;
     // Never automatically rerun a command after service/process restart.
     if options.paused || crate::sdk::hardware_disabled() || config.runs_commands() {
         saved.enabled = false;
@@ -1152,6 +1354,7 @@ pub fn run(
             let mut diagnostics = None;
             let mut preview = None;
             let mut setup = None;
+            let mut library = None;
             let mut connection_request = false;
             let mut warning = None;
             let result = (|| -> ProgramResult {
@@ -1187,11 +1390,37 @@ pub fn run(
                 }
                 let setup_request = matches!(
                     request.action,
-                    Action::SetupShow | Action::SetupEdit { .. } | Action::SetupReplace { .. }
+                    Action::SetupShow
+                        | Action::SetupEdit { .. }
+                        | Action::SetupReplace { .. }
+                        | Action::LibraryUpdate {
+                            mutation: LibraryMutation::Switch { .. }
+                                | LibraryMutation::Rename { .. },
+                            ..
+                        }
                 );
+                let library_request = matches!(
+                    request.action,
+                    Action::LibraryList
+                        | Action::LibraryGet { .. }
+                        | Action::LibraryUpdate { .. }
+                        | Action::SetupReplace { .. }
+                        | Action::SetupEdit { .. }
+                );
+                let selected_id = if let Action::LibraryGet { id } = &request.action {
+                    Some(id.clone())
+                } else {
+                    None
+                };
+                if let Some(id) = &selected_id {
+                    runtime.library()?.get(id)?;
+                }
                 runtime.action(request.action)?;
                 if setup_request {
                     setup = Some(runtime.setup_document());
+                }
+                if library_request {
+                    library = Some(runtime.library_report(selected_id.as_deref())?);
                 }
                 Ok(())
             })();
@@ -1207,6 +1436,7 @@ pub fn run(
                 diagnostics,
                 preview,
                 setup,
+                library,
                 connections: connection_request.then(|| runtime.connection_report()),
                 warning,
             };
@@ -1244,6 +1474,14 @@ pub fn control(options: ControlOptions) -> ProgramResult {
         let dir = options.state_dir.unwrap_or(ownership::state_dir()?);
         let action = match options.command {
             ControlCommand::Status => Action::Status,
+            ControlCommand::Library { command } => match command {
+                LibraryCommand::List => Action::LibraryList,
+                LibraryCommand::Get { id } => Action::LibraryGet { id },
+                LibraryCommand::Update { expected_revision } => Action::LibraryUpdate {
+                    expected_revision,
+                    mutation: read_setup_json(std::io::stdin().lock())?,
+                },
+            },
             ControlCommand::Connections { command } => match command {
                 ConnectionCommand::Show => Action::ConnectionsShow,
                 ConnectionCommand::Replace { expected_revision } => Action::ConnectionsReplace {
@@ -1346,6 +1584,78 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn library_switch_requires_pause_and_atomic_persistence_without_sdk_or_sources() {
+        let dir = std::env::temp_dir().join(format!("ug-library-atomic-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut runtime = runtime(
+            include_str!("../examples/layers-profile.toml").into(),
+            dir.clone(),
+        );
+        let original = runtime.config.setup.clone().unwrap();
+        runtime
+            .update_library(
+                0,
+                LibraryMutation::Create {
+                    starter: setup_library::Starter::Blank,
+                    id: "blank".into(),
+                    name: "Mine".into(),
+                },
+            )
+            .unwrap();
+        let before_disk = fs::read(dir.join("state.json")).unwrap();
+        let before_library = runtime.library().unwrap().clone();
+        let before_sources = runtime.sources.observe(0).unwrap().snapshot;
+        let switching = || LibraryMutation::Switch {
+            id: "blank".into(),
+            expected_setup_revision: original.revision,
+        };
+        runtime.saved.enabled = true;
+        assert!(runtime.update_library(1, switching()).is_err());
+        runtime.saved.enabled = false;
+        let temp = dir.join(format!(".state-{}.tmp", std::process::id()));
+        fs::write(&temp, b"occupied").unwrap();
+        assert!(runtime.update_library(1, switching()).is_err());
+        assert_eq!(runtime.config.setup.as_ref(), Some(&original));
+        assert_eq!(runtime.library().unwrap(), &before_library);
+        assert_eq!(fs::read(dir.join("state.json")).unwrap(), before_disk);
+        assert_eq!(runtime.sources.observe(0).unwrap().snapshot, before_sources);
+        runtime.update_library(1, switching()).unwrap();
+        assert_eq!(runtime.config.setup.as_ref().unwrap().id, "blank");
+        assert!(!runtime.saved.enabled);
+        assert!(runtime.active.is_none() && runtime.connectors.is_none());
+        assert_eq!(runtime.sources.observe(0).unwrap().snapshot, before_sources);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saved_library_migrates_once_and_preflights_readable_total_size() {
+        let dir = std::env::temp_dir().join(format!("ug-library-limit-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut runtime = runtime(
+            include_str!("../examples/layers-profile.toml").into(),
+            dir.clone(),
+        );
+        runtime.saved.setup_library = None;
+        let original_config = runtime.saved.config.clone();
+        initialize_library(&mut runtime.saved).unwrap();
+        assert_eq!(runtime.library().unwrap().documents.len(), 1);
+        assert_eq!(runtime.saved.config, original_config);
+        runtime.saved.setup_library = Some(SetupLibrary::default());
+        initialize_library(&mut runtime.saved).unwrap();
+        assert!(
+            runtime.library().unwrap().documents.is_empty(),
+            "an intentionally empty library is not repopulated"
+        );
+        save(&dir, &runtime.saved).unwrap();
+        let before = fs::read(dir.join("state.json")).unwrap();
+        runtime.saved.config = "x".repeat(LIMIT as usize);
+        assert!(save(&dir, &runtime.saved).is_err());
+        assert_eq!(fs::read(dir.join("state.json")).unwrap(), before);
+        assert!(serde_json::from_slice::<Saved>(&before).is_ok());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn setup_json_and_cli_reject_unbounded_malformed_and_unknown_operations() {
         assert!(read_setup_json::<Vec<LayerEdit>>(&b"not json"[..]).is_err());
         assert!(read_setup_json::<Vec<LayerEdit>>(&b"[{\"op\":\"unknown\"}]"[..]).is_err());
@@ -1427,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn hot_edit_hook_reaches_wrapped_setup_without_replaying_commands_or_acquiring_sdk() {
+    fn canonical_profiles_reject_hidden_overlays_and_hot_edit_without_acquiring_sdk() {
         let text = format!(
             "{}\n{}",
             include_str!("../examples/layers-profile.toml"),
@@ -1449,7 +1759,24 @@ color = [255, 0, 0]
 zones = ['function']
 "#
         );
-        let config = validate(&text).unwrap();
+        assert!(
+            validate(&text)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("legacy notifications or automation.rules")
+        );
+        let mut value: toml::Value = toml::from_str(&text).unwrap();
+        value.as_table_mut().unwrap().remove("notifications");
+        assert!(
+            validate(&toml::to_string(&value).unwrap())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("automation.rules")
+        );
+        value["automation"].as_table_mut().unwrap().remove("rules");
+        let config = validate(&toml::to_string(&value).unwrap()).unwrap();
         let mut signal = crate::build_config_signal(&config).unwrap();
         let mut document = config.setup.clone().unwrap();
         document.layers[0].renderer = underglow::setup::Renderer::Effect {
@@ -1489,9 +1816,103 @@ zones = ['function']
                 .to_string()
                 .contains("legacy")
         );
-        // Constructor and hooks never initialize the command notification. An
-        // accidental initialize would fail immediately on its nonexistent path.
+        // Dormant automation scene definitions cannot wrap the canonical setup.
         assert!(!signal.finished());
+    }
+
+    #[test]
+    fn explicit_first_setup_adoption_clears_legacy_visuals_only_after_atomic_save() {
+        let dir = std::env::temp_dir().join(format!("ug-library-adopt-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let text = "effect='matrix'\n[signal]\nkind='command-pulse'\ncommand=['/must-not-run-dormant-base']\n[[notifications]]\nid='hidden-command'\nduration_seconds=1\nzones=['function']\n[notifications.signal]\nkind='command-pulse'\ncommand=['/must-not-run-hidden-notification']\n[[automation.rules]]\nid='hidden-red'\nsource='pi'\nmode='while-state'\nscene='red'\n[automation.scenes.red]\ncolor=[255,0,0]\n";
+        let migrated = crate::migration::migrate(text).unwrap();
+        assert_eq!(migrated.config, text, "automatic fallback is byte-for-byte");
+        assert!(migrated.warning.is_some());
+        let mut runtime = runtime(text.into(), dir.clone());
+        let before_library = runtime.library().unwrap().clone();
+        save(&dir, &runtime.saved).unwrap();
+        let before_disk = fs::read(dir.join("state.json")).unwrap();
+        let document = setup_library::starter(
+            setup_library::Starter::Blank,
+            "mine".into(),
+            "My empty stack".into(),
+        )
+        .unwrap();
+        runtime.saved.enabled = true;
+        assert!(
+            runtime
+                .action(Action::SetupReplace {
+                    expected_revision: 0,
+                    document: document.clone()
+                })
+                .is_err()
+        );
+        runtime.saved.enabled = false;
+        fs::write(
+            dir.join(format!(".state-{}.tmp", std::process::id())),
+            "occupied",
+        )
+        .unwrap();
+        assert!(
+            runtime
+                .action(Action::SetupReplace {
+                    expected_revision: 0,
+                    document: document.clone()
+                })
+                .is_err()
+        );
+        assert_eq!(runtime.saved.config, text);
+        assert_eq!(runtime.library().unwrap(), &before_library);
+        assert_eq!(fs::read(dir.join("state.json")).unwrap(), before_disk);
+        runtime
+            .action(Action::SetupReplace {
+                expected_revision: 0,
+                document,
+            })
+            .unwrap();
+        assert!(runtime.config.notifications.is_empty());
+        assert!(runtime.config.automation.rules.is_empty());
+        assert!(runtime.config.automation.scenes.contains_key("red"));
+        assert!(runtime.config.setup.as_ref().unwrap().layers.is_empty());
+        assert!(
+            !runtime.config.runs_commands(),
+            "dormant legacy command providers are not effective"
+        );
+        assert!(
+            runtime
+                .config
+                .signal
+                .as_ref()
+                .unwrap()
+                .command_pulse
+                .command[0]
+                .contains("dormant-base")
+        );
+        assert!(runtime.active.is_none() && runtime.connectors.is_none());
+        assert!(!runtime.saved.enabled);
+        let info = underglow::device::DeviceInfo::synthetic_80he();
+        let layout = underglow::layout::KeyboardLayout::for_device(&info);
+        let ctx = crate::render::RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: 255,
+            palette: crate::render::PaletteName::Heat,
+            tick: 0,
+            animation_seconds: 0.0,
+        };
+        let mut signal = crate::build_config_signal(&runtime.config).unwrap();
+        signal.initialize().unwrap(); // Empty declarative stack: no analog or RGB SDK.
+        assert_eq!(signal.render(&ctx), crate::render::Frame::black());
+        assert!(signal.composition(&ctx).1.is_empty());
+        signal.shutdown(false).unwrap();
+        assert!(
+            runtime.preview().unwrap()["rgb"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|channel| channel == 0)
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1619,9 +2040,13 @@ zones = ['function']
             saved: Saved {
                 schema_version: 1,
                 enabled: false,
-                config: text,
+                config: text.clone(),
                 dev_starter_migrated: false,
                 migration_warning: None,
+                setup_library: Some(SetupLibrary {
+                    documents: validate(&text).unwrap().setup.into_iter().collect(),
+                    ..Default::default()
+                }),
             },
             dir,
             sdk: None,

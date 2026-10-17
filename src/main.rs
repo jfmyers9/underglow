@@ -705,17 +705,19 @@ fn build_config_signal_with_sources(
     sources: Option<ingress::SharedSources>,
 ) -> Result<Box<dyn signals::SignalProgram>, Box<dyn std::error::Error>> {
     config.validate()?;
-    let base: Box<dyn signals::SignalProgram> = if let Some(setup) = &config.setup {
-        Box::new(signals::setup::SetupProgram::new(
-            setup,
-            sources.clone(),
-            config.fps,
-        )?)
-    } else if ProfileRuntimeSignal::is_profile_runtime_config(config) {
-        Box::new(ProfileRuntimeSignal::new(config.clone())?)
-    } else {
-        build_signal(&config.signal_config(), config.effect)?
-    };
+    if let Some(setup) = &config.setup {
+        // A canonical document owns the complete visual stack. In particular,
+        // dormant legacy scene/group tables must not install outer wrappers.
+        return Ok(Box::new(signals::setup::SetupProgram::new(
+            setup, sources, config.fps,
+        )?));
+    }
+    let base: Box<dyn signals::SignalProgram> =
+        if ProfileRuntimeSignal::is_profile_runtime_config(config) {
+            Box::new(ProfileRuntimeSignal::new(config.clone())?)
+        } else {
+            build_signal(&config.signal_config(), config.effect)?
+        };
     let base = notifications::wrap(base, &config.notifications, config.effect)?;
     external_rules::wrap(base, &config.automation, sources)
 }

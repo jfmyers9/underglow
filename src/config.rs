@@ -204,6 +204,11 @@ impl AppConfig {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         if let Some(setup) = &self.setup {
+            if !self.notifications.is_empty() || !self.automation.rules.is_empty() {
+                return Err(ConfigError::Invalid(
+                    "canonical setups cannot contain legacy notifications or automation.rules; use canonical layers, or retain the profile in legacy compatibility mode".into(),
+                ));
+            }
             underglow::layer_runtime::CompiledSetup::compile(setup)
                 .map_err(ConfigError::Invalid)?;
         }

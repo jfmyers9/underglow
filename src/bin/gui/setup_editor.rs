@@ -18,6 +18,38 @@ pub enum Intent {
 mod tests {
     use super::*;
 
+    #[test]
+    fn starter_copy_is_a_draft_that_can_be_dismantled_named_and_saved_without_reinjection() {
+        let original = document();
+        let mut editor = Editor::default();
+        editor.load(Some(original.clone()));
+        let starter = underglow::setup_library::starter(
+            underglow::setup_library::Starter::MatrixPi,
+            "user-copy".into(),
+            "Editable starter".into(),
+        )
+        .unwrap();
+        assert!(editor.starter_draft(starter.clone()));
+        assert!(
+            !editor.starter_draft(original.clone()),
+            "cannot replace a dirty starter draft"
+        );
+        assert_eq!(editor.applied, Some(original));
+        assert_eq!(editor.base_revision, 8);
+        for layer in starter.layers {
+            editor.apply(LayerEdit::Remove { id: layer.id }).unwrap();
+        }
+        editor.name_draft("Entirely mine".into()).unwrap();
+        let submitted = editor.draft.clone().unwrap();
+        assert!(submitted.layers.is_empty());
+        let mut saved = submitted.clone();
+        saved.revision = 9;
+        assert!(editor.accept_saved(&submitted, saved.clone()));
+        editor.load(Some(saved.clone()));
+        assert_eq!(editor.draft, Some(saved));
+        assert!(!editor.dirty);
+    }
+
     fn document() -> SetupDocument {
         let mut doc =
             SetupDocument::from_toml(include_str!("../../../examples/layer-setup.toml")).unwrap();
@@ -579,6 +611,30 @@ impl Editor {
         self.selected = Some(repair.key.layer_id.clone());
         self.error = None;
         self.preview.rebaseline();
+        Ok(())
+    }
+
+    /// Explicit starter copy; never discard edits and never change applied data.
+    pub fn starter_draft(&mut self, document: SetupDocument) -> bool {
+        if self.dirty {
+            return false;
+        }
+        self.draft = Some(document);
+        self.dirty = true;
+        self.targets.clear();
+        self.selected = None;
+        self.error = None;
+        self.reconcile_selection();
+        self.preview.rebaseline();
+        true
+    }
+
+    pub fn name_draft(&mut self, name: String) -> Result<(), String> {
+        let mut document = self.draft.clone().ok_or("No composition loaded")?;
+        document.name = name;
+        document.validate().map_err(|error| error.to_string())?;
+        self.dirty |= self.draft.as_ref() != Some(&document);
+        self.draft = Some(document);
         Ok(())
     }
 

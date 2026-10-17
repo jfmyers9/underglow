@@ -19,6 +19,8 @@ mod setup_editor;
 mod setup_explanation;
 #[path = "gui/setup_inspector.rs"]
 mod setup_inspector;
+#[path = "gui/setup_library_panel.rs"]
+mod setup_library_panel;
 #[path = "gui/setup_preview.rs"]
 mod setup_preview;
 #[path = "gui/setup_targets.rs"]
@@ -82,6 +84,8 @@ struct Reply {
     diagnostics: Option<serde_json::Value>,
     #[serde(default)]
     setup: Option<SetupEnvelope>,
+    #[serde(default)]
+    library: Option<setup_library_panel::Report>,
 }
 
 fn parse_reply(bytes: &[u8]) -> Result<Reply, String> {
@@ -90,6 +94,15 @@ fn parse_reply(bytes: &[u8]) -> Result<Reply, String> {
     if reply.status.as_ref().is_some_and(|s| s.schema_version != 1) {
         return Err(
             "Unsupported engine status schema; install matching CLI and GUI versions".into(),
+        );
+    }
+    if reply
+        .library
+        .as_ref()
+        .is_some_and(|report| report.schema_version != 1)
+    {
+        return Err(
+            "Unsupported setup library schema; install matching CLI and GUI versions".into(),
         );
     }
     if reply
@@ -126,6 +139,11 @@ fn connections_input(
 
 #[derive(Clone)]
 enum Action {
+    LibraryList,
+    LibraryUpdate {
+        revision: u64,
+        mutation: underglow::setup_library::LibraryMutation,
+    },
     ConnectionsShow,
     ConnectionsReplace {
         revision: u64,
@@ -153,6 +171,8 @@ impl std::fmt::Debug for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Channel errors and assertions must not print secret-bearing payloads.
         f.write_str(match self {
+            Self::LibraryList => "LibraryList",
+            Self::LibraryUpdate { .. } => "LibraryUpdate",
             Self::ConnectionsShow => "ConnectionsShow",
             Self::ConnectionsReplace { .. } => "ConnectionsReplace(<private>)",
             Self::SetupShow => "SetupShow",
@@ -197,6 +217,18 @@ impl Backend {
                 .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
         );
         match action {
+            Action::LibraryList | Action::LibraryUpdate { .. } => {
+                command.arg("control");
+                if let Some(directory) = &self.state_dir {
+                    command.arg("--state-dir").arg(directory);
+                }
+                command.arg("library");
+                if let Action::LibraryUpdate { revision, .. } = action {
+                    command.args(["update", "--expected-revision", &revision.to_string()]);
+                } else {
+                    command.arg("list");
+                }
+            }
             Action::ConnectionsShow | Action::ConnectionsReplace { .. } => {
                 command.arg("control");
                 if let Some(directory) = &self.state_dir {
@@ -321,6 +353,14 @@ impl Backend {
             );
         }
         let mut command = self.command(action);
+        if let Action::LibraryUpdate { mutation, .. } = action {
+            let input = serde_json::to_vec(mutation).map_err(|error| error.to_string())?;
+            if input.len() > underglow::setup::MAX_DOCUMENT_BYTES {
+                return Err("Library input exceeds 256 KiB".into());
+            }
+            command.stdin(Stdio::piped());
+            return run_with_timeout_input(command, Duration::from_secs(15), Some(input));
+        }
         if let Action::ConnectionsReplace { revision, registry } = action {
             let input = connections_input(*revision, registry)?;
             command.stdin(Stdio::piped());
@@ -647,6 +687,7 @@ struct Controller {
     page: Page,
     last_connections: Instant,
     setup_editor: setup_editor::Editor,
+    setup_library: setup_library_panel::Panel,
     live_sources: Option<setup_preview::LiveSourceWorker>,
     setup_checked: bool,
 }
@@ -725,6 +766,7 @@ impl Controller {
             page: Page::Layers,
             last_connections: Instant::now() - Duration::from_secs(10),
             setup_editor: setup_editor::Editor::default(),
+            setup_library: setup_library_panel::Panel::default(),
             live_sources,
             setup_checked: false,
         }
@@ -768,6 +810,39 @@ impl Controller {
             // Leave an interactive interval even when the previous poll was slow.
             self.last_poll = Instant::now();
             match completion.action {
+                Action::LibraryList | Action::LibraryUpdate { .. } => {
+                    match completion
+                        .result
+                        .and_then(|body| parse_reply(body.as_bytes()))
+                    {
+                        Ok(reply) => {
+                            if reply.ok {
+                                self.message = "Saved setup library updated. Resume lighting explicitly when ready.".into();
+                                if let Some(report) = reply.library {
+                                    let _ = self.setup_library.receive(report);
+                                }
+                                if let Some(setup) = reply.setup {
+                                    if setup.document.as_ref().map_or(0, |doc| doc.revision)
+                                        == setup.revision
+                                    {
+                                        self.setup_editor.load(setup.document);
+                                    } else {
+                                        self.message = "Invalid setup revision envelope".into();
+                                    }
+                                }
+                            } else {
+                                self.message = reply.error.unwrap_or_else(|| {
+                                    "Library request failed; draft retained".into()
+                                });
+                            }
+                            if let Some(status) = reply.status {
+                                self.status = Some(status);
+                                self.connected = true;
+                            }
+                        }
+                        Err(error) => self.message = error,
+                    }
+                }
                 action @ (Action::ConnectionsShow | Action::ConnectionsReplace { .. }) => {
                     // Never place the secret-bearing registry JSON in generic diagnostics.
                     if let Action::ConnectionsReplace { registry, .. } = action {
@@ -787,6 +862,9 @@ impl Controller {
                         .and_then(|body| parse_reply(body.as_bytes()))
                     {
                         Ok(reply) => {
+                            if let Some(report) = reply.library {
+                                let _ = self.setup_library.receive(report);
+                            }
                             if reply.ok {
                                 if let Some(setup) = reply.setup {
                                     if setup.document.as_ref().map_or(0, |doc| doc.revision)
@@ -1078,6 +1156,9 @@ impl Controller {
     }
 
     fn show_setup_editor(&mut self, ui: &mut egui::Ui) {
+        if self.setup_checked && self.setup_editor.applied.is_none() {
+            ui.small("Saving a new composition replaces legacy notifications and automation rules in the private engine snapshot. Source profiles and Connections stay unchanged.");
+        }
         self.setup_editor.can_save = !self.pending
             && self.setup_checked
             && self.connected
@@ -1102,6 +1183,66 @@ impl Controller {
                 }
             }
         });
+    }
+
+    fn show_setup_library(&mut self, ui: &mut egui::Ui) {
+        use setup_library_panel::Intent;
+        if self.setup_checked && self.setup_editor.applied.is_none() {
+            ui.small("Saving a starter replaces legacy notifications and automation rules. The source profile and Connections are not changed.");
+        }
+        let paused = self.connected
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|status| !status.enabled && status.state == "paused");
+        let intent = self.setup_library.show(
+            ui,
+            self.setup_editor.dirty,
+            paused,
+            self.pending || !self.connected || !self.setup_checked,
+            self.setup_editor.draft.is_some(),
+            self.setup_editor.base_revision,
+        );
+        match intent {
+            Some(Intent::Refresh) => self.dispatch(Action::LibraryList),
+            Some(Intent::SaveCurrent(name)) if paused && !self.pending => {
+                match self.setup_editor.name_draft(name) {
+                    Ok(()) => {
+                        if let Some(document) = self.setup_editor.draft.clone() {
+                            self.dispatch(Action::SetupReplace {
+                                revision: self.setup_editor.base_revision,
+                                document,
+                            });
+                        }
+                    }
+                    Err(error) => self.message = error,
+                }
+            }
+            Some(Intent::NewDraft(template, name)) if !self.setup_editor.dirty && !self.pending => {
+                match underglow::setup_library::starter(
+                    template,
+                    setup_library_panel::fresh_id(),
+                    name,
+                ) {
+                    Ok(document) => {
+                        self.setup_editor.starter_draft(document);
+                    }
+                    Err(error) => self.message = error,
+                }
+            }
+            Some(Intent::Update { revision, mutation }) => {
+                if matches!(
+                    mutation,
+                    underglow::setup_library::LibraryMutation::Switch { .. }
+                ) && self.setup_editor.dirty
+                {
+                    self.message = "Save or Discard the draft before switching".into();
+                } else {
+                    self.dispatch(Action::LibraryUpdate { revision, mutation });
+                }
+            }
+            _ => {}
+        }
     }
 
     fn ripple_preview_colors(&self) -> gui_preview::RippleColors {
@@ -1295,6 +1436,10 @@ impl Controller {
                 }
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.page, Page::Layers, "Layers");
+                if ui.selectable_label(self.setup_library.open, "Saved setups").clicked() {
+                    self.setup_library.open = !self.setup_library.open;
+                    self.page = Page::Layers;
+                }
                 if ui.selectable_value(&mut self.page, Page::Connections, "Connections").clicked()
                     && self.last_connections.elapsed() >= Duration::from_secs(5) {
                     self.refresh_connections();
@@ -1309,6 +1454,7 @@ impl Controller {
                     ui.colored_label(brand::WARNING, warning);
                 }
                 if !self.setup_checked { ui.small("Loading canonical setup from engine…"); }
+                if self.setup_library.open { self.show_setup_library(ui); }
                 if self.setup_editor.draft.is_some() {
                     ui.label(&self.message);
                     self.show_setup_editor(ui);
@@ -1451,6 +1597,12 @@ impl eframe::App for Controller {
         self.receive();
         if self.connected && !self.setup_checked && !self.pending && !self.poll_pending {
             self.dispatch(Action::SetupShow);
+        } else if self.connected
+            && self.setup_library.report.is_none()
+            && !self.pending
+            && !self.poll_pending
+        {
+            self.dispatch(Action::LibraryList);
         } else if (self.page == Page::Connections || !self.connections_panel.has_report())
             && self.connected
             && !self.pending
@@ -2308,6 +2460,7 @@ mod tests {
             connector_panel: connectors::Panel::default(),
             setup_editor: setup_editor::Editor::default(),
             connections_panel: connections_screen::Panel::default(),
+            setup_library: setup_library_panel::Panel::default(),
             page: Page::Layers,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
@@ -2975,6 +3128,7 @@ mod tests {
             connector_panel: connectors::Panel::default(),
             setup_editor: setup_editor::Editor::default(),
             connections_panel: connections_screen::Panel::default(),
+            setup_library: setup_library_panel::Panel::default(),
             page: Page::Layers,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,

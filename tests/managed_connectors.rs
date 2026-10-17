@@ -572,6 +572,19 @@ fn two_setups_edits_and_legacy_visual_selection_reuse_one_pid_without_machine_se
     }
     h.request(serde_json::json!({"schema_version":1,"action":"setup-edit",
         "expected_revision":2,"edits":[{"op":"remove","id":"matrix"}]}));
+    let library = h.cli(&["control", "library", "list"])["library"].clone();
+    let revision = library["revision"].as_u64().unwrap();
+    let current_id = library["current_id"].as_str().unwrap();
+    h.request(serde_json::json!({"schema_version":1,"action":"library-update",
+        "expected_revision":revision,"mutation":{"op":"duplicate","id":current_id,"new_id":"second-visual","name":"Second visual"}}));
+    h.request(serde_json::json!({"schema_version":1,"action":"library-update",
+        "expected_revision":revision+1,"mutation":{"op":"switch","id":"second-visual","expected_setup_revision":3}}));
+    h.request(serde_json::json!({"schema_version":1,"action":"library-update",
+        "expected_revision":revision+2,"mutation":{"op":"switch","id":current_id,"expected_setup_revision":4}}));
+    assert_eq!(
+        h.wait_health("focus", |v| v["healthy"] == true)["pid"],
+        initial["pid"]
+    );
     let p =
         h.profile(&(String::from("effect='aurora'\n") + &h.config("other", "hold", true, true, 0)));
     let selected = h.cli(&["control", "select", "--config", p.to_str().unwrap()]);
@@ -603,6 +616,87 @@ fn two_setups_edits_and_legacy_visual_selection_reuse_one_pid_without_machine_se
     );
     assert_eq!(report["status"]["state"], "paused");
     assert!(!h.dir.join("runtime/hardware.lock").exists());
+}
+
+#[test]
+fn explicit_blank_adoption_removes_hidden_legacy_visuals_without_restarting_producers() {
+    let mut h = Harness::new();
+    let sentinel = h.dir.join("notification-ran");
+    let notification_command = serde_json::to_string(&vec![
+        "python3".to_string(),
+        "-c".into(),
+        format!(
+            "from pathlib import Path; Path({:?}).write_text('unexpected')",
+            sentinel.display().to_string()
+        ),
+    ])
+    .unwrap();
+    let config = format!(
+        "effect='matrix'\n[signal]\nkind='command-pulse'\ncommand=['/must-not-run-dormant-provider']\n[[notifications]]\nid='legacy-command'\nduration_seconds=1\nzones=['function']\n[notifications.signal]\nkind='command-pulse'\ncommand={notification_command}\n[[automation.rules]]\nid='hidden-red'\nsource='focus'\nmode='while-state'\nstate='working'\nscene='red'\n[automation.scenes.red]\ncolor=[255,0,0]\n{}",
+        h.config("focus", "hold", true, true, 0)
+    );
+    h.start(&config);
+    let producer = h.wait_health("focus", |health| health["healthy"] == true);
+    let connections = fs::read(h.dir.join("runtime/connections.json")).unwrap();
+    let before: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("runtime/state.json")).unwrap()).unwrap();
+    let retained: toml::Value = toml::from_str(before["config"].as_str().unwrap()).unwrap();
+    assert!(retained.get("setup").is_none());
+    assert_eq!(retained["notifications"].as_array().unwrap().len(), 1);
+    assert_eq!(retained["automation"]["rules"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        fs::read_to_string(h.dir.join("profile.toml")).unwrap(),
+        config
+    );
+    let blank = underglow::setup_library::starter(
+        underglow::setup_library::Starter::Blank,
+        "user-owned".into(),
+        "My blank".into(),
+    )
+    .unwrap();
+    let reply = h.request(serde_json::json!({"schema_version":1,"action":"setup-replace","expected_revision":0,"document":blank}));
+    assert_eq!(reply["status"]["state"], "paused");
+    let after: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("runtime/state.json")).unwrap()).unwrap();
+    let adopted: toml::Value = toml::from_str(after["config"].as_str().unwrap()).unwrap();
+    assert!(adopted.get("notifications").is_none());
+    assert!(adopted["automation"].get("rules").is_none());
+    assert!(adopted["setup"]["layers"].as_array().unwrap().is_empty());
+    assert_eq!(
+        adopted["signal"], retained["signal"],
+        "legacy base command remains dormant, not executed"
+    );
+    let preview = h.cli(&["control", "preview"]);
+    assert!(
+        preview["preview"]["rgb"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|channel| channel == 0)
+    );
+    assert!(!sentinel.exists());
+    assert_eq!(
+        h.wait_health("focus", |health| health["healthy"] == true)["pid"],
+        producer["pid"]
+    );
+    assert_eq!(
+        fs::read(h.dir.join("runtime/connections.json")).unwrap(),
+        connections
+    );
+    assert_eq!(
+        fs::read_to_string(h.dir.join("profile.toml")).unwrap(),
+        config
+    );
+    assert!(!h.dir.join("runtime/hardware.lock").exists());
+    h.stop();
+    h.start(&config);
+    assert!(
+        h.cli(&["control", "setup", "show"])["setup"]["document"]["layers"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!sentinel.exists());
 }
 
 #[test]

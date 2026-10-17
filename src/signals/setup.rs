@@ -144,8 +144,8 @@ impl SignalProgram for SetupProgram {
     }
 
     fn composition(&self, ctx: &RenderContext<'_>) -> (Frame, Vec<underglow::compositor::Layer>) {
-        // Keep canonical arbitration inside the base; legacy notifications and
-        // automation remain overlays with their original priorities.
+        // Canonical arbitration owns the whole frame; the config host rejects
+        // legacy notification/automation overlays rather than hiding them here.
         (self.render(ctx), Vec::new())
     }
 
