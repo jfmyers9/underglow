@@ -69,9 +69,6 @@ impl Editor {
         self.sync_canvas_selection();
         ui.horizontal(|ui| {
             ui.strong("Composition preview");
-            if ui.button("Preview tools").clicked() {
-                self.preview_tools_open = true;
-            }
         });
         ui.horizontal(|ui| {
             for mode in [
@@ -92,16 +89,11 @@ impl Editor {
                 }
             }
         });
-        let highlighted = self.preview.coverage().and_then(|report| {
-            report.layers.iter().find(|layer| {
-                self.highlight_coverage && self.selected.as_deref() == Some(layer.id.as_str())
-            })
-        });
-        // Reserve both the mode caption and the preview-facts badge. At the
+        // Reserve the mode caption, two compact test rows and the facts badge. At the
         // minimum viewport this scales the board, never scrolls it out of reach.
         let width = ui
             .available_width()
-            .min((ui.available_height() - 50.0).max(40.0) * 18.5 / 6.4)
+            .min((ui.available_height() - 122.0).max(40.0) * 18.5 / 6.4)
             .min(700.0);
         let content = egui::Rect::from_min_size(
             ui.cursor().min + egui::vec2((ui.available_width() - width) * 0.5, 0.0),
@@ -112,6 +104,32 @@ impl Editor {
                 .id_salt("composed-keyboard")
                 .max_rect(content),
         );
+        let controls = egui::Rect::from_min_size(
+            egui::pos2(ui.max_rect().left(), content.bottom() + 6.0),
+            egui::vec2(ui.available_width(), 66.0),
+        );
+        let mut controls_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("quick-preview-controls")
+                .max_rect(controls),
+        );
+        if let Some(doc) = self.draft.as_ref() {
+            let layer = doc
+                .layers
+                .iter()
+                .find(|layer| Some(&layer.id) == self.selected.as_ref());
+            self.preview_tools_open |= self.preview.show_quick_controls(
+                &mut controls_ui,
+                doc,
+                layer,
+                self.preview_brightness.unwrap_or(255),
+            );
+        }
+        let highlighted = self.preview.coverage().and_then(|report| {
+            report.layers.iter().find(|layer| {
+                self.highlight_coverage && self.selected.as_deref() == Some(layer.id.as_str())
+            })
+        });
         let layer = self.draft.as_ref().and_then(|doc| {
             doc.layers
                 .iter()
@@ -146,6 +164,7 @@ impl Editor {
         );
         if let Some(coord) = response.inspected {
             self.explained_key = Some(coord);
+            self.preview_tools_open = true;
         }
         if response.changed
             && let (Some(id), Some(target)) = (layer_id, target)
@@ -162,10 +181,16 @@ impl Editor {
                 })
                 .err();
         }
-        ui.advance_cursor_after_rect(content);
+        ui.advance_cursor_after_rect(controls);
         let context = match self.preview.mode {
             setup_preview::Mode::Live => "Live facts",
             setup_preview::Mode::InputDemo => "Isolated input demo",
+            setup_preview::Mode::Scenario
+                if self.preview.quick_active() && self.preview.scenario_playing() =>
+            {
+                "Quick test playing"
+            }
+            setup_preview::Mode::Scenario if self.preview.quick_active() => "Quick test paused",
             setup_preview::Mode::Scenario if self.preview.scenario_playing() => "Scenario running",
             setup_preview::Mode::Scenario => "Scenario paused",
         };
@@ -194,6 +219,11 @@ impl Editor {
                 if ui.button("Close preview tools").clicked() { self.preview_tools_open = false; }
                 egui::ScrollArea::vertical().id_salt("workspace-preview-tools")
                     .max_height(ui.available_height()).show(ui, |ui| {
+                        // A key click must reveal its actual captured explanation,
+                        // not bury it below the advanced source/clock forms.
+                        if self.explained_key.is_some() {
+                            setup_explanation::show(ui, &self.preview, self.explained_key);
+                        }
                         self.preview.show_controls(ui);
                         if self.preview.mode == setup_preview::Mode::Live && self.preview.runtime()
                             .is_some_and(|r| r.requirements().analog_input) {
@@ -204,7 +234,9 @@ impl Editor {
                         if self.highlight_coverage {
                             ui.small("Outlines: green = visible, red × = obscured, blue = targeted but inactive. Yellow = inspected key. RGB fills are unchanged.");
                         }
-                        setup_explanation::show(ui, &self.preview, self.explained_key);
+                        if self.explained_key.is_none() {
+                            ui.small("Choose Inspect and click a composed key to explain it.");
+                        }
                         setup_coverage::show(ui, self.preview.coverage(), self.selected.as_deref());
                     });
             });

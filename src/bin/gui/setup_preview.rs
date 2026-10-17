@@ -23,6 +23,9 @@ use underglow::source_capabilities::CapabilityRegistry;
 #[path = "scenario_controls.rs"]
 mod scenario_controls;
 
+#[path = "quick_preview.rs"]
+pub(super) mod quick_preview;
+
 #[cfg(test)]
 #[path = "scenario_clock_tests.rs"]
 mod clock_tests;
@@ -202,6 +205,8 @@ pub struct Preview {
     sample: Option<LiveSample>,
     pub mode: Mode,
     pub scenario: Scenario,
+    quick: quick_preview::Session,
+    previous_quick: bool,
     controls: scenario_controls::Controls,
     scenario_tick: Option<Instant>,
     scenario_playing: bool,
@@ -230,6 +235,8 @@ impl Default for Preview {
             sample: None,
             mode: Mode::Live,
             scenario: Scenario::default(),
+            quick: quick_preview::Session::default(),
+            previous_quick: false,
             controls: scenario_controls::Controls::default(),
             scenario_tick: None,
             scenario_playing: false,
@@ -266,8 +273,11 @@ impl Preview {
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
-        if mode != self.mode {
-            self.reset_scenario();
+        if mode != self.mode || self.quick.active {
+            self.quick.active = false;
+            self.quick.scenario.reset();
+            self.quick.action = None;
+            self.set_scenario_playing(false);
             self.mode = mode;
             self.baseline = true;
         }
@@ -323,14 +333,25 @@ impl Preview {
 
     /// Pure controls: no engine intent or command channel is available here.
     pub fn show_controls(&mut self, ui: &mut egui::Ui) {
-        let mut mode = self.mode;
+        let mut mode = None;
         ui.horizontal_wrapped(|ui| {
             ui.label("Composition preview:");
-            ui.selectable_value(&mut mode, Mode::Live, "Live facts");
-            ui.selectable_value(&mut mode, Mode::InputDemo, "Isolated input demo");
-            ui.selectable_value(&mut mode, Mode::Scenario, "Scenario");
+            for (choice, label) in [
+                (Mode::Live, "Live facts"),
+                (Mode::InputDemo, "Isolated input demo"),
+                (Mode::Scenario, "Scenario"),
+            ] {
+                if ui
+                    .selectable_label(self.mode == choice && !self.quick.active, label)
+                    .clicked()
+                {
+                    mode = Some(choice);
+                }
+            }
         });
-        self.set_mode(mode);
+        if let Some(mode) = mode {
+            self.set_mode(mode);
+        }
         match self.mode {
             Mode::Live => {
                 ui.small(if self.sample().is_some_and(|s| !s.is_stale()) {
@@ -343,6 +364,16 @@ impl Preview {
                 ui.small(
                     "Private simulated keystrokes only · no live source facts or provider activity",
                 );
+            }
+            Mode::Scenario if self.quick.active => {
+                ui.strong("Quick test · private facts · no hardware output");
+                ui.small("Advanced scenario channels are retained and paused. Choose Scenario above to edit them; returning baselines old occurrences instead of replaying them.");
+                if ui.button("Reset quick test").clicked() {
+                    self.reset_quick();
+                }
+                if let Some(error) = &self.quick.error {
+                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                }
             }
             Mode::Scenario => {
                 ui.strong("Scenario · isolated source facts · no hardware output");
@@ -411,6 +442,11 @@ impl Preview {
     /// Save/Discard/reload never replay old completion events.
     pub fn rebaseline(&mut self) {
         self.baseline = true;
+        if self.quick.active {
+            self.quick.scenario.reset();
+            self.quick.action = None;
+            self.set_scenario_playing(false);
+        }
     }
 
     pub fn update(&mut self, document: Option<&SetupDocument>, brightness: u8) {
@@ -428,14 +464,17 @@ impl Preview {
 
     fn advance_playback_at(&mut self, tick: Instant) {
         if self.mode == Mode::Scenario && self.scenario_playing {
-            if let Some(previous) = self.scenario_tick
-                && let Err(error) = self
-                    .scenario
-                    .advance_by(tick.saturating_duration_since(previous))
-            {
-                self.error = Some(error.to_string());
-                self.set_scenario_playing(false);
-                return;
+            if let Some(previous) = self.scenario_tick {
+                let scenario = if self.quick.active {
+                    &mut self.quick.scenario
+                } else {
+                    &mut self.scenario
+                };
+                if let Err(error) = scenario.advance_by(tick.saturating_duration_since(previous)) {
+                    self.error = Some(error.to_string());
+                    self.set_scenario_playing(false);
+                    return;
+                }
             }
             self.scenario_tick = Some(tick);
         } else {
@@ -444,9 +483,6 @@ impl Preview {
     }
 
     fn update_at(&mut self, document: Option<&SetupDocument>, brightness: u8, elapsed: Duration) {
-        if self.previous_mode == Mode::Scenario && self.mode != Mode::Scenario {
-            self.reset_scenario();
-        }
         let snapshot = self
             .sample
             .as_ref()
@@ -461,20 +497,28 @@ impl Preview {
             gap: false,
             events: vec![],
         };
-        let synthetic = self.scenario.snapshot();
-        let synthetic_events = self.scenario.events_since(0);
+        let scenario = if self.quick.active {
+            &self.quick.scenario
+        } else {
+            &self.scenario
+        };
+        let synthetic = scenario.snapshot();
+        let synthetic_events = scenario.events_since(0);
+        let synthetic_now = scenario.now();
+        let synthetic_generation = scenario.generation();
         let (facts, events, now) = if self.mode == Mode::Scenario {
-            (&synthetic, &synthetic_events, self.scenario.now())
+            (&synthetic, &synthetic_events, synthetic_now)
         } else {
             snapshot.map_or((&empty, &empty_events, elapsed), |s| {
                 (&s.snapshot, &s.events, s.extrapolated_now())
             })
         };
-        let changed_mode = self.previous_mode != self.mode;
+        let changed_mode =
+            self.previous_mode != self.mode || self.previous_quick != self.quick.active;
         let generation = snapshot.map(|s| s.generation);
         if changed_mode
             || (self.mode == Mode::Scenario
-                && self.scenario.generation() != self.last_scenario_generation)
+                && synthetic_generation != self.last_scenario_generation)
             || (snapshot.is_none() && self.mode != Mode::Scenario)
             || now < self.last_source_now
             || generation != self.last_generation
@@ -545,7 +589,8 @@ impl Preview {
         // A stale connection baselines again on recovery. No past events replay.
         self.baseline = snapshot.is_none() && self.mode != Mode::Scenario;
         self.previous_mode = self.mode;
-        self.last_scenario_generation = self.scenario.generation();
+        self.previous_quick = self.quick.active;
+        self.last_scenario_generation = synthetic_generation;
         self.last_source_now = now;
         self.last_generation = generation;
         // The exact same clock drives source leases, condition deadlines, and
@@ -763,7 +808,10 @@ mod tests {
             Color::new(8, 8, 16),
             "old real event must not replay"
         );
-        assert!(preview.scenario.events_since(0).events.is_empty());
+        assert!(
+            !preview.scenario.events_since(0).events.is_empty(),
+            "switching contexts retains the advanced scene; baselining prevents replay"
+        );
         preview.set_mode(Mode::Scenario);
         preview.update_at(Some(&doc), 255, Duration::ZERO);
         assert_eq!(color(&preview, "A"), Color::new(8, 8, 16));

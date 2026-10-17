@@ -21,9 +21,9 @@ impl Editor {
         }
         let bounds = ui.available_rect_before_wrap();
         if compact {
-            let canvas_height = (bounds.height() * 0.52)
-                .clamp(150.0, 280.0)
-                .min(bounds.width().min(700.0) / 18.5 * 6.4 + 64.0);
+            let canvas_height = (bounds.height() * 0.62)
+                .clamp(270.0, 310.0)
+                .min(bounds.width().min(700.0) / 18.5 * 6.4 + 136.0);
             let canvas =
                 egui::Rect::from_min_size(bounds.min, egui::vec2(bounds.width(), canvas_height));
             let inspector = egui::Rect::from_min_max(

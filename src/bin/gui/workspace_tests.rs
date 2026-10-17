@@ -25,6 +25,11 @@ fn app() -> (Controller, Receiver<Action>) {
 /// Navigate the actual bounded pane to a control; never click an offscreen galley.
 pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controller, label: &str) {
     for step in 0..70 {
+        // Choose the hit only after scrolling/layout has actually settled.
+        // A short compact inspector can move controls out of an earlier clip.
+        for _ in 0..30 {
+            harness.run(vec![], |ctx| app.show_lighting(ctx));
+        }
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         let texts = frame.texts();
         let inspector = texts
@@ -35,29 +40,45 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             .iter()
             .find(|t| t.text == "Close preview tools")
             .map(|t| t.clip);
+        let keyboard = keyboard_region(&frame);
         let region = match label {
-            "F1" => Some(keyboard_region(&frame)),
+            "F1" => Some(keyboard),
             // These controls intentionally live outside scrollable inspectors.
             "Preview tools" | "Preview" | "Select keys" | "Inspect" | "Save composition"
             | "Save" | "Cancel" | "Add layer" => None,
             _ => tools.or(inspector),
         };
-        if texts.iter().any(|t| {
+        if let Some(hit) = texts.iter().find(|t| {
             t.text == label
                 && t.fully_visible()
-                && region.is_none_or(|r| r.contains(t.rect.center()))
+                && region.is_none_or(|r| {
+                    if tools == Some(r) || label == "F1" {
+                        r.contains_rect(t.rect) && r.contains_rect(t.clip)
+                    } else {
+                        // Inspector popups may extend beyond their originating
+                        // pane; their own viewport-intersected clip must still
+                        // show the complete label. Exclude the quick toolbar's
+                        // actual clip rather than all overlapping geometry.
+                        r.contains(t.rect.center()) && t.clip != keyboard
+                    }
+                })
         }) {
-            // Finish smooth scrolling on the harness clock before taking the click position.
-            for _ in 0..30 {
-                harness.run(vec![], |ctx| app.show_lighting(ctx));
-            }
-            harness.click(label, region, |ctx| app.show_lighting(ctx));
+            // Do not look the label up again using point-only region matching:
+            // a tool window can overlap an unrelated quick-test button.
+            harness.click_at(hit.rect.center(), |ctx| app.show_lighting(ctx));
             return;
         }
         let pane = tools.or(inspector).expect("a scrollable workspace pane");
         harness.wheel(
             pane.center(),
-            egui::vec2(0.0, if step == 34 { 20000.0 } else { -220.0 }),
+            egui::vec2(
+                0.0,
+                if step == 34 {
+                    20000.0
+                } else {
+                    -(pane.height() * 0.6).min(220.0)
+                },
+            ),
             |ctx| app.show_lighting(ctx),
         );
     }

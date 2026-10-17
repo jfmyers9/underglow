@@ -43,6 +43,11 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
             t.text == label
                 && t.fully_visible()
                 && (label != "F1" || keyboard.is_some_and(|r| r.contains(t.rect.center())))
+                // Quick tests repeat capability labels such as Working. An
+                // inspector choice must come from its pane/popup, not the
+                // independently clipped canonical keyboard's test toolbar.
+                && (matches!(label, "F1" | "Composition preview")
+                    || keyboard.is_none_or(|r| r != t.clip))
         }) {
             h.click_at(t.rect.center(), |ctx| app.show_lighting(ctx));
             return;
