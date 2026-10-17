@@ -355,6 +355,7 @@ fn workflow_host_offline_draft_is_editable_and_unexpected_ack_never_clears_it() 
         click(&mut harness, &mut app, "Save");
         assert!(incoming.try_recv().is_err());
         click(&mut harness, &mut app, "Add layer");
+        click(&mut harness, &mut app, "Aurora layer");
         let draft = app.setup_editor.draft.clone();
         assert!(
             draft.as_ref().unwrap().layers.len()

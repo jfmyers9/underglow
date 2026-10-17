@@ -2394,11 +2394,14 @@ mod tests {
         };
         // Inspector controls remain mounted and reachable within their own scroll area.
         click(&mut app, "Layer brightness");
+        click(&mut app, "Keys");
         click(&mut app, "Physical targets · 80HE ANSI");
         assert!(!text.contains("Choose an effect"));
         assert!(!text.contains("Lighting controls"));
+        click(&mut app, "Appearance");
         click(&mut app, "Matrix");
         click(&mut app, "Aurora");
+        click(&mut app, "Keys");
         click(&mut app, "Select keys");
         click(&mut app, "F1");
         let draft = app.setup_editor.draft.as_ref().unwrap();

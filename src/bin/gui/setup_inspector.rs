@@ -167,34 +167,63 @@ fn color_control(ui: &mut Ui, label: &str, color: &mut [u8; 3]) {
 
 /// Returns true iff this frame changed appearance, compositing or transitions.
 /// Stable layer ID scopes all widget state; names and document order are untouched.
+#[cfg(test)]
 pub fn show(ui: &mut Ui, layer: &mut Layer) -> bool {
     let before = layer.clone();
-    ui.push_id(("layer-appearance", &layer.id), |ui| {
+    ui.push_id(("layer-appearance", layer.id.clone()), |ui| {
         show_renderer(ui, &mut layer.renderer);
         ui.add(egui::Slider::new(&mut layer.brightness, 0..=255).text("Layer brightness"));
         ui.small("Only this layer's visual intensity. Global brightness and safety limits remain independent.");
-        ui.add(egui::Slider::new(&mut layer.opacity, 0..=255).text("Opacity")
-            .custom_formatter(|v, _| format!("{:.1}%", v * 100.0 / 255.0)));
-        egui::ComboBox::from_id_salt("blend-mode").selected_text(format!("{:?}", layer.blend)).show_ui(ui, |ui| {
-            ui.selectable_value(&mut layer.blend, BlendMode::Normal, "Normal (alpha replacement)");
+        show_advanced(ui, layer);
+    });
+    before != *layer
+}
+
+/// Layer-wide settings, explicitly separate from editing one appearance.
+pub fn show_advanced(ui: &mut Ui, layer: &mut Layer) {
+    ui.add(
+        egui::Slider::new(&mut layer.opacity, 0..=255)
+            .text("Opacity")
+            .custom_formatter(|v, _| format!("{:.1}%", v * 100.0 / 255.0)),
+    );
+    egui::ComboBox::from_id_salt("blend-mode")
+        .selected_text(format!("{:?}", layer.blend))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                &mut layer.blend,
+                BlendMode::Normal,
+                "Normal (alpha replacement)",
+            );
             ui.selectable_value(&mut layer.blend, BlendMode::Add, "Add (saturating)");
             ui.selectable_value(&mut layer.blend, BlendMode::Multiply, "Multiply");
         });
-        ui.small("Opacity and blend apply to every appearance in this logical layer. Zero opacity is transparent; black is a color, not transparency.");
-        ui.add(egui::Slider::new(&mut layer.transition.duration_ms, 0..=5000).text("Transition duration (ms)"));
-        egui::ComboBox::from_id_salt("transition-curve")
-            .selected_text(match layer.transition.curve {
-                TransitionCurve::Linear => "Linear",
-                TransitionCurve::SmoothStep => "Smooth step",
-            }).show_ui(ui, |ui| {
-                ui.selectable_value(&mut layer.transition.curve, TransitionCurve::Linear, "Linear");
-                ui.selectable_value(&mut layer.transition.curve, TransitionCurve::SmoothStep, "Smooth step");
-            });
-        ui.small("One transition for this logical layer, shared by base/fallback and all variants. 0 ms switches instantly; the curve eases the crossfade.");
-        ui.small(super::setup_explanation::TRANSITION_HELP);
-        ui.small("Draft only: transition edits never activate hardware; explicit Resume is still required.");
-    });
-    before != *layer
+    ui.small("Opacity and blend apply to every appearance in this logical layer. Zero opacity is transparent; black is a color, not transparency.");
+    ui.add(
+        egui::Slider::new(&mut layer.transition.duration_ms, 0..=5000)
+            .text("Transition duration (ms)"),
+    );
+    egui::ComboBox::from_id_salt("transition-curve")
+        .selected_text(match layer.transition.curve {
+            TransitionCurve::Linear => "Linear",
+            TransitionCurve::SmoothStep => "Smooth step",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                &mut layer.transition.curve,
+                TransitionCurve::Linear,
+                "Linear",
+            );
+            ui.selectable_value(
+                &mut layer.transition.curve,
+                TransitionCurve::SmoothStep,
+                "Smooth step",
+            );
+        });
+    ui.small("One transition for this logical layer, shared by base/fallback and all variants. 0 ms switches instantly; the curve eases the crossfade.");
+    ui.small(super::setup_explanation::TRANSITION_HELP);
+    ui.small(
+        "Draft only: transition edits never activate hardware; explicit Resume is still required.",
+    );
 }
 
 pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {

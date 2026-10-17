@@ -30,11 +30,15 @@ impl Editor {
     /// Keys inspectors use the same explicit mode as the pinned canvas.
     pub(super) fn select_keys_mode(&mut self) {
         self.canvas_mode = setup_targets::CanvasMode::SelectKeys;
+        if let Some(id) = &self.selected {
+            self.inspector_tabs.insert(id.clone(), inspector::Tab::Keys);
+        }
     }
 
     /// Replacing a document must not inherit group drafts or in-flight gestures.
     pub(super) fn reset_canvas_context(&mut self) {
         self.targets.clear();
+        self.inspector_tabs.clear();
         self.empty_canvas = setup_targets::TargetSelection::default();
         self.canvas_selection = None;
         self.canvas_mode = setup_targets::CanvasMode::Preview;

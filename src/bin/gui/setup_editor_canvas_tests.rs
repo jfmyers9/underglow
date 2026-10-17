@@ -232,6 +232,7 @@ fn mounted_group_draft_save_is_atomic_and_disabled_layer_references_are_safe() {
     original.layers.push(disabled);
     let (mut app, incoming) = app(original.clone());
     app.setup_editor.selected = Some(original.layers[1].id.clone());
+    harness.click("Select keys", None, |ctx| app.show_lighting(ctx));
     click_workspace_control(&mut harness, &mut app, "Reusable custom groups");
     click_workspace_control(&mut harness, &mut app, "Edit / rename");
     harness.click("Select keys", None, |ctx| app.show_lighting(ctx));
@@ -336,6 +337,9 @@ fn acknowledged_switch_resets_canvas_context_when_setup_ids_change() {
     editor.load(Some(original.clone()));
     let id = original.layers[0].id.clone();
     editor.targets.entry(id.clone()).or_default();
+    editor
+        .inspector_tabs
+        .insert(id.clone(), inspector::Tab::Keys);
     editor.canvas_selection = Some(id);
     editor.canvas_mode = setup_targets::CanvasMode::Inspect;
     editor.explained_key = canonical_coord("F1");
@@ -350,9 +354,48 @@ fn acknowledged_switch_resets_canvas_context_when_setup_ids_change() {
     assert_eq!(editor.base_revision, replacement.revision);
     assert!(!editor.dirty);
     assert!(editor.targets.is_empty());
+    assert!(editor.inspector_tabs.is_empty());
     assert!(editor.canvas_selection.is_none());
     assert!(editor.explained_key.is_none());
     assert_eq!(editor.canvas_mode, setup_targets::CanvasMode::Preview);
+}
+
+#[test]
+fn keys_tab_and_canvas_selection_mode_share_the_same_editing_context() {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE] {
+        let mut harness = Harness::new(size);
+        let (mut app, incoming) = app(document());
+        let id = app.setup_editor.selected.clone().unwrap();
+        click_workspace_control(&mut harness, &mut app, "Keys");
+        assert_eq!(
+            app.setup_editor.canvas_mode,
+            setup_targets::CanvasMode::SelectKeys
+        );
+        assert_eq!(
+            app.setup_editor.inspector_tabs.get(&id),
+            Some(&inspector::Tab::Keys)
+        );
+        harness.click("Preview", None, |ctx| app.show_lighting(ctx));
+        assert_eq!(
+            app.setup_editor.canvas_mode,
+            setup_targets::CanvasMode::Preview
+        );
+        // Clicking an already-selected Keys tab is still an explicit request
+        // to resume selection; merely repainting it never forces the mode.
+        click_workspace_control(&mut harness, &mut app, "Keys");
+        assert_eq!(
+            app.setup_editor.canvas_mode,
+            setup_targets::CanvasMode::SelectKeys
+        );
+        click_workspace_control(&mut harness, &mut app, "Appearance");
+        harness.click("Select keys", None, |ctx| app.show_lighting(ctx));
+        assert_eq!(
+            app.setup_editor.inspector_tabs.get(&id),
+            Some(&inspector::Tab::Keys)
+        );
+        assert!(incoming.try_recv().is_err());
+        assert!(!app.setup_editor.dirty);
+    }
 }
 
 #[test]

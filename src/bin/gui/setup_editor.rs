@@ -6,6 +6,9 @@ use super::{
 use eframe::egui;
 #[path = "setup_editor_canvas.rs"]
 mod canvas;
+#[cfg(test)]
+#[path = "layer_editing_tests.rs"]
+mod editing_tests;
 #[path = "setup_editor_inspector.rs"]
 mod inspector;
 #[path = "setup_editor_workspace.rs"]
@@ -334,7 +337,7 @@ mod tests {
     }
 
     fn click(ctx: &egui::Context, editor: &mut Editor, label: &str, nth: usize) {
-        if matches!(label, "New blank composition" | "Add Pi template") {
+        if label == "New blank composition" {
             click(ctx, editor, "More", 0);
         }
         // Reveal the requested control in its real bounded inspector, not a taller window.
@@ -390,9 +393,11 @@ mod tests {
         click(&ctx, &mut editor, "New blank composition", 0);
         click(&ctx, &mut editor, "Create blank", 0);
         click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Aurora layer", 0);
         click(&ctx, &mut editor, "Aurora", 0);
         click(&ctx, &mut editor, "Matrix", 0);
         click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Aurora layer", 0);
         click(&ctx, &mut editor, "Aurora", 0);
         click(&ctx, &mut editor, "Solid", 0);
         let (output, _) = run(&ctx, &mut editor, vec![]);
@@ -431,10 +436,13 @@ mod tests {
             }
         );
         click(&ctx, &mut editor, "Composition preview", 0); // close color popup
+        click(&ctx, &mut editor, "Keys", 0);
         click(&ctx, &mut editor, "Arrow keys (4 physical)", 0);
         click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Aurora layer", 0);
         click(&ctx, &mut editor, "Aurora", 0);
         click(&ctx, &mut editor, "Pulse", 0);
+        click(&ctx, &mut editor, "Keys", 0);
         click(&ctx, &mut editor, "Named zones (legacy engine map)", 0);
         click(&ctx, &mut editor, "Function", 0);
         let draft = editor.draft.clone().unwrap();
@@ -501,6 +509,7 @@ mod tests {
         restarted.load(Some(restored));
         assert_eq!(restarted.draft, Some(saved.clone()));
         click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Aurora layer", 0);
         editor.load(Some(draft)); // refresh cannot overwrite dirty state or baseline
         assert_eq!(editor.draft.as_ref().unwrap().layers.len(), 4);
         click(&ctx, &mut editor, "Discard draft", 0);
@@ -530,6 +539,8 @@ mod tests {
         let mut registry = CapabilityRegistry::new();
         registry.insert(descriptor).unwrap();
         editor.set_capabilities(registry);
+        click(&ctx, &mut editor, "Behavior", 0);
+        click(&ctx, &mut editor, "Advanced condition", 0);
         click(&ctx, &mut editor, "Always", 0);
         click(&ctx, &mut editor, "When an event occurs", 0);
         let changed = editor.draft.as_ref().unwrap();
@@ -541,6 +552,7 @@ mod tests {
         assert_eq!(changed, &expected);
         assert_eq!(editor.applied.as_ref(), Some(&original));
         click(&ctx, &mut editor, "Add behavior appearance", 0);
+        click(&ctx, &mut editor, "Advanced condition", 0);
         click(&ctx, &mut editor, "Always", 0);
         click(&ctx, &mut editor, "When an event occurs", 0);
         let changed = editor.draft.as_ref().unwrap();
@@ -576,10 +588,12 @@ mod tests {
         let mut editor = Editor::default();
         editor.blank();
         click(&ctx, &mut editor, "Add layer", 0); // Aurora, not Matrix.
+        click(&ctx, &mut editor, "Aurora layer", 0);
         let original = editor.draft.clone().unwrap();
         assert_eq!(original.layers[0].renderer.catalog_id(), Some("aurora"));
         assert!(!editor.can_save);
-        click(&ctx, &mut editor, "Add Pi template", 0);
+        click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Pi status layer", 0);
         let id = editor.selected.clone().unwrap();
         let draft = editor.draft.as_ref().unwrap();
         assert_eq!(draft.layers.len(), 2);
@@ -599,6 +613,7 @@ mod tests {
                 .analog_input
         );
         // Mounted physical-key canvas retargets every appearance together.
+        click(&ctx, &mut editor, "Keys", 0);
         click(&ctx, &mut editor, "Whole keyboard", 0);
         click(&ctx, &mut editor, "Select keys", 0);
         click(&ctx, &mut editor, "F1", 0);
@@ -632,14 +647,17 @@ mod tests {
         click(&ctx, &mut editor, "Create blank", 0);
         assert!(editor.draft.as_ref().unwrap().layers.is_empty());
         click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Aurora layer", 0);
         let bottom = editor.selected.clone().unwrap();
         click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Aurora layer", 0);
         let top = editor.selected.clone().unwrap();
         assert_ne!(bottom, top);
         let unrelated = editor.draft.as_ref().unwrap().layers[0].clone();
         // Actual mounted appearance inspector and physical-key canvas, not mocks.
         click(&ctx, &mut editor, "Aurora", 0);
         click(&ctx, &mut editor, "Matrix", 0);
+        click(&ctx, &mut editor, "Keys", 0);
         click(&ctx, &mut editor, "Select keys", 0);
         click(&ctx, &mut editor, "F1", 0); // One composed RGB canvas, explicit target mode.
         let selected = &editor.draft.as_ref().unwrap().layers[1];
@@ -672,6 +690,7 @@ mod tests {
             ],
         );
         assert_eq!(editor.draft.as_ref().unwrap().layers[1].name, "Top renamed");
+        click(&ctx, &mut editor, "⋯", 0);
         click(&ctx, &mut editor, "Enabled", 0); // topmost layer is displayed first
         assert!(!editor.draft.as_ref().unwrap().layers[1].enabled);
         assert_eq!(editor.draft.as_ref().unwrap().layers[0], unrelated);
@@ -682,6 +701,7 @@ mod tests {
         let mut copy = before.layers[2].clone();
         copy.id = top.clone();
         assert_eq!(copy, before.layers[1]);
+        click(&ctx, &mut editor, "⋯", 0);
         click(&ctx, &mut editor, "Toward bottom", 0);
         assert_eq!(editor.draft.as_ref().unwrap().layers[1].id, copy_id);
         assert_eq!(editor.selected.as_deref(), Some(copy_id.as_str()));
@@ -717,6 +737,8 @@ pub struct Editor {
     error: Option<String>,
     confirm_blank: bool,
     preview_tools_open: bool,
+    inspector_tabs: BTreeMap<String, inspector::Tab>,
+    rename_focus: Option<String>,
 }
 
 fn fresh_id(prefix: &str) -> String {
@@ -857,6 +879,8 @@ impl Editor {
             .unwrap_or(&[]);
         self.targets
             .retain(|id, _| layers.iter().any(|layer| &layer.id == id));
+        self.inspector_tabs
+            .retain(|id, _| layers.iter().any(|layer| &layer.id == id));
         if !layers
             .iter()
             .any(|layer| Some(&layer.id) == self.selected.as_ref())
@@ -891,7 +915,7 @@ impl Editor {
         Ok(())
     }
 
-    fn add(&mut self) -> Result<(), String> {
+    fn add_effect(&mut self, renderer: &str) -> Result<(), String> {
         let id = fresh_id("layer");
         let index = self
             .draft
@@ -908,7 +932,8 @@ impl Editor {
                 id: id.clone(),
                 name: "New layer".into(),
                 enabled: true,
-                renderer: setup_inspector::default_renderer("aurora").expect("catalog default"),
+                renderer: setup_inspector::default_renderer(renderer)
+                    .ok_or("Unknown layer effect")?,
                 brightness: underglow::DEFAULT_BRIGHTNESS,
                 target: Target::Whole {},
                 activation: Activation::Always {},
@@ -993,16 +1018,12 @@ impl Editor {
             if standalone {
                 intent = self.show_save_controls(ui);
             }
-            if self.draft.is_some() && ui.button("Add layer").clicked() {
-                self.error = self.add().err();
+            if self.draft.is_some() {
+                self.show_add_layer_menu(ui);
             }
             ui.menu_button("More", |ui| {
                 if standalone && ui.button("New blank composition").clicked() {
                     self.confirm_blank = true;
-                    ui.close_menu();
-                }
-                if self.draft.is_some() && ui.button("Add Pi template").clicked() {
-                    self.error = self.add_pi_template().err();
                     ui.close_menu();
                 }
                 ui.small(format!(

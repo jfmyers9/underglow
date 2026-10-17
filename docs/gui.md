@@ -44,6 +44,9 @@ the setup browser.
 
 ### Layer composition (canonical setups)
 
+See [Editing layers](layer-editing.md) for the Appearance/Keys/Behavior tabs,
+Add layer menu and advanced controls.
+
 The GUI loads `control setup show` through its background subprocess worker.
 When a canonical setup is available, the **Editor** workspace is primary;
 whole-preset cards and legacy global-renderer controls are hidden so selecting an

@@ -177,6 +177,22 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
         let mut harness = Harness::new(size);
         let (mut app, incoming) = app();
         app.setup_editor.preview.mode = setup_preview::Mode::InputDemo;
+        // The default Appearance form is intentionally short. Expand real controls
+        // to exercise overflow, then scroll back to the top before measuring.
+        click_workspace_control(&mut harness, &mut app, "Advanced layer settings");
+        let expanded = harness.settle(|ctx| app.show_lighting(ctx));
+        let pane = expanded
+            .texts()
+            .into_iter()
+            .find(|t| t.text.starts_with("Selected layer:"))
+            .unwrap()
+            .clip;
+        harness.wheel(pane.center(), egui::vec2(0.0, 20000.0), |ctx| {
+            app.show_lighting(ctx)
+        });
+        for _ in 0..30 {
+            harness.run(vec![], |ctx| app.show_lighting(ctx));
+        }
         let draft = app.setup_editor.draft.clone();
         let selected = app.setup_editor.selected.clone();
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
@@ -257,6 +273,7 @@ fn workspace_compact_edits_and_resizing_keep_one_draft_and_selection() {
     let (mut app, incoming) = app();
     let original = app.setup_editor.draft.clone().unwrap();
     harness.click("Add layer", None, |ctx| app.show_lighting(ctx));
+    harness.click("Aurora layer", None, |ctx| app.show_lighting(ctx));
     let added = app.setup_editor.selected.clone().unwrap();
     assert_eq!(
         app.setup_editor.draft.as_ref().unwrap().layers.len(),
