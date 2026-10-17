@@ -9,6 +9,8 @@ mod connectors;
 mod devpreview;
 #[path = "gui/preview.rs"]
 mod gui_preview;
+#[path = "gui/setup_inspector.rs"]
+mod setup_inspector;
 #[path = "gui/setup_targets.rs"]
 mod setup_targets;
 use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
