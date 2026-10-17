@@ -65,6 +65,10 @@ impl SetupProgram {
 }
 
 impl SignalProgram for SetupProgram {
+    fn setup_runtime(&mut self) -> Option<&mut CompiledSetup> {
+        Some(&mut self.runtime)
+    }
+
     fn initialize(&mut self) -> ProgramResult {
         if self.started.is_some() {
             return Err("setup is already initialized".into());

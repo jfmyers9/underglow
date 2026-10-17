@@ -13,6 +13,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use underglow::layer_runtime::CompiledSetup;
+use underglow::setup::SetupDocument;
+use underglow::setup_edits::{self, LayerEdit};
 
 const LIMIT: u64 = 1024 * 1024;
 const RETRIES: u32 = 5;
@@ -37,6 +40,11 @@ pub struct ControlOptions {
 #[derive(Debug, Subcommand)]
 enum ControlCommand {
     Status,
+    /// Read or atomically edit canonical layers without restarting providers.
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
     /// Read-only source freshness and actual/potential rule visibility. Never resumes lighting.
     Diagnostics,
     /// Hardware-free animation with live external overlays; never resumes lighting.
@@ -90,6 +98,20 @@ enum ConnectorCommand {
         id: String,
     },
 }
+#[derive(Debug, Subcommand)]
+enum SetupCommand {
+    Show,
+    /// Read a JSON array of layer operations from stdin (256 KiB maximum).
+    Edit {
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Read a complete declarative setup JSON document from stdin.
+    Replace {
+        #[arg(long)]
+        expected_revision: u64,
+    },
+}
 #[derive(Serialize, Deserialize)]
 struct Request {
     schema_version: u32,
@@ -100,6 +122,15 @@ struct Request {
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 enum Action {
     Status,
+    SetupShow,
+    SetupEdit {
+        expected_revision: u64,
+        edits: Vec<LayerEdit>,
+    },
+    SetupReplace {
+        expected_revision: u64,
+        document: SetupDocument,
+    },
     Diagnostics,
     Preview,
     DevSetup,
@@ -160,6 +191,8 @@ struct Response {
     diagnostics: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     preview: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    setup: Option<serde_json::Value>,
 }
 
 fn parse_hex_color(value: &str) -> Result<[u8; 3], String> {
@@ -238,6 +271,15 @@ fn read_limited(path: &Path) -> Result<String, Error> {
     }
     Ok(text)
 }
+fn read_setup_json<T: serde::de::DeserializeOwned>(input: impl Read) -> Result<T, Error> {
+    let limit = underglow::setup::MAX_DOCUMENT_BYTES;
+    let mut bytes = Vec::new();
+    input.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err("setup input exceeds 256 KiB".into());
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
 fn validate(text: &str) -> Result<AppConfig, Error> {
     if text.len() as u64 > LIMIT / 4 {
         return Err("configuration exceeds 256 KiB".into());
@@ -261,6 +303,7 @@ fn save(dir: &Path, state: &Saved) -> ProgramResult {
     // Never truncate the last valid snapshot on a failed edit or process crash.
     let temp = dir.join(format!(".state-{}.tmp", std::process::id()));
     let result = (|| -> ProgramResult {
+        let directory = File::open(dir)?;
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -270,7 +313,12 @@ fn save(dir: &Path, state: &Saved) -> ProgramResult {
         file.write_all(b"\n")?;
         file.sync_all()?;
         fs::rename(&temp, dir.join("state.json"))?;
-        File::open(dir)?.sync_all()?;
+        // Rename is the commit point. Reporting a rejection after it would leave
+        // saved/running state inconsistent. A directory-sync failure affects
+        // crash durability, not whether this edit has already been committed.
+        if let Err(error) = directory.sync_all() {
+            eprintln!("warning: state committed, directory sync failed: {error}");
+        }
         Ok(())
     })();
     if result.is_err() {
@@ -283,6 +331,19 @@ struct Active {
     session: Session,
     signal: Box<dyn SignalProgram>,
     _lease: Lease,
+}
+
+fn editable_runtime<'a>(
+    signal: &'a mut dyn SignalProgram,
+    candidate: &CompiledSetup,
+) -> Result<&'a mut CompiledSetup, Error> {
+    let runtime = signal.setup_runtime().ok_or(
+        "live legacy program cannot adopt a setup safely; Pause first, replace, then explicitly Resume",
+    )?;
+    if runtime.requirements().analog_input != candidate.requirements().analog_input {
+        return Err("changing live analog-input requirements requires Pause first; explicitly Resume after editing".into());
+    }
+    Ok(runtime)
 }
 impl Active {
     fn open(
@@ -425,6 +486,75 @@ struct Runtime {
     healthy_since: Instant,
 }
 impl Runtime {
+    fn setup_document(&self) -> serde_json::Value {
+        serde_json::json!({
+            "revision": self.config.setup.as_ref().map_or(0, |doc| doc.revision),
+            "document": self.config.setup,
+        })
+    }
+
+    fn install_setup(&mut self, document: SetupDocument) -> ProgramResult {
+        // Replace only declarative setup data. Preserve connectors, trust,
+        // profile globals, notifications, sources, and executable definitions.
+        let mut value: toml::Value = toml::from_str(&self.saved.config)?;
+        value
+            .as_table_mut()
+            .ok_or("configuration must be a table")?
+            .insert("setup".into(), toml::Value::try_from(&document)?);
+        let config = toml::to_string(&value)?;
+        let parsed = validate(&config)?;
+        let preview_candidate = CompiledSetup::compile(&document)?;
+        let live_candidate = self
+            .active
+            .as_ref()
+            .map(|_| CompiledSetup::compile(&document))
+            .transpose()?;
+        let live = if let Some(active) = &mut self.active {
+            let candidate = live_candidate.as_ref().expect("compiled live candidate");
+            active.session.validate_setup(candidate)?;
+            Some(editable_runtime(&mut *active.signal, candidate)?)
+        } else {
+            None
+        };
+        // Capture all fallible source work before persistence. Pending old events
+        // belong to unchanged rules only; newly added conditions baseline state.
+        let cursor = live.as_ref().map_or(0, |runtime| runtime.event_cursor());
+        let observation = self.sources.observe(cursor)?;
+        let preview_observation = self
+            .sources
+            .observe(self.preview.automation.event_cursor())?;
+        let candidate = Saved {
+            config,
+            ..self.saved.clone()
+        };
+        save(&self.dir, &candidate)?;
+        // All remaining work is infallible. Never release/reopen hardware, call
+        // initialize, replace a connector supervisor, or alter enabled intent.
+        if let Some(runtime) = live {
+            runtime.reconfigure(
+                live_candidate.expect("compiled live candidate"),
+                &observation.snapshot,
+                &observation.events,
+                observation.now,
+            );
+        }
+        if let Some(runtime) = &mut self.preview.setup {
+            runtime.reconfigure(
+                preview_candidate,
+                &preview_observation.snapshot,
+                &preview_observation.events,
+                preview_observation.now,
+            );
+        } else {
+            let mut runtime = preview_candidate;
+            runtime.baseline(&preview_observation.snapshot, preview_observation.now);
+            self.preview.setup = Some(runtime);
+        }
+        self.saved = candidate;
+        self.config = parsed;
+        Ok(())
+    }
+
     fn preview(&mut self) -> Result<serde_json::Value, Error> {
         let observation = self
             .sources
@@ -563,7 +693,30 @@ impl Runtime {
     }
     fn action(&mut self, action: Action) -> ProgramResult {
         match action {
-            Action::Status | Action::Diagnostics | Action::Preview | Action::Connectors => {}
+            Action::Status
+            | Action::Diagnostics
+            | Action::Preview
+            | Action::Connectors
+            | Action::SetupShow => {}
+            Action::SetupEdit {
+                expected_revision,
+                edits,
+            } => {
+                let current = self.config.setup.as_ref().ok_or("no canonical setup; use setup replace (legacy configuration is not migrated by show)")?;
+                let document = setup_edits::apply_edits(current, expected_revision, &edits)?;
+                self.install_setup(document)?;
+            }
+            Action::SetupReplace {
+                expected_revision,
+                document,
+            } => {
+                let document = setup_edits::replace_setup(
+                    self.config.setup.as_ref(),
+                    expected_revision,
+                    &document,
+                )?;
+                self.install_setup(document)?;
+            }
             Action::DevSetup => {
                 if std::env::var("WOOTING_DEV_SUPERVISED").as_deref() != Ok("1")
                     || self.saved.enabled
@@ -847,6 +1000,7 @@ pub fn run(
             };
             let mut diagnostics = None;
             let mut preview = None;
+            let mut setup = None;
             let result = (|| -> ProgramResult {
                 // Darwin can inherit the listener's O_NONBLOCK on accepted sockets.
                 stream.set_nonblocking(false)?;
@@ -868,7 +1022,15 @@ pub fn run(
                 if matches!(request.action, Action::Preview) {
                     preview = Some(runtime.preview()?);
                 }
-                runtime.action(request.action)
+                let setup_request = matches!(
+                    request.action,
+                    Action::SetupShow | Action::SetupEdit { .. } | Action::SetupReplace { .. }
+                );
+                runtime.action(request.action)?;
+                if setup_request {
+                    setup = Some(runtime.setup_document());
+                }
+                Ok(())
             })();
             let response = Response {
                 ok: result.is_ok(),
@@ -881,6 +1043,7 @@ pub fn run(
                     .unwrap_or_default(),
                 diagnostics,
                 preview,
+                setup,
             };
             // A disconnected UI cannot terminate the engine or undo an applied operation.
             let _ = serde_json::to_writer(&mut stream, &response);
@@ -916,6 +1079,17 @@ pub fn control(options: ControlOptions) -> ProgramResult {
         let dir = options.state_dir.unwrap_or(ownership::state_dir()?);
         let action = match options.command {
             ControlCommand::Status => Action::Status,
+            ControlCommand::Setup { command } => match command {
+                SetupCommand::Show => Action::SetupShow,
+                SetupCommand::Edit { expected_revision } => Action::SetupEdit {
+                    expected_revision,
+                    edits: read_setup_json(std::io::stdin().lock())?,
+                },
+                SetupCommand::Replace { expected_revision } => Action::SetupReplace {
+                    expected_revision,
+                    document: read_setup_json(std::io::stdin().lock())?,
+                },
+            },
             ControlCommand::Diagnostics => Action::Diagnostics,
             ControlCommand::Preview => Action::Preview,
             ControlCommand::DevSetup => Action::DevSetup,
@@ -998,6 +1172,155 @@ pub fn control(options: ControlOptions) -> ProgramResult {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn setup_json_and_cli_reject_unbounded_malformed_and_unknown_operations() {
+        assert!(read_setup_json::<Vec<LayerEdit>>(&b"not json"[..]).is_err());
+        assert!(read_setup_json::<Vec<LayerEdit>>(&b"[{\"op\":\"unknown\"}]"[..]).is_err());
+        assert!(
+            read_setup_json::<Vec<LayerEdit>>(
+                &vec![b' '; underglow::setup::MAX_DOCUMENT_BYTES + 1][..]
+            )
+            .is_err()
+        );
+        assert!(crate::Cli::try_parse_from(["underglow", "control", "setup", "edit"]).is_err());
+        assert!(
+            crate::Cli::try_parse_from([
+                "underglow",
+                "control",
+                "setup",
+                "edit",
+                "--expected-revision",
+                "0"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn persistence_failure_leaves_saved_config_and_compiled_preview_untouched() {
+        let dir = std::env::temp_dir().join(format!("ug-edit-atomic-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut runtime = runtime(
+            include_str!("../examples/layers-profile.toml").into(),
+            dir.clone(),
+        );
+        save(&dir, &runtime.saved).unwrap();
+        let before_disk = fs::read(dir.join("state.json")).unwrap();
+        let before = runtime.saved.config.clone();
+        let info = underglow::device::DeviceInfo::synthetic_80he();
+        let layout = underglow::layout::KeyboardLayout::for_device(&info);
+        let ctx = crate::render::RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: 255,
+            palette: PaletteName::Ocean,
+            tick: 0,
+            animation_seconds: 0.0,
+        };
+        let frame = runtime
+            .preview
+            .setup
+            .as_ref()
+            .unwrap()
+            .render(&ctx, Duration::from_secs(1));
+        // create_new fails before rename; the previous durable snapshot stays valid.
+        fs::write(
+            dir.join(format!(".state-{}.tmp", std::process::id())),
+            "occupied",
+        )
+        .unwrap();
+        let err = runtime.action(Action::SetupEdit {
+            expected_revision: 0,
+            edits: vec![LayerEdit::Remove {
+                id: "matrix".into(),
+            }],
+        });
+        assert!(err.is_err());
+        assert_eq!(runtime.saved.config, before);
+        assert_eq!(fs::read(dir.join("state.json")).unwrap(), before_disk);
+        assert_eq!(
+            runtime
+                .preview
+                .setup
+                .as_ref()
+                .unwrap()
+                .render(&ctx, Duration::from_secs(1)),
+            frame
+        );
+        assert_eq!(runtime.config.setup.as_ref().unwrap().revision, 0);
+        assert!(runtime.active.is_none());
+        assert!(!runtime.saved.enabled);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hot_edit_hook_reaches_wrapped_setup_without_replaying_commands_or_acquiring_sdk() {
+        let text = format!(
+            "{}\n{}",
+            include_str!("../examples/layers-profile.toml"),
+            r#"
+[[notifications]]
+id = 'never-start-command'
+duration_seconds = 1
+zones = ['function']
+[notifications.signal]
+kind = 'command-pulse'
+command = ['/nonexistent-command-must-not-run']
+[[automation.rules]]
+id = 'condition'
+source = 'pi'
+mode = 'while-state'
+scene = 'red'
+[automation.scenes.red]
+color = [255, 0, 0]
+zones = ['function']
+"#
+        );
+        let config = validate(&text).unwrap();
+        let mut signal = crate::build_config_signal(&config).unwrap();
+        let mut document = config.setup.clone().unwrap();
+        document.layers[0].renderer = underglow::setup::Renderer::Effect {
+            effect: crate::effects::EffectKind::Aurora,
+            palette: None,
+            speed: 100,
+        };
+        let candidate = CompiledSetup::compile(&document).unwrap();
+        let sources = crate::ingress::SharedSources::default();
+        let observation = sources.observe(0).unwrap();
+        editable_runtime(&mut *signal, &candidate)
+            .unwrap()
+            .reconfigure(
+                candidate,
+                &observation.snapshot,
+                &observation.events,
+                observation.now,
+            );
+        let mut analog = document.clone();
+        analog.layers[0].renderer = underglow::setup::Renderer::Reactive {
+            effect: underglow::reactive::ReactiveKind::Afterimage,
+            palette: None,
+        };
+        assert!(
+            editable_runtime(&mut *signal, &CompiledSetup::compile(&analog).unwrap())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Pause")
+        );
+        let mut legacy =
+            crate::signals::StaticEffectSignal::new(crate::effects::EffectKind::Matrix);
+        assert!(
+            editable_runtime(&mut legacy, &CompiledSetup::compile(&document).unwrap())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("legacy")
+        );
+        // Constructor and hooks never initialize the command notification. An
+        // accidental initialize would fail immediately on its nonexistent path.
+        assert!(!signal.finished());
+    }
 
     #[test]
     fn every_builtin_preset_starts_at_full_brightness() {

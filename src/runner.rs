@@ -82,6 +82,14 @@ pub struct Session {
     closed: bool,
 }
 impl Session {
+    /// Validate an edit against the existing device, without reopening its SDK.
+    pub fn validate_setup(
+        &self,
+        setup: &underglow::layer_runtime::CompiledSetup,
+    ) -> Result<(), String> {
+        setup.validate_device(self.keyboard.info())
+    }
+
     /// Inspect the existing program against its real device layout; never ticks or writes RGB.
     pub fn automation_diagnostics(
         &self,

@@ -15,6 +15,7 @@ pub mod render;
 pub mod ripple;
 pub mod scenes;
 pub mod setup;
+pub mod setup_edits;
 pub mod source_capabilities;
 
 /// Full brightness (100%); CLI/config values use RGB channels, not percentages.

@@ -299,6 +299,23 @@ impl AutomationRuntime {
         self.cursor
     }
 
+    /// Carry selected, unchanged rule slots into an already-baselined candidate.
+    /// Used by canonical setup edits; caller compares declarations before reuse.
+    pub(crate) fn preserve_rules_from(&mut self, previous: &Self, ids: &[&str]) {
+        for (index, rule) in self.config.rules.iter().enumerate() {
+            if ids.contains(&rule.id.as_str())
+                && let Some(old) = previous
+                    .config
+                    .rules
+                    .iter()
+                    .position(|old| old.id == rule.id)
+            {
+                self.activations[index] = previous.activations[old];
+                self.matched[index] = previous.matched[old];
+            }
+        }
+    }
+
     /// Evaluate a condition without rendering a dummy scene or resolving overlap.
     pub fn is_active(&self, rule_id: &str) -> bool {
         self.config

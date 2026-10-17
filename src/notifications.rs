@@ -150,6 +150,10 @@ impl NotificationProgram {
 }
 
 impl SignalProgram for NotificationProgram {
+    fn setup_runtime(&mut self) -> Option<&mut underglow::layer_runtime::CompiledSetup> {
+        self.base.setup_runtime()
+    }
+
     fn set_ripple_colors(&mut self, base: Option<[u8; 3]>, ripple: Option<[u8; 3]>) {
         self.base.set_ripple_colors(base, ripple);
     }

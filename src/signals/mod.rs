@@ -33,6 +33,12 @@ use underglow::reactive::ReactiveKind;
 pub type ProgramResult = Result<(), Box<dyn std::error::Error>>;
 
 pub trait SignalProgram {
+    /// Hot-edit access to the canonical base only. Legacy programs refuse with
+    /// None rather than replaying unrelated provider commands via reconstruction.
+    fn setup_runtime(&mut self) -> Option<&mut underglow::layer_runtime::CompiledSetup> {
+        None
+    }
+
     /// Update ripple visuals without reacquiring hardware or replaying commands.
     fn set_ripple_colors(&mut self, _base: Option<[u8; 3]>, _ripple: Option<[u8; 3]>) {}
 

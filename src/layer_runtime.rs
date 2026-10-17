@@ -119,6 +119,49 @@ impl CompiledSetup {
         self.requirements
     }
 
+    /// Adopt a fully compiled/device-validated candidate after persistence.
+    /// No fallible work, hardware acquisition, or producer lifecycle occurs here.
+    /// Unchanged renderers retain simulations; unchanged activation declarations
+    /// retain their deadlines. New conditions baseline current state, not events.
+    pub fn reconfigure(
+        &mut self,
+        mut candidate: Self,
+        snapshot: &Snapshot,
+        events: &EventBatch,
+        now: Duration,
+    ) {
+        self.conditions.observe(snapshot, events, now);
+        candidate.baseline(snapshot, now);
+        let preserved: Vec<_> = candidate
+            .layers
+            .iter()
+            .filter_map(|layer| {
+                self.layers
+                    .iter()
+                    .find(|old| {
+                        old.definition.id == layer.definition.id
+                            && old.definition.enabled == layer.definition.enabled
+                            && old.definition.activation == layer.definition.activation
+                    })
+                    .map(|_| layer.definition.id.as_str())
+            })
+            .collect();
+        candidate
+            .conditions
+            .preserve_rules_from(&self.conditions, &preserved);
+        for layer in &mut candidate.layers {
+            if let Some(old) = self.layers.iter_mut().find(|old| {
+                old.definition.id == layer.definition.id
+                    && old.definition.enabled == layer.definition.enabled
+                    && old.definition.renderer == layer.definition.renderer
+            }) {
+                std::mem::swap(&mut layer.simulation, &mut old.simulation);
+            }
+        }
+        candidate.input_available = self.input_available;
+        *self = candidate;
+    }
+
     pub fn validate_device(&self, info: &DeviceInfo) -> Result<(), String> {
         if self.requirements.analog_input || self.requirements.named_targets {
             crate::key_targets::validate_device(info)?;
@@ -541,6 +584,134 @@ mod tests {
         doc.layers = vec![matrix, black];
         doc.layers[1].enabled = false;
         assert_eq!(render(&doc, 0.7), expected);
+    }
+
+    #[test]
+    fn reconfigure_preserves_unrelated_input_simulation_across_reorder_and_edit() {
+        let mut doc = document(vec![
+            layer("matrix", effect(EffectKind::Matrix), Target::Whole {}),
+            layer(
+                "input",
+                Renderer::Reactive {
+                    effect: ReactiveKind::Afterimage,
+                    palette: None,
+                },
+                selection(&["a"]),
+            ),
+        ]);
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        for tick in 0..7 {
+            runtime.preview_tick(tick);
+        }
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = context(&info, &layout);
+        let a = canonical_coord("a").unwrap();
+        let before = runtime.render(&ctx, Duration::from_secs(1)).get_coord(a);
+        let Simulation::Reactive(sim) = &runtime.layers[1].simulation else {
+            panic!()
+        };
+        let address = &**sim as *const _;
+        doc.layers[0].renderer = effect(EffectKind::Aurora);
+        doc.layers[0].target = selection(&["s"]);
+        doc.layers.swap(0, 1);
+        let registry = Registry::default();
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::ZERO,
+        );
+        let Simulation::Reactive(sim) = &runtime.layers[0].simulation else {
+            panic!()
+        };
+        assert_eq!(&**sim as *const _, address);
+        assert_eq!(
+            runtime.render(&ctx, Duration::from_secs(1)).get_coord(a),
+            before
+        );
+        assert_eq!(
+            runtime.layers[1].definition.renderer,
+            effect(EffectKind::Aurora)
+        );
+        let mut invalid = doc.clone();
+        invalid.layers[0].name.clear();
+        assert!(CompiledSetup::compile(&invalid).is_err());
+        assert_eq!(
+            runtime.render(&ctx, Duration::from_secs(1)).get_coord(a),
+            before
+        );
+    }
+
+    #[test]
+    fn reconfigure_keeps_deadlines_and_pending_events_but_never_replays_for_new_rules() {
+        let mut transient = layer(
+            "event",
+            Renderer::Solid { color: [0, 255, 0] },
+            Target::Whole {},
+        );
+        transient.activation = Activation::OnEvent {
+            source: "pi".into(),
+            instance: None,
+            event: "done".into(),
+            duration_ms: 200,
+        };
+        let mut doc = document(vec![
+            layer("base", effect(EffectKind::Matrix), Target::Whole {}),
+            transient,
+        ]);
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        publish(
+            &mut registry,
+            1,
+            Payload::Event {
+                event: "done".into(),
+                ttl_ms: 1000,
+            },
+            20,
+        );
+        // This event has not been ticked yet: adoption must not drop it for the
+        // old rule or replay it for a freshly duplicated rule.
+        let mut new_rule = doc.layers[1].clone();
+        new_rule.id = "new".into();
+        doc.layers.push(new_rule);
+        doc.layers[0].renderer = effect(EffectKind::Aurora);
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(runtime.event_cursor()),
+            Duration::from_millis(100),
+        );
+        assert!(runtime.conditions.is_active("event"));
+        assert!(!runtime.conditions.is_active("new"));
+        observe(&mut runtime, &mut registry, 219);
+        assert!(runtime.conditions.is_active("event"));
+        // Another unrelated edit must preserve, not extend, the original deadline.
+        doc.layers[0].brightness = 90;
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(runtime.event_cursor()),
+            Duration::from_millis(219),
+        );
+        observe(&mut runtime, &mut registry, 220);
+        assert!(!runtime.conditions.is_active("event"));
+        assert!(!runtime.conditions.is_active("new"));
+        doc.layers[1].activation = Activation::OnEvent {
+            source: "pi".into(),
+            instance: None,
+            event: "done".into(),
+            duration_ms: 900,
+        };
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(230),
+        );
+        assert!(!runtime.conditions.is_active("event"));
     }
 
     #[test]

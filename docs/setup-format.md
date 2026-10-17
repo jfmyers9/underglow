@@ -133,3 +133,46 @@ never write RGB themselves: the session remains the sole RGB writer. Engine
 pause closes that session, restoring/releasing keyboard lighting and clearing
 input/transient state. Hardware-free tests cover lifecycle state and composition;
 real SDK restoration still requires a physical-device smoke test.
+
+## Atomic engine edits
+
+`control setup show` returns `setup: {revision, document}` without migration or
+activation. Legacy profiles return revision zero and a null document. Use
+`control setup replace --expected-revision 0 < setup.json` to install a complete
+declarative draft. Imported revisions are ignored: successful edits/replacements
+increment the current local revision even when the setup ID changes.
+
+`control setup edit --expected-revision 0` reads a JSON operation array from stdin:
+
+```json
+[{"op":"update","id":"matrix","patch":{"renderer":{"kind":"effect","effect":"aurora","speed":100}}}]
+```
+
+Operations are `create {layer,index}`, `update {id,patch}`, `remove {id}`,
+`duplicate {id,new_id,index}`, `enable {id,enabled}`, and `reorder {ids}`.
+Indices and reorder IDs are **bottom to top**; reorder must include every ID
+exactly once. Duplicate requires a caller-supplied fresh ID. Patches accept
+`name`, `renderer`, `brightness`, `target`, and `activation`, never identity.
+Replacing a renderer supplies its complete typed settings, not a partial
+renderer object. One transaction supports 1..128 operations; stdin is bounded
+to 256 KiB. The outer application config remains bounded to 256 KiB too.
+
+Socket protocol v1 actions are `setup-show`, `setup-edit` with `expected_revision`
+and `edits`, and `setup-replace` with `expected_revision` and `document`. Successful
+responses include the resulting `setup` object. Stale revisions, unknown IDs,
+invalid data/resource combinations, live-device incompatibility, and persistence
+errors reject the entire candidate before changing saved or running state.
+
+Only `[setup]` changes: connector executables/trust, sources, notifications, and
+global settings remain unchanged. Validation and compilation finish before an
+atomic synced-file rename; the engine then adopts the precompiled candidate
+without SDK reacquisition or provider initialization. Same-ID unchanged renderers
+retain input simulations; unchanged activation conditions retain original
+deadlines. New/changed conditions baseline current state without replaying old
+events. A post-rename directory-sync failure is reported as a durability warning,
+not a rejected edit after the file has already committed.
+
+Live analog-input requirement changes and adopting a setup into a legacy live
+program require explicit Pause first. Edits never Resume, and paused edits and
+previews never acquire hardware ownership. Runtime adapters forward the canonical
+edit hook through notifications/automation without restarting unrelated commands.
