@@ -280,10 +280,15 @@ class StarterTests(unittest.TestCase):
                                         ['--stdout', '--duration-seconds', '5.05'],
                                         capture_output=True, timeout=8)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(checker.check_stream(io.BytesIO(result.stdout)), 4)
                 messages = [json.loads(line) for line in result.stdout.splitlines()]
-                self.assertEqual([m['payload']['kind'] for m in messages], ['state', 'state', 'event', 'remove'])
-                self.assertEqual(messages[0]['payload'], messages[1]['payload'])
+                self.assertEqual(checker.check_stream(io.BytesIO(result.stdout)), len(messages))
+                self.assertGreaterEqual(len(messages), 4)
+                self.assertEqual([m['payload']['kind'] for m in messages[-2:]], ['event', 'remove'])
+                # Timer granularity can permit another renewal near completion.
+                # Every preceding message must renew the same state, never events.
+                for message in messages[:-2]:
+                    self.assertEqual(message['payload']['kind'], 'state')
+                    self.assertEqual(message['payload'], messages[0]['payload'])
 
     def test_socket_failure_deadlines_and_bounded_ack(self):
         for language in ('python', 'typescript'):

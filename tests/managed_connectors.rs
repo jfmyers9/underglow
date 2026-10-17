@@ -21,7 +21,9 @@ with open(path + '.starts', 'a') as f: f.write(str(time.monotonic()) + '\n')
 descendant = None
 if mode in ('descendants', 'exit-descendants'):
     descendant = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
-with open(path, 'w') as f: json.dump([os.getpid(), descendant.pid if descendant else None], f)
+pid_snapshot = path + '.' + str(os.getpid()) + '.tmp'
+with open(pid_snapshot, 'w') as f: json.dump([os.getpid(), descendant.pid if descendant else None], f)
+os.replace(pid_snapshot, path)
 instance = str(uuid.uuid4())
 def msg(seq, payload, name=None):
     print(json.dumps(dict(schema_version=1, source=name or source, instance=instance, sequence=seq, payload=payload)), flush=True)
