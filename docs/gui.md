@@ -91,6 +91,23 @@ draft. The fixed Pause/Resume control remains separate and explicit.
   state does not distinguish an expired/removed source from one never observed.
   Inactive event/transition explanations do not invent trigger history.
   Invalid drafts disable explanations while any last-valid preview is retained.
+- **Layer coverage and expiry** lists target, visible, obscured and overlapping
+  LED positions for every logical layer, including inactive and disabled ones.
+  Overlap counts mean target intersections, not necessarily an active conflict;
+  obscuration names the actual higher winning layers. Select a layer in the
+  stack and enable **Highlight selected layer coverage**: green outlines mark
+  visible positions, red cross-hatching marks obscured positions, and blue
+  outlines mark currently noncontributing targets. These annotations never
+  replace composed RGB fills; yellow still marks the inspected key.
+  To resolve a conflict, inspect the hiding layer, then explicitly reorder the
+  stack, mute it or edit its targets. The counts and outlines update immediately.
+  Transient countdowns use cached evaluator deadlines, capped by trigger/source
+  leases. Persistent state availability uses the latest *matching* instance
+  lease (or the exact selected instance), not unrelated facts or process health.
+  Countdown time is the frame's evaluation clock: paused Scenarios freeze and
+  steps advance expiry and obscuration together. Inactive layers with no cached
+  deadline have no invented timer. This is scenario/live preview, never device
+  feedback; inspecting and highlighting do not edit, save or resume lighting.
 
 Profiles without canonical setups use the clearly labeled **Legacy compatibility
 view** below, including migration warnings when supplied by the engine. Expand

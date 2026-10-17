@@ -5,7 +5,7 @@ use crate::compositor;
 use crate::external::{Snapshot, StateSnapshot};
 use crate::layer_runtime::{AppearanceCondition, CompiledSetup};
 use crate::layout::MatrixCoord;
-use crate::render::{Color, RenderContext};
+use crate::render::{Color, Frame, RenderContext};
 use crate::setup::{Activation, Renderer};
 use std::time::Duration;
 
@@ -96,6 +96,258 @@ pub struct KeyExplanation {
     pub layers: Vec<LayerExplanation>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoverageStatus {
+    Disabled,
+    Inactive,
+    InputUnavailable,
+    Noncovering,
+    Visible,
+    PartiallyObscured,
+    FullyObscured,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeadlineKind {
+    Transient,
+    SourceLease,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CoverageDeadline {
+    pub kind: DeadlineKind,
+    pub at: Duration,
+    pub remaining: Duration,
+}
+
+/// LED positions, not named key counts: unnamed/sparse layout positions count too.
+#[derive(Clone, Debug)]
+pub struct LayerCoverage {
+    pub index: usize,
+    pub id: String,
+    pub name: String,
+    pub status: CoverageStatus,
+    pub reason: String,
+    pub selected_variant: Option<String>,
+    pub targeted: Vec<MatrixCoord>,
+    /// Actual opaque contributions, independent of their RGB (including black).
+    pub contributing: Vec<MatrixCoord>,
+    pub visible: Vec<MatrixCoord>,
+    pub obscured: Vec<MatrixCoord>,
+    /// Target intersections, including currently inactive/disabled layers.
+    pub overlapping: Vec<MatrixCoord>,
+    /// Unique canonical stack indices of the actual winners hiding this layer.
+    pub obscured_by: Vec<usize>,
+    pub conditions: Vec<ConditionExplanation>,
+    pub deadline: Option<CoverageDeadline>,
+}
+
+#[derive(Clone, Debug)]
+pub struct KeyCoverage {
+    pub coord: MatrixCoord,
+    pub winning_layer: Option<usize>,
+}
+
+/// One renderer capture shared by whole-keyboard and selected-key explanations.
+/// Callers supply the same evaluated runtime, facts and clock as the displayed frame.
+#[derive(Clone, Debug)]
+pub struct CoverageReport {
+    pub mode: ExplanationMode,
+    pub evaluated_at: Duration,
+    pub layers: Vec<LayerCoverage>,
+    pub keys: Vec<KeyCoverage>,
+    pub frame: Frame,
+    /// Unblended contributions retained for inspection; no opacity is implemented.
+    pub contributions: Vec<compositor::Layer>,
+}
+
+impl CoverageReport {
+    /// Reuses this capture; does not render again or change evaluator state.
+    pub fn explain_key(
+        &self,
+        runtime: &CompiledSetup,
+        context: &ExplanationContext<'_>,
+        coord: MatrixCoord,
+    ) -> Option<KeyExplanation> {
+        explain_key_from_layers(runtime, context, coord, &self.contributions)
+    }
+}
+
+pub fn analyze_coverage(
+    runtime: &CompiledSetup,
+    context: &ExplanationContext<'_>,
+) -> CoverageReport {
+    let contributions = runtime.composition(context.render, context.elapsed);
+    let inspections = runtime.inspect_layers(context.render);
+    let keys: Vec<_> = context
+        .render
+        .layout
+        .keys()
+        .iter()
+        .map(|key| KeyCoverage {
+            coord: key.coord,
+            winning_layer: compositor::winning_layer(&contributions, key, Duration::ZERO)
+                .map(|winner| contributions[winner].priority as usize),
+        })
+        .collect();
+    let mut layers: Vec<_> = inspections
+        .iter()
+        .enumerate()
+        .map(|(index, inspection)| {
+            let definition = inspection.definition;
+            let selected = runtime.selected_appearance(&definition.id);
+            let conditions: Vec<_> = inspection
+                .conditions
+                .iter()
+                .cloned()
+                .map(|condition| {
+                    let is_selected =
+                        selected.is_some_and(|s| s.variant_id == condition.variant_id);
+                    explain_condition(condition, is_selected, context.snapshot, context.now)
+                })
+                .collect();
+            let deadline = selected.and_then(|appearance| {
+                let (kind, at) = if let Some(at) = appearance.expires {
+                    (DeadlineKind::Transient, at)
+                } else if let Activation::WhileState {
+                    source,
+                    instance,
+                    state,
+                } = appearance.activation
+                {
+                    // Any-instance availability ends with the LAST matching lease,
+                    // never an unrelated state, process observation or UI wall clock.
+                    let at = context
+                        .snapshot
+                        .states
+                        .iter()
+                        .filter(|fact| {
+                            fact.identity.source == *source
+                                && instance
+                                    .as_ref()
+                                    .is_none_or(|id| *id == fact.identity.instance)
+                                && state.as_ref().is_none_or(|value| *value == fact.state)
+                                && context.now < fact.expires_at
+                        })
+                        .map(|fact| fact.expires_at)
+                        .max()?;
+                    (DeadlineKind::SourceLease, at)
+                } else {
+                    return None;
+                };
+                Some(CoverageDeadline {
+                    kind,
+                    at,
+                    remaining: at.saturating_sub(context.now),
+                })
+            });
+            LayerCoverage {
+                index,
+                id: definition.id.clone(),
+                name: definition.name.clone(),
+                status: if !definition.enabled {
+                    CoverageStatus::Disabled
+                } else if selected.is_none() && conditions.iter().any(|c| c.enabled && c.active) {
+                    CoverageStatus::InputUnavailable
+                } else if selected.is_none() {
+                    CoverageStatus::Inactive
+                } else {
+                    CoverageStatus::Noncovering
+                },
+                reason: String::new(),
+                selected_variant: selected.and_then(|s| s.variant_id.map(str::to_owned)),
+                targeted: vec![],
+                contributing: vec![],
+                visible: vec![],
+                obscured: vec![],
+                overlapping: vec![],
+                obscured_by: vec![],
+                conditions,
+                deadline,
+            }
+        })
+        .collect();
+    // One composition, then layout × logical masks. No per-key renderer calls.
+    for (key, result) in context.render.layout.keys().iter().zip(&keys) {
+        let targets: Vec<_> = inspections
+            .iter()
+            .enumerate()
+            .filter(|(_, inspection)| inspection.target_mask.contains(key))
+            .map(|(index, _)| index)
+            .collect();
+        for &index in &targets {
+            layers[index].targeted.push(key.coord);
+            if targets.len() > 1 {
+                layers[index].overlapping.push(key.coord);
+            }
+        }
+        for contribution in &contributions {
+            if !contribution.mask.contains(key) {
+                continue;
+            }
+            let index = contribution.priority as usize;
+            let layer = &mut layers[index];
+            layer.contributing.push(key.coord);
+            if result.winning_layer == Some(index) {
+                layer.visible.push(key.coord);
+            } else {
+                layer.obscured.push(key.coord);
+                if let Some(winner) = result.winning_layer
+                    && !layer.obscured_by.contains(&winner)
+                {
+                    layer.obscured_by.push(winner);
+                }
+            }
+        }
+    }
+    for layer in &mut layers {
+        if !layer.contributing.is_empty() {
+            layer.status = if layer.visible.is_empty() {
+                CoverageStatus::FullyObscured
+            } else if layer.obscured.is_empty() {
+                CoverageStatus::Visible
+            } else {
+                CoverageStatus::PartiallyObscured
+            };
+        }
+        layer.reason = match layer.status {
+            CoverageStatus::Disabled => "Disabled layer".into(),
+            CoverageStatus::Inactive => layer
+                .conditions
+                .iter()
+                .filter(|c| c.enabled)
+                .map(|c| format!("{}: {}", c.name, c.reason))
+                .collect::<Vec<_>>()
+                .join("; "),
+            CoverageStatus::InputUnavailable => {
+                "Eligible appearance, but preview input unavailable".into()
+            }
+            CoverageStatus::Noncovering => "No LED positions in this layout are targeted".into(),
+            CoverageStatus::Visible => {
+                "All contributing positions visible (black is opaque)".into()
+            }
+            CoverageStatus::PartiallyObscured => {
+                "Partially obscured by higher active layers".into()
+            }
+            CoverageStatus::FullyObscured => "Fully obscured by higher active layers".into(),
+        };
+    }
+    let frame = compositor::compose(
+        Frame::black(),
+        context.render.layout,
+        &contributions,
+        Duration::ZERO,
+    );
+    CoverageReport {
+        mode: context.mode,
+        evaluated_at: context.now,
+        layers,
+        keys,
+        frame,
+        contributions,
+    }
+}
+
 /// Reuses actual composed layers, masks, RGB and arbitration. Never mutates the
 /// runtime or registry. Unknown/non-key cells return None rather than inventing names.
 pub fn explain_key(
@@ -103,14 +355,23 @@ pub fn explain_key(
     context: &ExplanationContext<'_>,
     coord: MatrixCoord,
 ) -> Option<KeyExplanation> {
+    let contributions = runtime.composition(context.render, context.elapsed);
+    explain_key_from_layers(runtime, context, coord, &contributions)
+}
+
+fn explain_key_from_layers(
+    runtime: &CompiledSetup,
+    context: &ExplanationContext<'_>,
+    coord: MatrixCoord,
+    contributions: &[compositor::Layer],
+) -> Option<KeyExplanation> {
     let key = context
         .render
         .layout
         .keys()
         .iter()
         .find(|k| k.coord == coord)?;
-    let contributions = runtime.composition(context.render, context.elapsed);
-    let winner = compositor::winning_layer(&contributions, key, Duration::ZERO);
+    let winner = compositor::winning_layer(contributions, key, Duration::ZERO);
     let winning_layer = winner.map(|i| contributions[i].priority as usize);
     let color = winner.map_or(Color::BLACK, |i| contributions[i].frame.get_coord(coord));
     let layers = runtime
@@ -369,6 +630,385 @@ mod tests {
             "inspection cannot publish facts"
         );
         report
+    }
+
+    /// Cross-check every LED, winner and count against the shared compositor.
+    fn coverage(runtime: &CompiledSetup, registry: &Registry, now: u64) -> CoverageReport {
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let elapsed = Duration::from_millis(now);
+        let render = RenderContext {
+            animation_seconds: elapsed.as_secs_f64(),
+            info: &info,
+            layout: &layout,
+            brightness: 173,
+            palette: PaletteName::Wooting,
+            tick: 21,
+        };
+        let snapshot = registry.snapshot();
+        let context = ExplanationContext {
+            render: &render,
+            elapsed,
+            snapshot: &snapshot,
+            now: elapsed,
+            mode: ExplanationMode::Live,
+        };
+        let cursor = runtime.event_cursor();
+        let result = analyze_coverage(runtime, &context);
+        assert_eq!(result.frame, runtime.render(&render, elapsed));
+        let composed = runtime.composition(&render, elapsed);
+        assert_eq!(result.keys.len(), layout.keys().len());
+        for (key, entry) in layout.keys().iter().zip(&result.keys) {
+            let expected = compositor::winning_layer(&composed, key, Duration::ZERO)
+                .map(|i| composed[i].priority as usize);
+            assert_eq!(entry.winning_layer, expected);
+            let explained = result.explain_key(runtime, &context, key.coord).unwrap();
+            assert_eq!(explained.winning_layer, expected);
+            assert_eq!(explained.color, result.frame.get_coord(key.coord));
+            for layer in &result.layers {
+                let detail = &explained.layers[layer.index];
+                assert_eq!(layer.targeted.contains(&key.coord), detail.covers);
+                assert_eq!(
+                    layer.contributing.contains(&key.coord),
+                    detail.contribution.is_some()
+                );
+                assert_eq!(
+                    layer.visible.contains(&key.coord),
+                    expected == Some(layer.index)
+                );
+                assert_eq!(
+                    layer.obscured.contains(&key.coord),
+                    detail.obscured_by.is_some()
+                );
+            }
+        }
+        for layer in &result.layers {
+            assert_eq!(
+                layer.contributing.len(),
+                layer.visible.len() + layer.obscured.len()
+            );
+        }
+        assert_eq!(runtime.event_cursor(), cursor);
+        assert_eq!(registry.snapshot(), snapshot);
+        result
+    }
+
+    #[test]
+    fn coverage_noncovering_layout_and_event_only_deadline_do_not_invent_source_state() {
+        let mut doc = document();
+        doc.layers = vec![doc.layers[1].clone()];
+        doc.layers[0].activation = Activation::Always {};
+        doc.layers[0].variants.clear();
+        let mut info = DeviceInfo::synthetic_80he();
+        info.max_rows = 1;
+        info.max_columns = 1;
+        let layout = KeyboardLayout::for_device(&info);
+        let render = RenderContext {
+            animation_seconds: 0.0,
+            info: &info,
+            layout: &layout,
+            brightness: 255,
+            palette: PaletteName::Wooting,
+            tick: 0,
+        };
+        let mut registry = Registry::default();
+        let snapshot = registry.snapshot();
+        let context = ExplanationContext {
+            render: &render,
+            elapsed: Duration::ZERO,
+            snapshot: &snapshot,
+            now: Duration::ZERO,
+            mode: ExplanationMode::Live,
+        };
+        let runtime = CompiledSetup::compile(&doc).unwrap();
+        let result = analyze_coverage(&runtime, &context);
+        assert_eq!(result.layers[0].status, CoverageStatus::Noncovering);
+        assert!(result.layers[0].targeted.is_empty());
+        assert!(result.layers[0].deadline.is_none());
+        doc.layers[0].activation = Activation::OnEvent {
+            source: "pi".into(),
+            instance: None,
+            event: "finished".into(),
+            duration_ms: 300,
+        };
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(
+            &mut registry,
+            "pi",
+            "event-only",
+            1,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 100,
+            },
+            20,
+        );
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(20),
+        );
+        let active = coverage(&runtime, &registry, 20);
+        assert!(registry.snapshot().states.is_empty());
+        assert_eq!(active.layers[0].status, CoverageStatus::Visible);
+        assert_eq!(
+            active.layers[0].deadline.unwrap().at,
+            Duration::from_millis(120)
+        );
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(120),
+        );
+        assert!(
+            coverage(&runtime, &registry, 120).layers[0]
+                .deadline
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn coverage_sparse_group_black_conflict_reorder_and_resolution_match_all_winners() {
+        let mut doc = document();
+        doc.layers.truncate(3);
+        doc.groups
+            .insert("sparse".into(), vec!["F3".into(), "ArrowUp".into()]);
+        doc.layers[1].target = crate::setup::Target::Selection {
+            zones: vec![],
+            keys: vec!["F3".into()],
+            groups: vec!["sparse".into()],
+        };
+        doc.layers[1].activation = Activation::Always {};
+        doc.layers[1].variants.clear();
+        doc.layers[2].activation = Activation::Always {};
+        let registry = Registry::default();
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        let partial = coverage(&runtime, &registry, 0);
+        assert_eq!(
+            partial.layers[1].targeted.len(),
+            2,
+            "group union deduplicates F3"
+        );
+        assert_eq!(partial.layers[1].status, CoverageStatus::PartiallyObscured);
+        assert_eq!(
+            partial.layers[1].visible,
+            vec![canonical_coord("ArrowUp").unwrap()]
+        );
+        assert_eq!(partial.layers[1].obscured_by, vec![2]);
+        assert_eq!(
+            partial.frame.get_coord(canonical_coord("F3").unwrap()),
+            Color::BLACK
+        );
+        assert_eq!(partial.layers[2].status, CoverageStatus::Visible);
+        doc.layers[2].target = doc.layers[1].target.clone();
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::ZERO,
+        );
+        assert_eq!(
+            coverage(&runtime, &registry, 0).layers[1].status,
+            CoverageStatus::FullyObscured
+        );
+        doc.layers.swap(1, 2);
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::ZERO,
+        );
+        let resolved = coverage(&runtime, &registry, 0);
+        assert_eq!(resolved.layers[2].status, CoverageStatus::Visible);
+        assert_eq!(resolved.layers[1].status, CoverageStatus::FullyObscured);
+        assert_eq!(resolved.layers[2].overlapping.len(), 2);
+        // Removing the whole-keyboard background leaves real uncovered black,
+        // not a fictitious black winner or a target at matrix holes.
+        doc.layers.remove(0);
+        let sparse = coverage(&CompiledSetup::compile(&doc).unwrap(), &registry, 0);
+        assert_eq!(
+            sparse
+                .keys
+                .iter()
+                .filter(|key| key.winning_layer.is_some())
+                .count(),
+            2
+        );
+        let hole = MatrixCoord { row: 0, column: 20 };
+        assert!(!sparse.keys.iter().any(|key| key.coord == hole));
+        assert_eq!(sparse.frame.get_coord(hole), Color::BLACK);
+    }
+
+    #[test]
+    fn coverage_distinguishes_disabled_missing_nonmatching_and_input_unavailable() {
+        let mut registry = Registry::default();
+        let mut runtime = CompiledSetup::compile(&document()).unwrap();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        let missing = coverage(&runtime, &registry, 0);
+        assert_eq!(missing.layers[3].status, CoverageStatus::Disabled);
+        assert!(missing.layers[3].contributing.is_empty());
+        assert_eq!(missing.layers[2].status, CoverageStatus::Inactive);
+        assert!(missing.layers[2].reason.contains("missing"));
+        assert!(missing.layers[2].deadline.is_none());
+        state(&mut registry, "alert", "session", "off", 100);
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::ZERO,
+        );
+        let unmatched = coverage(&runtime, &registry, 0);
+        assert_eq!(unmatched.layers[2].status, CoverageStatus::Inactive);
+        assert!(unmatched.layers[2].reason.contains("does not match"));
+        assert_eq!(
+            unmatched.layers[2].conditions[0].freshness,
+            Freshness::Fresh
+        );
+        assert!(
+            unmatched.layers[2].deadline.is_none(),
+            "unmatched state has no availability countdown"
+        );
+        let mut doc = document();
+        doc.layers.truncate(1);
+        doc.layers[0].renderer = Renderer::Reactive {
+            palette: None,
+            effect: crate::reactive::ReactiveKind::Afterimage,
+        };
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        runtime.input_unavailable();
+        assert_eq!(
+            coverage(&runtime, &registry, 0).layers[0].status,
+            CoverageStatus::InputUnavailable
+        );
+    }
+
+    #[test]
+    fn coverage_state_deadline_is_latest_matching_lease_not_latest_unrelated_instance() {
+        let mut doc = document();
+        doc.layers.truncate(2);
+        doc.layers[1].variants.clear();
+        doc.layers[1].activation = Activation::WhileState {
+            source: "pi".into(),
+            instance: None,
+            state: Some("working".into()),
+        };
+        let mut registry = Registry::default();
+        state(&mut registry, "pi", "short", "working", 100);
+        state(&mut registry, "pi", "long", "working", 300);
+        state(&mut registry, "pi", "other", "idle", 1000);
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        let first = coverage(&runtime, &registry, 0);
+        assert_eq!(
+            first.layers[1].deadline,
+            Some(CoverageDeadline {
+                kind: DeadlineKind::SourceLease,
+                at: Duration::from_millis(300),
+                remaining: Duration::from_millis(300),
+            })
+        );
+        registry.expire(Duration::from_millis(100)).unwrap();
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(100),
+        );
+        assert_eq!(
+            coverage(&runtime, &registry, 100).layers[1]
+                .deadline
+                .unwrap()
+                .remaining,
+            Duration::from_millis(200)
+        );
+        registry.expire(Duration::from_millis(300)).unwrap();
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(300),
+        );
+        let expired = coverage(&runtime, &registry, 300);
+        assert_eq!(expired.layers[1].status, CoverageStatus::Inactive);
+        assert!(expired.layers[1].deadline.is_none());
+        assert!(expired.layers[1].reason.contains("does not match"));
+        if let Activation::WhileState { instance, .. } = &mut doc.layers[1].activation {
+            *instance = Some("short".into());
+        }
+        let mut registry = Registry::default();
+        state(&mut registry, "pi", "short", "working", 100);
+        state(&mut registry, "pi", "long", "working", 300);
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        assert_eq!(
+            coverage(&runtime, &registry, 0).layers[1]
+                .deadline
+                .unwrap()
+                .at,
+            Duration::from_millis(100)
+        );
+    }
+
+    #[test]
+    fn coverage_transient_uses_cached_deadline_clamped_to_trigger_lease_and_disappears_at_expiry() {
+        let mut registry = Registry::default();
+        state(&mut registry, "pi", "session", "working", 250);
+        let mut runtime = CompiledSetup::compile(&document()).unwrap();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(
+            &mut registry,
+            "pi",
+            "session",
+            2,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 500,
+            },
+            10,
+        );
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(10),
+        );
+        let green = coverage(&runtime, &registry, 10);
+        assert_eq!(
+            green.layers[1].selected_variant.as_deref(),
+            Some("finished")
+        );
+        assert_eq!(
+            green.layers[1].targeted,
+            vec![canonical_coord("F3").unwrap()],
+            "variant inherits mask"
+        );
+        assert_eq!(
+            green.layers[1].deadline,
+            Some(CoverageDeadline {
+                kind: DeadlineKind::Transient,
+                at: Duration::from_millis(250),
+                remaining: Duration::from_millis(240),
+            })
+        );
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(249),
+        );
+        assert_eq!(
+            coverage(&runtime, &registry, 249).layers[1]
+                .deadline
+                .unwrap()
+                .remaining,
+            Duration::from_millis(1)
+        );
+        registry.expire(Duration::from_millis(250)).unwrap();
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(250),
+        );
+        let expired = coverage(&runtime, &registry, 250);
+        assert_eq!(expired.layers[1].status, CoverageStatus::Inactive);
+        assert!(expired.layers[1].deadline.is_none());
+        assert!(expired.layers[1].visible.is_empty());
     }
 
     #[test]

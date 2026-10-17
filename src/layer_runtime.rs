@@ -76,7 +76,9 @@ pub struct AppearanceCondition<'a> {
 
 pub struct LayerInspection<'a> {
     pub definition: &'a Layer,
+    /// Selected-key membership from `inspect_key`; false for `inspect_layers`.
     pub covers: bool,
+    pub target_mask: KeyMask,
     pub conditions: Vec<AppearanceCondition<'a>>,
 }
 
@@ -88,31 +90,39 @@ impl CompiledSetup {
         ctx: &RenderContext<'_>,
         coord: MatrixCoord,
     ) -> Vec<LayerInspection<'_>> {
-        let base = self.conditions.diagnostics(ctx);
+        let mut layers = self.inspect_layers(ctx);
+        for layer in &mut layers {
+            layer.covers = ctx
+                .layout
+                .keys()
+                .iter()
+                .find(|key| key.coord == coord)
+                .is_some_and(|key| layer.target_mask.contains(key));
+        }
+        layers
+    }
+
+    /// Cached eligibility and compiled targets for the complete logical stack.
+    /// No renderer runs here, including for inactive/disabled layers.
+    pub fn inspect_layers(&self, ctx: &RenderContext<'_>) -> Vec<LayerInspection<'_>> {
         self.layers
             .iter()
             .map(|layer| {
-                let variants = layer.variant_conditions.diagnostics(ctx);
-                let condition = |id,
-                                 name,
-                                 enabled,
-                                 activation,
-                                 runtime: &AutomationRuntime,
-                                 diagnostics: &[crate::automation::RuleDiagnostic],
-                                 variant_id| {
-                    let timing = runtime.activation_timing(id);
-                    AppearanceCondition {
-                        variant_id,
-                        name,
-                        enabled,
-                        activation,
-                        matched: matches!(activation, Activation::Always {})
-                            || diagnostics.iter().any(|d| d.rule_id == id && d.matched),
-                        active: activation_active(id, activation, runtime),
-                        started: timing.map(|(start, _)| start),
-                        expires: timing.and_then(|(_, end)| end),
-                    }
-                };
+                let condition =
+                    |id, name, enabled, activation, runtime: &AutomationRuntime, variant_id| {
+                        let timing = runtime.activation_timing(id);
+                        AppearanceCondition {
+                            variant_id,
+                            name,
+                            enabled,
+                            activation,
+                            matched: matches!(activation, Activation::Always {})
+                                || runtime.is_matched(id),
+                            active: activation_active(id, activation, runtime),
+                            started: timing.map(|(start, _)| start),
+                            expires: timing.and_then(|(_, end)| end),
+                        }
+                    };
                 let definition = &layer.definition;
                 let mut conditions = vec![condition(
                     &definition.id,
@@ -120,7 +130,6 @@ impl CompiledSetup {
                     true,
                     &definition.activation,
                     &self.conditions,
-                    &base,
                     None,
                 )];
                 conditions.extend(definition.variants.iter().map(|v| {
@@ -130,22 +139,13 @@ impl CompiledSetup {
                         v.enabled,
                         &v.activation,
                         &layer.variant_conditions,
-                        &variants,
                         Some(v.id.as_str()),
                     )
                 }));
                 LayerInspection {
                     definition,
-                    covers: ctx
-                        .layout
-                        .keys()
-                        .iter()
-                        .find(|key| key.coord == coord)
-                        .is_some_and(|key| {
-                            matches!(definition.target, Target::Whole {})
-                                || layer.coordinates.contains(&coord)
-                                || layer.zones.contains(&key.zone)
-                        }),
+                    covers: false,
+                    target_mask: layer.target_mask(ctx),
                     conditions,
                 }
             })
@@ -501,25 +501,11 @@ impl CompiledSetup {
             .iter()
             .enumerate()
             .filter_map(|(index, layer)| {
-                let definition = &layer.definition;
                 let (appearance, simulation) = layer.appearance(&self.conditions)?;
                 if !self.input_available && !matches!(simulation, Simulation::None) {
                     return None;
                 }
-                let mask = match definition.target {
-                    Target::Whole {} => KeyMask::Whole,
-                    Target::Selection { .. } => KeyMask::Coordinates(
-                        ctx.layout
-                            .keys()
-                            .iter()
-                            .filter(|key| {
-                                layer.coordinates.contains(&key.coord)
-                                    || layer.zones.contains(&key.zone)
-                            })
-                            .map(|key| key.coord)
-                            .collect(),
-                    ),
-                };
+                let mask = layer.target_mask(ctx);
                 Some(compositor::Layer {
                     frame: render_appearance(
                         appearance.renderer,
@@ -539,6 +525,22 @@ impl CompiledSetup {
 }
 
 impl CompiledLayer {
+    fn target_mask(&self, ctx: &RenderContext<'_>) -> KeyMask {
+        match self.definition.target {
+            Target::Whole {} => KeyMask::Whole,
+            Target::Selection { .. } => KeyMask::Coordinates(
+                ctx.layout
+                    .keys()
+                    .iter()
+                    .filter(|key| {
+                        self.coordinates.contains(&key.coord) || self.zones.contains(&key.zone)
+                    })
+                    .map(|key| key.coord)
+                    .collect(),
+            ),
+        }
+    }
+
     fn appearance<'a>(
         &'a self,
         conditions: &AutomationRuntime,

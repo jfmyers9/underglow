@@ -1,5 +1,8 @@
 //! Hardware-free layer draft and stable-ID operations. Transport belongs to the host.
-use super::{setup_behavior, setup_explanation, setup_inspector, setup_preview, setup_targets};
+use super::{
+    setup_behavior, setup_coverage, setup_explanation, setup_inspector, setup_preview,
+    setup_targets,
+};
 use eframe::egui;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -59,6 +62,72 @@ mod tests {
             "renderer":{"kind":"solid","color":[1,2,3]}, "brightness":81
         })).unwrap()];
         doc
+    }
+
+    #[test]
+    fn coverage_highlighting_is_read_only_and_conflict_is_visibly_resolved_by_stack_edit() {
+        let ctx = egui::Context::default();
+        let mut original = document();
+        original.layers.truncate(1);
+        original.layers[0].variants.clear();
+        original.layers[0].renderer = underglow::setup::Renderer::Solid { color: [0, 80, 80] };
+        original.layers[0].target = Target::Whole {};
+        original.layers[0].activation = Activation::Always {};
+        let mut top = original.layers[0].clone();
+        top.id = "black-conflict".into();
+        top.name = "Black conflict".into();
+        top.renderer = underglow::setup::Renderer::Solid { color: [0; 3] };
+        top.target = Target::Selection {
+            zones: vec![],
+            keys: vec!["F3".into()],
+            groups: vec![],
+        };
+        original.layers.push(top);
+        let mut editor = Editor::default();
+        editor.load(Some(original.clone()));
+        editor.selected = Some(original.layers[0].id.clone());
+        editor.preview.set_mode(setup_preview::Mode::Scenario);
+        run(&ctx, &mut editor, vec![]);
+        let generation = editor.preview.scenario.generation();
+        let frame = editor.preview.frame().clone();
+        let revision = editor.base_revision;
+        let facts = editor.preview.evaluation_facts().0.clone();
+        for highlighted in [true, false, true] {
+            click(&ctx, &mut editor, "Highlight selected layer coverage", 0);
+            assert_eq!(editor.highlight_coverage, highlighted);
+            let (output, intent) = run(&ctx, &mut editor, vec![]);
+            assert!(intent.is_none());
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text().contains("partly obscured"))));
+            assert_eq!(editor.draft.as_ref(), Some(&original));
+            assert_eq!(
+                editor.selected.as_deref(),
+                Some(original.layers[0].id.as_str())
+            );
+            assert!(!editor.dirty);
+            assert_eq!(editor.preview.scenario.generation(), generation);
+            assert_eq!(editor.preview.evaluation_facts().0, &facts);
+            assert_eq!(editor.preview.frame(), &frame);
+            assert_eq!(editor.base_revision, revision);
+        }
+        // An explicit normal stack edit resolves the black overlap. Inspection
+        // itself neither rewrites targets nor issues a physical Apply intent.
+        editor
+            .apply(LayerEdit::Reorder {
+                ids: vec![original.layers[1].id.clone(), original.layers[0].id.clone()],
+            })
+            .unwrap();
+        let (output, intent) = run(&ctx, &mut editor, vec![]);
+        assert!(intent.is_none());
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text().contains("fully obscured"))));
+        let report = editor.preview.coverage().unwrap();
+        assert_eq!(report.layers[1].visible.len(), report.keys.len());
+        assert_eq!(report.layers[0].visible.len(), 0);
+        assert_eq!(
+            editor.draft.as_ref().unwrap().layers[0].target,
+            original.layers[1].target
+        );
     }
 
     #[test]
@@ -570,6 +639,7 @@ pub struct Editor {
     pub applied: Option<SetupDocument>,
     pub preview: setup_preview::Preview,
     explained_key: Option<underglow::layout::MatrixCoord>,
+    highlight_coverage: bool,
     pub can_save: bool,
     pub preview_brightness: Option<u8>,
     /// Last engine revision, never a count of local keystrokes.
@@ -867,12 +937,29 @@ impl Editor {
         if let Some(error) = &self.preview.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
-        if let Some(coord) =
-            setup_targets::composition_preview(ui, self.preview.frame(), self.explained_key)
-        {
+        ui.checkbox(
+            &mut self.highlight_coverage,
+            "Highlight selected layer coverage",
+        );
+        if self.highlight_coverage {
+            ui.small("Outlines: green = visible, red × = obscured, blue = targeted but inactive. Yellow = inspected key. RGB fills are unchanged.");
+        }
+        let coverage = self.preview.coverage();
+        let highlighted = coverage.and_then(|report| {
+            report.layers.iter().find(|layer| {
+                self.highlight_coverage && self.selected.as_deref() == Some(layer.id.as_str())
+            })
+        });
+        if let Some(coord) = setup_targets::composition_preview(
+            ui,
+            self.preview.frame(),
+            self.explained_key,
+            highlighted,
+        ) {
             self.explained_key = Some(coord);
         }
         setup_explanation::show(ui, &self.preview, self.explained_key);
+        setup_coverage::show(ui, coverage, self.selected.as_deref());
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
         if doc.layers.is_empty() {

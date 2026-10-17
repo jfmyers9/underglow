@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use underglow::explanations::{
+    CoverageReport, ExplanationContext, ExplanationMode, analyze_coverage,
+};
 use underglow::external::{Error as SourceError, EventBatch, Snapshot};
 use underglow::layer_runtime::CompiledSetup;
 use underglow::render::{Frame, PaletteName, RenderContext};
@@ -195,6 +198,7 @@ pub struct Preview {
     document: Option<SetupDocument>,
     runtime: Option<CompiledSetup>,
     frame: Frame,
+    coverage: Option<CoverageReport>,
     sample: Option<LiveSample>,
     pub mode: Mode,
     pub scenario: Scenario,
@@ -222,6 +226,7 @@ impl Default for Preview {
             document: None,
             runtime: None,
             frame: Frame::black(),
+            coverage: None,
             sample: None,
             mode: Mode::Live,
             scenario: Scenario::default(),
@@ -390,6 +395,12 @@ impl Preview {
     pub fn frame(&self) -> &Frame {
         &self.frame
     }
+
+    /// Exact capture used for the displayed frame. Invalid drafts are never
+    /// presented as explanations of a retained last-good frame.
+    pub fn coverage(&self) -> Option<&CoverageReport> {
+        self.coverage.as_ref().filter(|_| self.error.is_none())
+    }
     pub fn sample(&self) -> Option<&LiveSample> {
         self.sample.as_ref()
     }
@@ -519,6 +530,7 @@ impl Preview {
         self.evaluation_events = events.clone();
         let Some(runtime) = &mut self.runtime else {
             self.frame = Frame::black();
+            self.coverage = None;
             return;
         };
         if changed_mode {
@@ -553,17 +565,30 @@ impl Preview {
         }
         let info = underglow::device::DeviceInfo::synthetic_80he();
         let layout = underglow::layout::KeyboardLayout::for_device(&info);
-        self.frame = runtime.render(
-            &RenderContext {
-                animation_seconds: elapsed.as_secs_f64(),
-                info: &info,
-                layout: &layout,
-                brightness,
-                palette: PaletteName::Wooting,
-                tick,
+        let render = RenderContext {
+            animation_seconds: elapsed.as_secs_f64(),
+            info: &info,
+            layout: &layout,
+            brightness,
+            palette: PaletteName::Wooting,
+            tick,
+        };
+        let coverage = analyze_coverage(
+            runtime,
+            &ExplanationContext {
+                render: &render,
+                elapsed,
+                snapshot: &self.evaluation_snapshot,
+                now,
+                mode: match self.mode {
+                    Mode::Live => ExplanationMode::Live,
+                    Mode::InputDemo => ExplanationMode::InputDemo,
+                    Mode::Scenario => ExplanationMode::Scenario,
+                },
             },
-            elapsed,
         );
+        self.frame = coverage.frame.clone();
+        self.coverage = Some(coverage);
     }
 }
 

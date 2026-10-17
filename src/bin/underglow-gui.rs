@@ -13,6 +13,8 @@ mod devpreview;
 mod gui_preview;
 #[path = "gui/setup_behavior.rs"]
 mod setup_behavior;
+#[path = "gui/setup_coverage.rs"]
+mod setup_coverage;
 #[path = "gui/setup_editor.rs"]
 mod setup_editor;
 #[path = "gui/setup_explanation.rs"]

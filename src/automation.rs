@@ -306,6 +306,15 @@ impl AutomationRuntime {
         self
     }
 
+    /// Cached condition match, without rendering diagnostic placeholder scenes.
+    pub fn is_matched(&self, rule_id: &str) -> bool {
+        self.config
+            .rules
+            .iter()
+            .zip(&self.matched)
+            .any(|(rule, matched)| rule.id == rule_id && *matched)
+    }
+
     /// Active occurrence timing without rendering a diagnostic placeholder scene.
     pub fn activation_timing(&self, rule_id: &str) -> Option<(Duration, Option<Duration>)> {
         self.config

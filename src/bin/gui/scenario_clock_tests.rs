@@ -100,6 +100,71 @@ fn pi_completion_during_alert_restores_remaining_layer_and_disjoint_sessions() {
 }
 
 #[test]
+fn coverage_countdowns_and_obscuration_follow_evaluation_clock_not_wall_time() {
+    use underglow::explanations::{CoverageStatus, DeadlineKind};
+    let doc = document();
+    let mut p = prepared(&doc);
+    state(&mut p, "pi", "a", "working", 400);
+    p.scenario
+        .publish_event("pi", "a", "finished", 150)
+        .unwrap();
+    render(&mut p, &doc);
+    let generation = p.scenario.generation();
+    let baseline_frame = p.frame().clone();
+    let baseline_deadline = p.coverage().unwrap().layers[5].deadline.unwrap();
+    assert_eq!(baseline_deadline.kind, DeadlineKind::Transient);
+    assert_eq!(
+        baseline_deadline.remaining,
+        ms(150),
+        "trigger TTL caps duration"
+    );
+    assert_eq!(
+        p.coverage().unwrap().layers[1].status,
+        CoverageStatus::FullyObscured
+    );
+    p.advance_playback_at(Instant::now() + Duration::from_secs(900));
+    p.update_at(Some(&doc), 255, Duration::from_secs(1000));
+    assert_eq!(p.coverage().unwrap().evaluated_at, Duration::ZERO);
+    assert_eq!(
+        p.coverage().unwrap().layers[5].deadline,
+        Some(baseline_deadline)
+    );
+    assert_eq!(
+        p.coverage().unwrap().layers[1].deadline.unwrap().remaining,
+        ms(400)
+    );
+    assert_eq!(p.frame(), &baseline_frame);
+    assert_eq!(p.scenario.generation(), generation);
+    for (time, remaining) in [(149, 1), (150, 0)] {
+        p.scenario.advance_to(ms(time)).unwrap();
+        render(&mut p, &doc);
+        let coverage = p.coverage().unwrap();
+        assert_eq!(coverage.evaluated_at, p.evaluation_now());
+        assert_eq!(&coverage.frame, p.frame());
+        if remaining > 0 {
+            assert_eq!(
+                coverage.layers[5].deadline.unwrap().remaining,
+                ms(remaining)
+            );
+            assert_eq!(coverage.layers[1].status, CoverageStatus::FullyObscured);
+        } else {
+            assert!(coverage.layers[5].deadline.is_none());
+            assert_eq!(coverage.layers[5].status, CoverageStatus::Inactive);
+            assert_eq!(coverage.layers[1].status, CoverageStatus::Visible);
+            assert_eq!(coverage.layers[1].deadline.unwrap().remaining, ms(250));
+        }
+    }
+    p.scenario.advance_to(ms(400)).unwrap();
+    render(&mut p, &doc);
+    assert!(p.coverage().unwrap().layers[1].deadline.is_none());
+    assert_eq!(
+        p.coverage().unwrap().layers[1].status,
+        CoverageStatus::Inactive
+    );
+    assert_eq!(color(&p, "A"), Color::new(8, 8, 16));
+}
+
+#[test]
 fn paused_clock_freezes_all_animation_and_step_autopauses_without_catchup() {
     let mut doc = document();
     doc.layers[0].renderer = underglow::setup::Renderer::Pulse {

@@ -350,6 +350,7 @@ pub fn composition_preview(
     ui: &mut egui::Ui,
     frame: &underglow::render::Frame,
     selected: Option<MatrixCoord>,
+    coverage: Option<&underglow::explanations::LayerCoverage>,
 ) -> Option<MatrixCoord> {
     let layout = KeyboardLayout::for_device(&DeviceInfo::synthetic_80he());
     let width = ui.available_width().clamp(100.0, 700.0);
@@ -380,6 +381,31 @@ pub fn composition_preview(
             3,
             Color32::from_rgb(color.red, color.green, color.blue),
         );
+        if let Some(layer) = coverage.filter(|layer| layer.targeted.contains(&key.coord)) {
+            let visible = layer.visible.contains(&key.coord);
+            let obscured = layer.obscured.contains(&key.coord);
+            let accent = if visible {
+                Color32::LIGHT_GREEN
+            } else if obscured {
+                Color32::LIGHT_RED
+            } else {
+                Color32::LIGHT_BLUE
+            };
+            ui.painter()
+                .rect_stroke(key.rect, 3, Stroke::new(2.0, accent), StrokeKind::Outside);
+            if obscured {
+                // Cross-hatching is an annotation, never substitute RGB fill.
+                let inner = key.rect.shrink(3.0);
+                ui.painter().line_segment(
+                    [inner.left_bottom(), inner.right_top()],
+                    Stroke::new(1.0, accent),
+                );
+                ui.painter().line_segment(
+                    [inner.left_top(), inner.right_bottom()],
+                    Stroke::new(1.0, accent),
+                );
+            }
+        }
         if selected == Some(key.coord) {
             ui.painter().rect_stroke(
                 key.rect,

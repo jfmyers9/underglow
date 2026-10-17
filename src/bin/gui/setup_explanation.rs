@@ -5,7 +5,7 @@ use super::{
 };
 use eframe::egui;
 use underglow::device::DeviceInfo;
-use underglow::explanations::{ExplanationContext, ExplanationMode, KeyExplanation, explain_key};
+use underglow::explanations::{ExplanationContext, ExplanationMode, KeyExplanation};
 use underglow::layout::{KeyboardLayout, MatrixCoord};
 use underglow::render::{PaletteName, RenderContext};
 
@@ -27,7 +27,7 @@ pub(super) fn report(preview: &Preview, coord: MatrixCoord) -> Option<KeyExplana
         tick: (elapsed.as_secs_f64() * 30.0) as u32,
     };
     let (snapshot, _) = preview.evaluation_facts();
-    explain_key(
+    preview.coverage()?.explain_key(
         runtime,
         &ExplanationContext {
             render: &render,
