@@ -270,6 +270,7 @@ mod tests {
         Layer {
             id: id.into(),
             name: "Same display name".into(),
+            variants: Vec::new(),
             enabled: false,
             brightness: 73,
             renderer: default_renderer("aurora").unwrap(),

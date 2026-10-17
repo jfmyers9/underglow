@@ -1,5 +1,7 @@
 //! Pure optimistic setup edits. No persistence, hardware, or producer lifecycle.
-use crate::setup::{Activation, Layer, MAX_DOCUMENT_BYTES, Renderer, SetupDocument, Target};
+use crate::setup::{
+    Activation, BehaviorVariant, Layer, MAX_DOCUMENT_BYTES, Renderer, SetupDocument, Target,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -11,6 +13,7 @@ pub struct LayerPatch {
     pub brightness: Option<u8>,
     pub target: Option<Target>,
     pub activation: Option<Activation>,
+    pub variants: Option<Vec<BehaviorVariant>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +108,9 @@ pub fn apply_edits(
                 if let Some(value) = &patch.activation {
                     layer.activation = value.clone();
                 }
+                if let Some(value) = &patch.variants {
+                    layer.variants = value.clone();
+                }
             }
             LayerEdit::Remove { id } => {
                 let index = position(id, &candidate)?;
@@ -173,6 +179,39 @@ mod tests {
 
     fn doc() -> SetupDocument {
         SetupDocument::from_toml(include_str!("../examples/layer-setup.toml")).unwrap()
+    }
+
+    #[test]
+    fn variant_patch_is_atomic_bounded_and_can_clear_appearances() {
+        let original = doc();
+        let patch: LayerPatch = serde_json::from_value(serde_json::json!({"variants": [{
+            "id": "working", "name": "Working", "activation": {"kind": "always"},
+            "renderer": {"kind": "solid", "color": [1,2,3]}
+        }]}))
+        .unwrap();
+        let edit = |patch| LayerEdit::Update {
+            id: original.layers[0].id.clone(),
+            patch,
+        };
+        let candidate = apply_edits(&original, 0, &[edit(patch)]).unwrap();
+        assert_eq!(candidate.layers[0].variants.len(), 1);
+        assert!(original.layers[0].variants.is_empty());
+        assert_eq!(candidate.layers[0].renderer, original.layers[0].renderer);
+        let bad = LayerPatch {
+            variants: Some(vec![candidate.layers[0].variants[0].clone(); 17]),
+            ..Default::default()
+        };
+        assert!(apply_edits(&candidate, 1, &[edit(bad)]).is_err());
+        let cleared = apply_edits(
+            &candidate,
+            1,
+            &[edit(LayerPatch {
+                variants: Some(vec![]),
+                ..Default::default()
+            })],
+        )
+        .unwrap();
+        assert!(cleared.layers[0].variants.is_empty());
     }
 
     #[test]

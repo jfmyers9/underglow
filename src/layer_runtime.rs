@@ -33,6 +33,24 @@ struct CompiledLayer {
     coordinates: Vec<MatrixCoord>,
     zones: Vec<Zone>,
     simulation: Simulation,
+    variant_simulations: Vec<Simulation>,
+    variant_conditions: AutomationRuntime,
+}
+
+/// The one selected appearance before cross-layer occlusion. No UI or I/O.
+#[derive(Clone, Copy, Debug)]
+pub struct SelectedAppearance<'a> {
+    pub layer_id: &'a str,
+    /// None means the compatible base/fallback appearance.
+    pub variant_id: Option<&'a str>,
+    pub activation: &'a Activation,
+    pub renderer: &'a Renderer,
+    pub brightness: u8,
+    pub started: Option<Duration>,
+    pub expires: Option<Duration>,
+    /// Conditional animation time on the evaluator's unscaled clock.
+    /// None for Always appearances, which use the caller's setup elapsed time.
+    pub elapsed: Option<Duration>,
 }
 
 pub struct CompiledSetup {
@@ -56,21 +74,31 @@ impl CompiledSetup {
             .insert("condition".into(), Scene::default());
         let mut layers = Vec::new();
         for definition in &document.layers {
-            let simulation = match &definition.renderer {
-                Renderer::Reactive { effect, .. } => {
-                    if definition.enabled {
-                        analog_count += 1;
-                    }
-                    Simulation::Reactive(Box::new(ReactiveSimulation::new(*effect)))
+            let simulation = Simulation::for_renderer(&definition.renderer);
+            let variant_simulations = definition
+                .variants
+                .iter()
+                .map(|variant| Simulation::for_renderer(&variant.renderer))
+                .collect();
+            // Mutually exclusive appearances are a single logical SDK consumer.
+            if definition.enabled
+                && (needs_input(&definition.renderer)
+                    || definition
+                        .variants
+                        .iter()
+                        .any(|v| v.enabled && needs_input(&v.renderer)))
+            {
+                analog_count += 1;
+            }
+            let mut variant_config = AutomationConfig::default();
+            variant_config
+                .scenes
+                .insert("condition".into(), Scene::default());
+            for variant in &definition.variants {
+                if let Some(rule) = activation_rule(&variant.id, &variant.activation) {
+                    variant_config.rules.push(rule);
                 }
-                Renderer::Ripples { .. } => {
-                    if definition.enabled {
-                        analog_count += 1;
-                    }
-                    Simulation::Ripples(Box::default())
-                }
-                _ => Simulation::None,
-            };
+            }
             let mut coordinates = Vec::new();
             let mut target_zones = Vec::new();
             if let Target::Selection {
@@ -91,7 +119,7 @@ impl CompiledSetup {
                 }
                 requirements.named_targets |= !coordinates.is_empty();
             }
-            if let Some(rule) = condition_rule(definition) {
+            if let Some(rule) = activation_rule(&definition.id, &definition.activation) {
                 conditions.rules.push(rule);
             }
             layers.push(CompiledLayer {
@@ -99,6 +127,8 @@ impl CompiledSetup {
                 coordinates,
                 zones: target_zones,
                 simulation,
+                variant_simulations,
+                variant_conditions: AutomationRuntime::new(variant_config)?.follow_state_leases(),
             });
         }
         if analog_count > 1 {
@@ -130,7 +160,7 @@ impl CompiledSetup {
         events: &EventBatch,
         now: Duration,
     ) {
-        self.conditions.observe(snapshot, events, now);
+        self.observe(snapshot, events, now);
         candidate.baseline(snapshot, now);
         let preserved: Vec<_> = candidate
             .layers
@@ -153,9 +183,33 @@ impl CompiledSetup {
             if let Some(old) = self.layers.iter_mut().find(|old| {
                 old.definition.id == layer.definition.id
                     && old.definition.enabled == layer.definition.enabled
-                    && old.definition.renderer == layer.definition.renderer
             }) {
-                std::mem::swap(&mut layer.simulation, &mut old.simulation);
+                if old.definition.renderer == layer.definition.renderer {
+                    std::mem::swap(&mut layer.simulation, &mut old.simulation);
+                }
+                let mut preserved_variants = Vec::new();
+                for (index, variant) in layer.definition.variants.iter().enumerate() {
+                    if let Some((old_index, old_variant)) = old
+                        .definition
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .find(|(_, old)| old.id == variant.id && old.enabled == variant.enabled)
+                    {
+                        if old_variant.activation == variant.activation {
+                            preserved_variants.push(variant.id.as_str());
+                        }
+                        if old_variant.renderer == variant.renderer {
+                            std::mem::swap(
+                                &mut layer.variant_simulations[index],
+                                &mut old.variant_simulations[old_index],
+                            );
+                        }
+                    }
+                }
+                layer
+                    .variant_conditions
+                    .preserve_rules_from(&old.variant_conditions, &preserved_variants);
             }
         }
         candidate.input_available = self.input_available;
@@ -176,10 +230,16 @@ impl CompiledSetup {
     /// Resume baselines leased state but deliberately discards historical events.
     pub fn baseline(&mut self, snapshot: &Snapshot, now: Duration) {
         self.conditions.baseline(snapshot, now);
+        for layer in &mut self.layers {
+            layer.variant_conditions.baseline(snapshot, now);
+        }
     }
 
     pub fn observe(&mut self, snapshot: &Snapshot, events: &EventBatch, now: Duration) {
         self.conditions.observe(snapshot, events, now);
+        for layer in &mut self.layers {
+            layer.variant_conditions.observe(snapshot, events, now);
+        }
     }
 
     /// Registry failure hides only conditional layers.
@@ -203,10 +263,14 @@ impl CompiledSetup {
 
     pub fn reset_input(&mut self) {
         for layer in &mut self.layers {
-            match &mut layer.simulation {
-                Simulation::Reactive(sim) => sim.clear(),
-                Simulation::Ripples(sim) => **sim = RippleSimulation::default(),
-                Simulation::None => {}
+            for simulation in
+                std::iter::once(&mut layer.simulation).chain(&mut layer.variant_simulations)
+            {
+                match simulation {
+                    Simulation::Reactive(sim) => sim.clear(),
+                    Simulation::Ripples(sim) => **sim = RippleSimulation::default(),
+                    Simulation::None => {}
+                }
             }
         }
         self.input_available = true;
@@ -218,10 +282,19 @@ impl CompiledSetup {
             if !layer.definition.enabled {
                 continue;
             }
-            match &mut layer.simulation {
-                Simulation::Reactive(sim) => sim.advance(dt, keys.iter().copied()),
-                Simulation::Ripples(sim) => sim.advance(dt, keys.iter().copied()),
-                Simulation::None => {}
+            for simulation in std::iter::once(&mut layer.simulation).chain(
+                layer
+                    .variant_simulations
+                    .iter_mut()
+                    .zip(&layer.definition.variants)
+                    .filter(|(_, variant)| variant.enabled)
+                    .map(|(simulation, _)| simulation),
+            ) {
+                match simulation {
+                    Simulation::Reactive(sim) => sim.advance(dt, keys.iter().copied()),
+                    Simulation::Ripples(sim) => sim.advance(dt, keys.iter().copied()),
+                    Simulation::None => {}
+                }
             }
         }
     }
@@ -253,6 +326,15 @@ impl CompiledSetup {
         compositor::compose(Frame::black(), ctx.layout, &layers, Duration::ZERO)
     }
 
+    pub fn selected_appearance(&self, layer_id: &str) -> Option<SelectedAppearance<'_>> {
+        let layer = self
+            .layers
+            .iter()
+            .find(|layer| layer.definition.id == layer_id)?;
+        let (appearance, simulation) = layer.appearance(&self.conditions)?;
+        (self.input_available || matches!(simulation, Simulation::None)).then_some(appearance)
+    }
+
     pub fn composition(
         &self,
         ctx: &RenderContext<'_>,
@@ -263,11 +345,8 @@ impl CompiledSetup {
             .enumerate()
             .filter_map(|(index, layer)| {
                 let definition = &layer.definition;
-                if !definition.enabled
-                    || (!matches!(definition.activation, Activation::Always {})
-                        && !self.conditions.is_active(&definition.id))
-                    || (!self.input_available && !matches!(layer.simulation, Simulation::None))
-                {
+                let (appearance, simulation) = layer.appearance(&self.conditions)?;
+                if !self.input_available && !matches!(simulation, Simulation::None) {
                     return None;
                 }
                 let mask = match definition.target {
@@ -285,7 +364,14 @@ impl CompiledSetup {
                     ),
                 };
                 Some(compositor::Layer {
-                    frame: layer.render(ctx, elapsed, &mask),
+                    frame: render_appearance(
+                        appearance.renderer,
+                        simulation,
+                        appearance.brightness,
+                        ctx,
+                        appearance.elapsed.unwrap_or(elapsed),
+                        &mask,
+                    ),
                     mask,
                     priority: index as i32,
                     expires: None,
@@ -296,118 +382,221 @@ impl CompiledSetup {
 }
 
 impl CompiledLayer {
-    fn render(&self, ctx: &RenderContext<'_>, elapsed: Duration, mask: &KeyMask) -> Frame {
-        let renderer = &self.definition.renderer;
-        let default_palette = renderer
-            .catalog_id()
-            .and_then(|id| catalog::all().iter().find(|entry| entry.id == id))
-            .map_or(PaletteName::default(), |entry| entry.defaults.palette);
-        let (palette, speed) = match renderer {
-            Renderer::Effect { palette, speed, .. } => (palette.unwrap_or(default_palette), *speed),
-            Renderer::Reactive { palette, .. } | Renderer::Ripples { palette, .. } => {
-                (palette.unwrap_or(default_palette), 100)
-            }
-            _ => (default_palette, 100),
-        };
-        let ctx = RenderContext {
-            animation_seconds: elapsed.as_secs_f64() * f64::from(speed) / 100.0,
-            brightness: ((u16::from(self.definition.brightness) * u16::from(ctx.brightness)) / 255)
-                as u8,
-            palette,
-            ..ctx.clone()
-        };
-        match renderer {
-            Renderer::Effect { effect, .. } => effect.render(&ctx),
-            Renderer::Reactive { .. } => match &self.simulation {
-                Simulation::Reactive(sim) => sim.render(&ctx),
-                _ => unreachable!(),
+    fn appearance<'a>(
+        &'a self,
+        conditions: &AutomationRuntime,
+    ) -> Option<(SelectedAppearance<'a>, &'a Simulation)> {
+        let layer = &self.definition;
+        if !layer.enabled {
+            return None;
+        }
+        let selected = layer
+            .variants
+            .iter()
+            .enumerate()
+            .filter(|(_, variant)| {
+                variant.enabled
+                    && activation_active(&variant.id, &variant.activation, &self.variant_conditions)
+            })
+            .max_by_key(|(index, variant)| (is_transient(&variant.activation), *index));
+        let (variant_id, activation, renderer, brightness, simulation, timing, observed_at) =
+            if let Some((index, variant)) = selected {
+                (
+                    Some(variant.id.as_str()),
+                    &variant.activation,
+                    &variant.renderer,
+                    variant.brightness.unwrap_or(layer.brightness),
+                    &self.variant_simulations[index],
+                    self.variant_conditions.activation_timing(&variant.id),
+                    self.variant_conditions.observed_at(),
+                )
+            } else {
+                if !activation_active(&layer.id, &layer.activation, conditions) {
+                    return None;
+                }
+                (
+                    None,
+                    &layer.activation,
+                    &layer.renderer,
+                    layer.brightness,
+                    &self.simulation,
+                    conditions.activation_timing(&layer.id),
+                    conditions.observed_at(),
+                )
+            };
+        Some((
+            SelectedAppearance {
+                layer_id: &layer.id,
+                variant_id,
+                activation,
+                renderer,
+                brightness,
+                started: timing.map(|(started, _)| started),
+                expires: timing.and_then(|(_, expires)| expires),
+                elapsed: timing.map(|(started, _)| observed_at.saturating_sub(started)),
             },
-            Renderer::Ripples {
-                base_color,
-                ripple_color,
-                ..
-            } => {
-                let Simulation::Ripples(sim) = &self.simulation else {
-                    unreachable!()
-                };
-                let geometry: Vec<_> = ctx
-                    .layout
-                    .keys()
-                    .iter()
-                    .map(|key| KeyGeometry {
-                        row: key.coord.row,
-                        column: key.coord.column,
-                        x: key.x,
-                        y: key.y,
-                    })
-                    .collect();
-                let palette = ctx.palette.palette();
-                let colors = sim.render(
-                    &geometry,
-                    |position| {
-                        let color = palette.gradient(position);
-                        [color.red, color.green, color.blue]
-                    },
-                    ctx.brightness,
-                    *base_color,
-                    *ripple_color,
+            simulation,
+        ))
+    }
+}
+
+fn render_appearance(
+    renderer: &Renderer,
+    simulation: &Simulation,
+    brightness: u8,
+    ctx: &RenderContext<'_>,
+    elapsed: Duration,
+    mask: &KeyMask,
+) -> Frame {
+    let default_palette = renderer
+        .catalog_id()
+        .and_then(|id| catalog::all().iter().find(|entry| entry.id == id))
+        .map_or(PaletteName::default(), |entry| entry.defaults.palette);
+    let (palette, speed) = match renderer {
+        Renderer::Effect { palette, speed, .. } => (palette.unwrap_or(default_palette), *speed),
+        Renderer::Reactive { palette, .. } | Renderer::Ripples { palette, .. } => {
+            (palette.unwrap_or(default_palette), 100)
+        }
+        _ => (default_palette, 100),
+    };
+    let ctx = RenderContext {
+        animation_seconds: elapsed.as_secs_f64() * f64::from(speed) / 100.0,
+        brightness: ((u16::from(brightness) * u16::from(ctx.brightness)) / 255) as u8,
+        palette,
+        ..ctx.clone()
+    };
+    match renderer {
+        Renderer::Effect { effect, .. } => effect.render(&ctx),
+        Renderer::Reactive { .. } => match simulation {
+            Simulation::Reactive(sim) => sim.render(&ctx),
+            _ => unreachable!(),
+        },
+        Renderer::Ripples {
+            base_color,
+            ripple_color,
+            ..
+        } => {
+            let Simulation::Ripples(sim) = simulation else {
+                unreachable!()
+            };
+            let geometry: Vec<_> = ctx
+                .layout
+                .keys()
+                .iter()
+                .map(|key| KeyGeometry {
+                    row: key.coord.row,
+                    column: key.coord.column,
+                    x: key.x,
+                    y: key.y,
+                })
+                .collect();
+            let palette = ctx.palette.palette();
+            let colors = sim.render(
+                &geometry,
+                |position| {
+                    let color = palette.gradient(position);
+                    [color.red, color.green, color.blue]
+                },
+                ctx.brightness,
+                *base_color,
+                *ripple_color,
+            );
+            let mut frame = Frame::black();
+            for (key, [r, g, b]) in ctx.layout.keys().iter().zip(colors) {
+                frame.set_coord(key.coord, Color::new(r, g, b));
+            }
+            frame
+        }
+        Renderer::Focus {
+            focus_minutes,
+            break_minutes,
+            cycles,
+            start_paused,
+            meeting_safe,
+            dim,
+        } => {
+            let config = FocusConfig {
+                focus_minutes: *focus_minutes,
+                break_minutes: *break_minutes,
+                cycles: *cycles,
+                start_paused: *start_paused,
+                meeting_safe: *meeting_safe,
+                dim: *dim,
+            };
+            focus::render_focus(&ctx, focus::state_after(&config, elapsed), *dim)
+        }
+        Renderer::Solid { color }
+        | Renderer::Pulse { color, .. }
+        | Renderer::Sweep { color, .. } => {
+            let mut color = Color::new(color[0], color[1], color[2]).scale(ctx.brightness);
+            if let Renderer::Pulse { period_ms, .. } = renderer {
+                let phase = elapsed.as_secs_f64() * 1000.0 / *period_ms as f64;
+                color = color.scale(
+                    (64.0 + 191.0 * (0.5 - 0.5 * (phase * std::f64::consts::TAU).cos())) as u8,
                 );
-                let mut frame = Frame::black();
-                for (key, [r, g, b]) in ctx.layout.keys().iter().zip(colors) {
-                    frame.set_coord(key.coord, Color::new(r, g, b));
-                }
-                frame
             }
-            Renderer::Focus {
-                focus_minutes,
-                break_minutes,
-                cycles,
-                start_paused,
-                meeting_safe,
-                dim,
-            } => {
-                let config = FocusConfig {
-                    focus_minutes: *focus_minutes,
-                    break_minutes: *break_minutes,
-                    cycles: *cycles,
-                    start_paused: *start_paused,
-                    meeting_safe: *meeting_safe,
-                    dim: *dim,
-                };
-                focus::render_focus(&ctx, focus::state_after(&config, elapsed), *dim)
-            }
-            Renderer::Solid { color }
-            | Renderer::Pulse { color, .. }
-            | Renderer::Sweep { color, .. } => {
-                let mut color = Color::new(color[0], color[1], color[2]).scale(ctx.brightness);
-                if let Renderer::Pulse { period_ms, .. } = renderer {
-                    let phase = (elapsed.as_secs_f64() * 1000.0 / *period_ms as f64).fract();
-                    color = color.scale(((1.0 - (phase * 2.0 - 1.0).abs()) * 255.0) as u8);
-                }
-                let keys: Vec<_> = ctx
-                    .layout
-                    .keys()
-                    .iter()
-                    .filter(|key| mask.contains(key))
-                    .collect();
-                let count = if let Renderer::Sweep { period_ms, .. } = renderer {
-                    let phase = (elapsed.as_secs_f64() * 1000.0 / *period_ms as f64).fract();
-                    (phase * keys.len() as f64).ceil() as usize
+            let mut keys: Vec<_> = ctx
+                .layout
+                .keys()
+                .iter()
+                .filter(|key| mask.contains(key))
+                .collect();
+            keys.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+            let count = keys.len();
+            let mut frame = Frame::black();
+            for (index, key) in keys.into_iter().enumerate() {
+                let amount = if let Renderer::Sweep { period_ms, .. } = renderer {
+                    let head = (elapsed.as_secs_f64() * (count as f64 * 1000.0 / *period_ms as f64))
+                        as usize
+                        % count.max(1);
+                    let distance = (head + count - index) % count.max(1);
+                    if distance < 4 {
+                        255u8.saturating_sub((distance * 60) as u8)
+                    } else {
+                        0
+                    }
                 } else {
-                    keys.len()
+                    255
                 };
-                let mut frame = Frame::black();
-                for key in keys.into_iter().take(count) {
-                    frame.set_coord(key.coord, color);
-                }
-                frame
+                frame.set_coord(key.coord, color.scale(amount));
             }
+            frame
         }
     }
 }
 
-fn condition_rule(layer: &Layer) -> Option<Rule> {
-    let (source, instance, mode, state, event, from_state, duration_ms) = match &layer.activation {
+fn needs_input(renderer: &Renderer) -> bool {
+    matches!(
+        renderer,
+        Renderer::Reactive { .. } | Renderer::Ripples { .. }
+    )
+}
+
+impl Simulation {
+    fn for_renderer(renderer: &Renderer) -> Self {
+        match renderer {
+            Renderer::Reactive { effect, .. } => {
+                Self::Reactive(Box::new(ReactiveSimulation::new(*effect)))
+            }
+            Renderer::Ripples { .. } => Self::Ripples(Box::default()),
+            _ => Self::None,
+        }
+    }
+}
+
+fn is_transient(activation: &Activation) -> bool {
+    matches!(
+        activation,
+        Activation::OnEvent { .. } | Activation::OnTransition { .. }
+    )
+}
+
+fn activation_active(id: &str, activation: &Activation, conditions: &AutomationRuntime) -> bool {
+    matches!(activation, Activation::Always {}) || conditions.is_active(id)
+}
+
+fn activation_rule(id: &str, activation: &Activation) -> Option<Rule> {
+    let (source, instance, mode, state, event, from_state, duration_ms) = match activation {
         Activation::Always {} => return None,
         Activation::WhileState {
             source,
@@ -453,7 +642,7 @@ fn condition_rule(layer: &Layer) -> Option<Rule> {
         ),
     };
     Some(Rule {
-        id: layer.id.clone(),
+        id: id.into(),
         source: source.clone(),
         instance: instance.clone(),
         mode,
@@ -473,7 +662,7 @@ mod tests {
     use crate::external::{Message, Payload, Registry};
     use crate::layout::KeyboardLayout;
     use crate::reactive::ReactiveKind;
-    use crate::setup::{SCHEMA_VERSION, TargetZone};
+    use crate::setup::{BehaviorVariant, SCHEMA_VERSION, TargetZone};
     use std::collections::BTreeMap;
 
     fn layer(id: &str, renderer: Renderer, target: Target) -> Layer {
@@ -483,6 +672,7 @@ mod tests {
             enabled: true,
             brightness: 255,
             activation: Activation::Always {},
+            variants: Vec::new(),
             renderer,
             target,
         }
@@ -550,6 +740,507 @@ mod tests {
             &registry.events_since(runtime.event_cursor()),
             now,
         );
+    }
+
+    fn fact(registry: &mut Registry, instance: &str, sequence: u64, payload: Payload, now: u64) {
+        registry
+            .apply(
+                Message {
+                    schema_version: 1,
+                    source: "custom-source".into(),
+                    instance: instance.into(),
+                    sequence,
+                    payload,
+                },
+                Duration::from_millis(now),
+            )
+            .unwrap();
+    }
+    fn state(value: &str, ttl_ms: u64) -> Payload {
+        Payload::State {
+            state: value.into(),
+            ttl_ms,
+        }
+    }
+    fn event(ttl_ms: u64) -> Payload {
+        Payload::Event {
+            event: "finished".into(),
+            ttl_ms,
+        }
+    }
+    fn while_state(value: Option<&str>) -> Activation {
+        Activation::WhileState {
+            source: "custom-source".into(),
+            instance: None,
+            state: value.map(str::to_owned),
+        }
+    }
+    fn variant(id: &str, activation: Activation, color: [u8; 3]) -> BehaviorVariant {
+        BehaviorVariant {
+            id: id.into(),
+            name: id.into(),
+            enabled: true,
+            activation,
+            renderer: Renderer::Solid { color },
+            brightness: None,
+        }
+    }
+    fn behavior() -> Layer {
+        let mut layer = layer(
+            "sessions",
+            Renderer::Solid { color: [10; 3] },
+            selection(&["F1"]),
+        );
+        layer.activation = while_state(None);
+        layer.variants = vec![
+            variant(
+                "finished",
+                Activation::OnEvent {
+                    source: "custom-source".into(),
+                    instance: None,
+                    event: "finished".into(),
+                    duration_ms: 50,
+                },
+                [0, 255, 0],
+            ),
+            variant("idle", while_state(Some("idle")), [0, 0, 255]),
+            variant("working", while_state(Some("working")), [255, 0, 0]),
+        ];
+        layer
+    }
+    fn selected(runtime: &CompiledSetup) -> Option<&str> {
+        runtime
+            .selected_appearance("sessions")
+            .and_then(|appearance| appearance.variant_id)
+    }
+
+    #[test]
+    fn logical_behavior_aggregates_sessions_with_one_targeted_appearance_and_fixed_deadlines() {
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = context(&info, &layout);
+        let mut runtime = CompiledSetup::compile(&document(vec![behavior()])).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(&mut registry, "a", 1, state("idle", 200), 1);
+        observe(&mut runtime, &mut registry, 1);
+        assert_eq!(selected(&runtime), Some("idle"));
+        fact(&mut registry, "a", 2, state("working", 200), 10);
+        fact(&mut registry, "b", 1, state("idle", 200), 15);
+        observe(&mut runtime, &mut registry, 15);
+        assert_eq!(selected(&runtime), Some("working"));
+        fact(&mut registry, "a", 3, event(200), 20);
+        let repeated_batch = registry.events_since(runtime.event_cursor());
+        observe(&mut runtime, &mut registry, 20);
+        assert_eq!(selected(&runtime), Some("finished")); // transient beats later working
+        let appearance = runtime.selected_appearance("sessions").unwrap();
+        assert_eq!(appearance.started, Some(Duration::from_millis(20)));
+        assert_eq!(appearance.expires, Some(Duration::from_millis(70)));
+        let composed = runtime.composition(&ctx, Duration::from_millis(20));
+        assert_eq!(composed.len(), 1);
+        assert_eq!(composed[0].priority, 0);
+        let frame = runtime.render(&ctx, Duration::from_millis(20));
+        assert_eq!(
+            frame.get_coord(canonical_coord("F1").unwrap()),
+            Color::new(0, 255, 0)
+        );
+        assert_eq!(
+            frame.get_coord(canonical_coord("F2").unwrap()),
+            Color::BLACK
+        );
+        fact(&mut registry, "a", 4, state("working", 500), 30);
+        runtime.observe(
+            &registry.snapshot(),
+            &repeated_batch,
+            Duration::from_millis(30),
+        );
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().expires,
+            Some(Duration::from_millis(70))
+        );
+        observe(&mut runtime, &mut registry, 69);
+        assert_eq!(selected(&runtime), Some("finished"));
+        observe(&mut runtime, &mut registry, 70);
+        assert_eq!(selected(&runtime), Some("working"));
+        fact(&mut registry, "a", 5, Payload::Remove, 80);
+        observe(&mut runtime, &mut registry, 80);
+        assert_eq!(selected(&runtime), Some("idle"));
+        observe(&mut runtime, &mut registry, 215);
+        assert!(runtime.selected_appearance("sessions").is_none());
+        assert!(runtime.composition(&ctx, Duration::ZERO).is_empty());
+    }
+
+    #[test]
+    fn state_backed_transients_cap_to_original_lease_and_hide_on_emitting_session_removal() {
+        let mut definition = behavior();
+        if let Activation::OnEvent { duration_ms, .. } = &mut definition.variants[0].activation {
+            *duration_ms = 500;
+        }
+        let mut runtime = CompiledSetup::compile(&document(vec![definition])).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(&mut registry, "a", 1, state("working", 50), 0);
+        fact(&mut registry, "b", 1, state("idle", 500), 0);
+        fact(&mut registry, "a", 2, event(500), 10);
+        observe(&mut runtime, &mut registry, 10);
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().expires,
+            Some(Duration::from_millis(50))
+        );
+        fact(&mut registry, "a", 3, state("working", 500), 20);
+        observe(&mut runtime, &mut registry, 20);
+        observe(&mut runtime, &mut registry, 50);
+        assert_eq!(selected(&runtime), Some("working")); // heartbeat cannot extend completion
+        fact(&mut registry, "a", 4, event(500), 60);
+        observe(&mut runtime, &mut registry, 60);
+        assert_eq!(selected(&runtime), Some("finished"));
+        fact(&mut registry, "a", 5, Payload::Remove, 70);
+        observe(&mut runtime, &mut registry, 70);
+        assert_eq!(selected(&runtime), Some("idle")); // another session cannot keep a's transient alive
+        fact(&mut registry, "b", 2, event(500), 80);
+        observe(&mut runtime, &mut registry, 80);
+        observe(&mut runtime, &mut registry, 500);
+        assert!(runtime.selected_appearance("sessions").is_none());
+    }
+
+    #[test]
+    fn behavior_transitions_heartbeats_repeated_snapshots_and_resume_never_replay() {
+        let mut definition = behavior();
+        definition.variants.push(variant(
+            "transition",
+            Activation::OnTransition {
+                source: "custom-source".into(),
+                instance: None,
+                from_state: Some("working".into()),
+                state: "idle".into(),
+                duration_ms: 50,
+            },
+            [255, 255, 0],
+        ));
+        let mut runtime = CompiledSetup::compile(&document(vec![definition])).unwrap();
+        let mut registry = Registry::default();
+        fact(&mut registry, "a", 1, state("working", 500), 0);
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(&mut registry, "a", 2, state("idle", 500), 10);
+        fact(&mut registry, "a", 3, event(500), 10);
+        observe(&mut runtime, &mut registry, 10);
+        assert_eq!(selected(&runtime), Some("transition")); // later transient wins tie
+        fact(&mut registry, "a", 4, state("idle", 500), 20);
+        observe(&mut runtime, &mut registry, 20);
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().expires,
+            Some(Duration::from_millis(60))
+        );
+        observe(&mut runtime, &mut registry, 30);
+        runtime.baseline(&registry.snapshot(), Duration::from_millis(40));
+        assert_eq!(selected(&runtime), Some("idle"));
+        runtime.observe(
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(45),
+        );
+        assert_eq!(selected(&runtime), Some("idle"));
+        observe(&mut runtime, &mut registry, 60);
+        assert_eq!(selected(&runtime), Some("idle"));
+        runtime.clear_conditions(Duration::from_millis(70));
+        assert!(runtime.selected_appearance("sessions").is_none());
+        runtime.baseline(&registry.snapshot(), Duration::from_millis(80));
+        assert_eq!(selected(&runtime), Some("idle"));
+    }
+
+    #[test]
+    fn event_only_behavior_obeys_event_lease_disabled_variants_and_base_fallback() {
+        let mut definition = behavior();
+        definition.variants[0].brightness = Some(128);
+        let mut runtime = CompiledSetup::compile(&document(vec![definition.clone()])).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(&mut registry, "a", 1, event(20), 1);
+        observe(&mut runtime, &mut registry, 1);
+        assert_eq!(selected(&runtime), Some("finished"));
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().brightness,
+            128
+        );
+        observe(&mut runtime, &mut registry, 21);
+        assert!(runtime.selected_appearance("sessions").is_none());
+        fact(&mut registry, "a", 2, state("unknown-state", 50), 22);
+        observe(&mut runtime, &mut registry, 22);
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().variant_id,
+            None
+        );
+        definition.variants[0].enabled = false;
+        let mut runtime = CompiledSetup::compile(&document(vec![definition.clone()])).unwrap();
+        runtime.baseline(&registry.snapshot(), Duration::from_millis(22));
+        fact(&mut registry, "a", 3, event(50), 23);
+        observe(&mut runtime, &mut registry, 23);
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().variant_id,
+            None
+        );
+        definition.enabled = false;
+        let mut runtime = CompiledSetup::compile(&document(vec![definition])).unwrap();
+        runtime.baseline(&registry.snapshot(), Duration::from_millis(23));
+        assert!(runtime.selected_appearance("sessions").is_none());
+    }
+
+    #[test]
+    fn variant_input_budget_is_per_logical_layer_and_input_failure_hides_only_selected_input() {
+        let mut definition = behavior();
+        definition.renderer = Renderer::Reactive {
+            effect: ReactiveKind::Heatmap,
+            palette: None,
+        };
+        definition.variants[1].renderer = Renderer::Ripples {
+            palette: None,
+            base_color: None,
+            ripple_color: None,
+        };
+        definition.variants[2].renderer = Renderer::Reactive {
+            effect: ReactiveKind::Afterimage,
+            palette: None,
+        };
+        let mut runtime = CompiledSetup::compile(&document(vec![definition.clone()])).unwrap();
+        assert!(runtime.requirements().analog_input);
+        let other = Layer {
+            id: "other".into(),
+            ..definition.clone()
+        };
+        assert!(CompiledSetup::compile(&document(vec![definition.clone(), other])).is_err());
+        let mut registry = Registry::default();
+        fact(&mut registry, "a", 1, state("working", 100), 0);
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        assert_eq!(selected(&runtime), Some("working"));
+        runtime.preview_tick(1);
+        runtime.input_unavailable();
+        assert!(runtime.selected_appearance("sessions").is_none());
+        fact(&mut registry, "a", 2, event(50), 1);
+        observe(&mut runtime, &mut registry, 1);
+        assert_eq!(selected(&runtime), Some("finished")); // solid transient unaffected by input failure
+        runtime.advance_input(0.1, &[]);
+        observe(&mut runtime, &mut registry, 51);
+        assert_eq!(selected(&runtime), Some("working"));
+        definition.renderer = Renderer::Solid { color: [0; 3] };
+        definition.variants[1].enabled = false;
+        definition.variants[2].enabled = false;
+        assert!(
+            !CompiledSetup::compile(&document(vec![definition]))
+                .unwrap()
+                .requirements()
+                .analog_input
+        );
+    }
+
+    #[test]
+    fn variant_rule_capacity_is_bounded_per_layer_not_legacy_global_64() {
+        let mut definition = behavior();
+        definition.variants = (0..16)
+            .map(|index| {
+                variant(
+                    &format!("variant-{index}"),
+                    while_state(Some("working")),
+                    [1; 3],
+                )
+            })
+            .collect();
+        let doc = document(
+            (0..5)
+                .map(|index| Layer {
+                    id: format!("layer-{index}"),
+                    ..definition.clone()
+                })
+                .collect(),
+        );
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        let mut registry = Registry::default();
+        fact(&mut registry, "a", 1, state("working", 50), 0);
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        assert_eq!(
+            runtime.selected_appearance("layer-4").unwrap().variant_id,
+            Some("variant-15")
+        );
+    }
+
+    #[test]
+    fn variant_brightness_overrides_once_and_black_variant_is_opaque_over_background() {
+        let mut status = behavior();
+        status.brightness = 32;
+        status.variants = vec![
+            variant("first", Activation::Always {}, [255; 3]),
+            variant("last", Activation::Always {}, [255, 0, 0]),
+        ];
+        status.variants[1].brightness = Some(128);
+        let background = layer(
+            "background",
+            Renderer::Solid { color: [255; 3] },
+            Target::Whole {},
+        );
+        let mut doc = document(vec![background, status]);
+        let runtime = CompiledSetup::compile(&doc).unwrap();
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let mut ctx = context(&info, &layout);
+        ctx.brightness = 128;
+        assert_eq!(selected(&runtime), Some("last"));
+        assert_eq!(
+            runtime
+                .render(&ctx, Duration::ZERO)
+                .get_coord(canonical_coord("F1").unwrap()),
+            Color::new(64, 0, 0)
+        );
+        assert_eq!(runtime.composition(&ctx, Duration::ZERO).len(), 2);
+        doc.layers[1].variants[1].renderer = Renderer::Solid { color: [0; 3] };
+        let frame = CompiledSetup::compile(&doc)
+            .unwrap()
+            .render(&ctx, Duration::ZERO);
+        assert_eq!(
+            frame.get_coord(canonical_coord("F1").unwrap()),
+            Color::BLACK
+        );
+        assert_eq!(
+            frame.get_coord(canonical_coord("F2").unwrap()),
+            Color::new(128, 128, 128)
+        );
+    }
+
+    #[test]
+    fn variant_reconfigure_preserves_deadlines_and_session_identity_across_reorder() {
+        let mut doc = document(vec![behavior()]);
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(&mut registry, "a", 1, state("working", 200), 0);
+        fact(&mut registry, "a", 2, event(200), 10);
+        observe(&mut runtime, &mut registry, 10);
+        doc.layers[0].variants.reverse();
+        doc.layers[0].name = "Renamed".into();
+        doc.layers[0].target = Target::Whole {};
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(runtime.event_cursor()),
+            Duration::from_millis(20),
+        );
+        let appearance = runtime.selected_appearance("sessions").unwrap();
+        assert_eq!(appearance.variant_id, Some("finished"));
+        assert_eq!(appearance.started, Some(Duration::from_millis(10)));
+        assert_eq!(appearance.elapsed, Some(Duration::from_millis(10)));
+        assert_eq!(appearance.expires, Some(Duration::from_millis(60)));
+        fact(&mut registry, "a", 3, Payload::Remove, 30);
+        observe(&mut runtime, &mut registry, 30);
+        assert!(runtime.selected_appearance("sessions").is_none()); // preserved identity still gates transient
+    }
+
+    #[test]
+    fn changed_or_new_variants_baseline_without_replaying_events_during_reconfigure() {
+        let mut doc = document(vec![behavior()]);
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(&mut registry, "a", 1, state("working", 200), 0);
+        fact(&mut registry, "a", 2, event(200), 10);
+        // Unchanged variants see new events exactly once even if an edit arrives before observe.
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(runtime.event_cursor()),
+            Duration::from_millis(10),
+        );
+        assert_eq!(selected(&runtime), Some("finished"));
+        if let Activation::OnEvent { duration_ms, .. } = &mut doc.layers[0].variants[0].activation {
+            *duration_ms = 100;
+        }
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(20),
+        );
+        assert_eq!(selected(&runtime), Some("working"));
+        doc.layers[0].variants[0].id = "new-identity".into();
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(30),
+        );
+        assert_eq!(selected(&runtime), Some("working"));
+        fact(&mut registry, "a", 3, event(200), 40);
+        observe(&mut runtime, &mut registry, 40);
+        assert_eq!(selected(&runtime), Some("new-identity"));
+        doc.layers[0].variants[0].enabled = false;
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(45),
+        );
+        doc.layers[0].variants[0].enabled = true;
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(46),
+        );
+        assert_eq!(selected(&runtime), Some("working"));
+    }
+
+    #[test]
+    fn variant_reconfigure_reuses_simulation_by_id_not_index() {
+        let mut definition = behavior();
+        definition.target = Target::Whole {};
+        definition.variants[2].renderer = Renderer::Reactive {
+            effect: ReactiveKind::Afterimage,
+            palette: None,
+        };
+        let mut doc = document(vec![definition]);
+        let mut runtime = CompiledSetup::compile(&doc).unwrap();
+        let mut registry = Registry::default();
+        fact(&mut registry, "a", 1, state("working", 200), 0);
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        runtime.advance_input(0.1, &[(0x04, 0.9)]);
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = context(&info, &layout);
+        let before = runtime.render(&ctx, Duration::ZERO);
+        assert_ne!(before, Frame::black());
+        doc.layers[0].variants.reverse();
+        runtime.reconfigure(
+            CompiledSetup::compile(&doc).unwrap(),
+            &registry.snapshot(),
+            &registry.events_since(0),
+            Duration::from_millis(1),
+        );
+        assert_eq!(before, runtime.render(&ctx, Duration::ZERO));
+        runtime.reset_input();
+        assert_eq!(runtime.render(&ctx, Duration::ZERO), Frame::black());
+    }
+
+    #[test]
+    fn latest_session_occurrence_replaces_slot_without_queued_replay() {
+        let mut runtime = CompiledSetup::compile(&document(vec![behavior()])).unwrap();
+        let mut registry = Registry::default();
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        fact(&mut registry, "a", 1, state("working", 200), 0);
+        fact(&mut registry, "b", 1, state("idle", 200), 0);
+        fact(&mut registry, "a", 2, event(200), 1);
+        observe(&mut runtime, &mut registry, 1);
+        fact(&mut registry, "b", 2, event(200), 20);
+        observe(&mut runtime, &mut registry, 20);
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().expires,
+            Some(Duration::from_millis(70))
+        );
+        fact(&mut registry, "b", 2, event(200), 25); // duplicate protocol sequence, no renewal
+        observe(&mut runtime, &mut registry, 25);
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().expires,
+            Some(Duration::from_millis(70))
+        );
+        fact(&mut registry, "b", 3, Payload::Remove, 30);
+        observe(&mut runtime, &mut registry, 30);
+        assert_eq!(selected(&runtime), Some("working")); // a's earlier completion is not replayed
     }
 
     #[test]
@@ -809,9 +1500,9 @@ mod tests {
             selection(&["a"]),
         )]);
         let a = canonical_coord("a").unwrap();
-        assert_eq!(render(&pulse, 0.0).get_coord(a), Color::BLACK);
+        assert_eq!(render(&pulse, 0.0).get_coord(a), Color::new(64, 20, 0));
         assert_eq!(render(&pulse, 1.0).get_coord(a), Color::new(255, 80, 0));
-        assert_eq!(render(&pulse, 2.0).get_coord(a), Color::BLACK);
+        assert_eq!(render(&pulse, 2.0).get_coord(a), Color::new(64, 20, 0));
         let sweep = document(vec![
             layer(
                 "base",
@@ -824,22 +1515,126 @@ mod tests {
                     color: [255, 0, 0],
                     period_ms: 2000,
                 },
-                selection(&["a", "s"]),
+                selection(&["a", "s", "d", "f", "g", "h"]),
             ),
         ]);
         let start = render(&sweep, 0.0);
-        assert_eq!(start.get_coord(a), Color::BLACK); // covered even before sweep lights it
+        assert_eq!(start.get_coord(a), Color::new(255, 0, 0));
         assert_eq!(start.get_coord(canonical_coord("s").unwrap()), Color::BLACK);
         assert_eq!(
-            start.get_coord(canonical_coord("d").unwrap()),
+            start.get_coord(canonical_coord("j").unwrap()),
             Color::new(0, 0, 255)
         );
-        let later = render(&sweep, 1.9);
-        assert_eq!(later.get_coord(a), Color::new(255, 0, 0));
+        assert_eq!(
+            start.get_coord(canonical_coord("h").unwrap()),
+            Color::new(195, 0, 0)
+        );
+        let later = render(&sweep, 1.0);
+        assert_eq!(later.get_coord(a), Color::new(75, 0, 0));
         assert_eq!(
             later.get_coord(canonical_coord("s").unwrap()),
+            Color::new(135, 0, 0)
+        );
+        assert_eq!(
+            later.get_coord(canonical_coord("f").unwrap()),
             Color::new(255, 0, 0)
         );
+        assert_eq!(later.get_coord(canonical_coord("g").unwrap()), Color::BLACK);
+    }
+
+    #[test]
+    fn conditional_base_and_variant_render_on_activation_clock_and_match_legacy_primitives() {
+        use crate::automation::SceneKind;
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = context(&info, &layout);
+        let keys: Vec<String> = ["F1", "F2", "F3", "F4", "F5", "F6"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        for (renderer, kind, legacy_effect) in [
+            (
+                Renderer::Pulse {
+                    color: [0, 180, 255],
+                    period_ms: 2000,
+                },
+                SceneKind::Pulse,
+                None,
+            ),
+            (
+                Renderer::Sweep {
+                    color: [0, 180, 255],
+                    period_ms: 600,
+                },
+                SceneKind::Sweep,
+                None,
+            ),
+            (
+                effect(EffectKind::Matrix),
+                SceneKind::Effect,
+                Some(EffectKind::Matrix),
+            ),
+        ] {
+            for as_variant in [false, true] {
+                let mut layer = layer(
+                    "sessions",
+                    renderer.clone(),
+                    Target::Selection {
+                        keys: keys.clone(),
+                        zones: vec![],
+                        groups: vec![],
+                    },
+                );
+                layer.activation = while_state(Some("working"));
+                if as_variant {
+                    let mut appearance = variant("working", layer.activation.clone(), [0; 3]);
+                    appearance.renderer = renderer.clone();
+                    layer.variants.push(appearance);
+                }
+                let mut config = AutomationConfig::default();
+                config
+                    .rules
+                    .push(activation_rule("legacy", &layer.activation).unwrap());
+                config.scenes.insert(
+                    "condition".into(),
+                    Scene {
+                        kind,
+                        effect: legacy_effect,
+                        keys: keys.clone(),
+                        ..Scene::default()
+                    },
+                );
+                let mut legacy = AutomationRuntime::new(config).unwrap();
+                let mut runtime = CompiledSetup::compile(&document(vec![layer])).unwrap();
+                let mut registry = Registry::default();
+                legacy.baseline(&registry.snapshot(), Duration::ZERO);
+                runtime.baseline(&registry.snapshot(), Duration::ZERO);
+                fact(&mut registry, "a", 1, state("working", 5000), 10);
+                for now in [10, 110, 310, 1010, 2010] {
+                    observe(&mut runtime, &mut registry, now);
+                    legacy.observe(
+                        &registry.snapshot(),
+                        &registry.events_since(legacy.event_cursor()),
+                        Duration::from_millis(now),
+                    );
+                    assert_eq!(
+                        runtime.selected_appearance("sessions").unwrap().elapsed,
+                        Some(Duration::from_millis(now - 10))
+                    );
+                    let expected = compositor::compose(
+                        Frame::black(),
+                        &layout,
+                        &legacy.layers(&ctx),
+                        Duration::from_millis(now),
+                    );
+                    assert_eq!(
+                        runtime.render(&ctx, Duration::from_secs(999)),
+                        expected,
+                        "{kind:?} variant={as_variant} now={now}"
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn every_catalog_renderer_keeps_its_actual_renderer_and_default_palette() {

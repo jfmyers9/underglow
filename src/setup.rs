@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SCHEMA_VERSION: u32 = 1;
 pub const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 pub const MAX_LAYERS: usize = 64;
+pub const MAX_BEHAVIOR_VARIANTS: usize = 16;
 pub const MAX_GROUPS: usize = 64;
 pub const MAX_KEYS: usize = 128;
 
@@ -51,6 +52,25 @@ pub struct Layer {
     pub target: Target,
     #[serde(default)]
     pub activation: Activation,
+    /// Mutually exclusive appearances sharing this logical layer's target.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<BehaviorVariant>,
+}
+
+/// Transients outrank persistent variants; within either class the last active
+/// declaration wins. The layer's original appearance is the final fallback.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BehaviorVariant {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    pub activation: Activation,
+    pub renderer: Renderer,
+    /// None inherits the logical layer's brightness (not an extra multiplier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<u8>,
 }
 
 fn enabled() -> bool {
@@ -262,6 +282,26 @@ impl SetupDocument {
             let check = || {
                 layer.renderer.validate()?;
                 layer.activation.validate()?;
+                if layer.variants.len() > MAX_BEHAVIOR_VARIANTS {
+                    return Err("at most 16 behavior variants per layer are supported".into());
+                }
+                let mut variant_ids = BTreeSet::new();
+                for variant in &layer.variants {
+                    if !token(&variant.id)
+                        || !label(&variant.name)
+                        || !variant_ids.insert(&variant.id)
+                    {
+                        return Err("variants require unique bounded IDs and display names".into());
+                    }
+                    variant
+                        .activation
+                        .validate()
+                        .map_err(|e| format!("variant {}: {e}", variant.id))?;
+                    variant
+                        .renderer
+                        .validate()
+                        .map_err(|e| format!("variant {}: {e}", variant.id))?;
+                }
                 if let Target::Selection {
                     zones,
                     keys,
@@ -452,6 +492,129 @@ mod tests {
 
     fn example() -> SetupDocument {
         SetupDocument::from_toml(EXAMPLE).unwrap()
+    }
+
+    fn variant() -> BehaviorVariant {
+        BehaviorVariant {
+            id: "working".into(),
+            name: "Working".into(),
+            enabled: true,
+            activation: Activation::WhileState {
+                source: "custom-source".into(),
+                instance: None,
+                state: Some("working".into()),
+            },
+            renderer: Renderer::Solid { color: [1, 2, 3] },
+            brightness: None,
+        }
+    }
+
+    #[test]
+    fn behavior_variants_roundtrip_and_old_documents_remain_canonical() {
+        let mut doc = example();
+        assert!(doc.layers.iter().all(|layer| layer.variants.is_empty()));
+        assert!(!doc.to_toml().unwrap().contains("variants"));
+        doc.layers[0].variants = vec![
+            variant(),
+            BehaviorVariant {
+                id: "finished".into(),
+                brightness: Some(128),
+                activation: Activation::OnEvent {
+                    source: "custom-source".into(),
+                    instance: Some("session".into()),
+                    event: "finished".into(),
+                    duration_ms: 500,
+                },
+                ..variant()
+            },
+        ];
+        let encoded = doc.to_toml().unwrap();
+        assert_eq!(SetupDocument::from_toml(&encoded).unwrap(), doc);
+        assert_eq!(
+            serde_json::from_str::<SetupDocument>(&serde_json::to_string(&doc).unwrap()).unwrap(),
+            doc
+        );
+        let mut json = serde_json::to_value(&doc).unwrap();
+        json["layers"][0]["variants"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("enabled");
+        assert!(
+            serde_json::from_value::<SetupDocument>(json.clone())
+                .unwrap()
+                .layers[0]
+                .variants[0]
+                .enabled
+        );
+        for field in ["target", "command", "unknown"] {
+            json["layers"][0]["variants"][0][field] = serde_json::json!("forbidden");
+            assert!(serde_json::from_value::<SetupDocument>(json.clone()).is_err());
+            json["layers"][0]["variants"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+        }
+        json["layers"][0]["variants"][0]["brightness"] = serde_json::json!(256);
+        assert!(serde_json::from_value::<SetupDocument>(json).is_err());
+    }
+
+    #[test]
+    fn documented_behavior_setup_is_valid_with_one_editable_status_layer() {
+        let docs = include_str!("../docs/setup-format.md");
+        let example = docs
+            .split("```toml\n")
+            .nth(1)
+            .unwrap()
+            .split("```")
+            .next()
+            .unwrap();
+        let doc = SetupDocument::from_toml(example).unwrap();
+        assert_eq!(doc.layers.len(), 2);
+        assert_eq!(doc.layers[1].variants.len(), 3);
+        assert_eq!(
+            SetupDocument::from_toml(&doc.to_toml().unwrap()).unwrap(),
+            doc
+        );
+    }
+
+    #[test]
+    fn behavior_variants_are_bounded_strict_and_validate_disabled_appearances() {
+        let mut doc = example();
+        doc.layers[0].variants = (0..MAX_BEHAVIOR_VARIANTS)
+            .map(|i| BehaviorVariant {
+                id: format!("v{i}"),
+                ..variant()
+            })
+            .collect();
+        doc.validate().unwrap();
+        doc.layers[0].variants.push(variant());
+        assert!(doc.validate().unwrap_err().contains("16"));
+        doc.layers[0].variants = vec![variant(), variant()];
+        assert!(doc.validate().unwrap_err().contains("unique"));
+        for bad in ["", "not an id", &"x".repeat(129)] {
+            doc.layers[0].variants = vec![BehaviorVariant {
+                id: bad.into(),
+                ..variant()
+            }];
+            assert!(doc.validate().is_err());
+        }
+        doc.layers[0].variants = vec![BehaviorVariant {
+            enabled: false,
+            activation: Activation::OnEvent {
+                source: "custom-source".into(),
+                instance: None,
+                event: "done".into(),
+                duration_ms: 60_001,
+            },
+            ..variant()
+        }];
+        assert!(doc.validate().unwrap_err().contains("duration"));
+        doc.layers[0].variants[0].activation = Activation::Always {};
+        doc.layers[0].variants[0].renderer = Renderer::Pulse {
+            color: [1; 3],
+            period_ms: 0,
+        };
+        assert!(doc.validate().is_err());
     }
 
     #[test]

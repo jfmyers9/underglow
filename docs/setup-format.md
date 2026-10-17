@@ -42,6 +42,11 @@ bounded to 1..1440 focus minutes, 0..1440 break minutes, and 1..100 cycles.
 RGB values require exactly three 0..255 integers. Unsupported fields are errors,
 not silently ignored settings. `Renderer::catalog_id()` connects built-in
 renderers to the existing shared visualization catalog.
+Pulse is a smooth cosine from 64/255 to full intensity over one period. Sweep
+sorts target keys by physical x/y and moves a cyclic four-key fading trail over
+one period, retaining opaque black pixels elsewhere in the target. These reuse
+legacy scene appearances (`period_ms = 2000` for legacy pulse; target key count
+times 100 ms for legacy sweep).
 
 Targets use `kind = "whole"` or `kind = "selection"`. Selections combine `zones`,
 physical `keys`, and named `groups` by union. Empty selections are invalid, never
@@ -68,6 +73,101 @@ this neutral activation/appearance split without connector-specific renderers.
 Editors can use the separate [source capability registry](source-capabilities.md)
 for declared choices and repairable activation warnings; canonical setup
 validation remains source-neutral and retains unknown/offline selectors.
+
+## Logical behavior variants
+
+`variants` defaults to an empty list (omitted when saving an old setup). Each
+strict variant has a stable `id`, editable `name`, `enabled` (default true),
+`activation`, `renderer`, and optional `brightness`. IDs are unique **within the
+logical layer**, not across the setup. Variants inherit the layer's target;
+brightness overrides, rather than multiplies, the layer's value. Disabled
+variants are validated too. There are at most 16 variants per layer, within the
+same 256 KiB input/output document limit; transient durations remain 1..60000 ms.
+
+Exactly one appearance contributes per logical layer per frame:
+
+1. Active `on-event`/`on-transition` variants outrank persistent variants.
+2. Within either class, the **last** active variant in declaration order wins.
+3. If none matches, the original layer renderer is a fallback, gated by the
+   original layer activation. Disabling a layer hides all its variants.
+
+An absent instance selector means **any matching live instance**. Put idle
+before working so any working session beats any number of idle sessions.
+Source names and facts remain generic; no renderer/runtime knows about Pi.
+An always-on fallback deliberately remains visible offline. For a status layer
+that hides offline, use source-presence activation on its fallback as below.
+`Always` variants likewise deliberately remain visible without a source.
+
+Each transient variant has one bounded occurrence slot: a newer matching
+occurrence (from any session) replaces its previous occurrence, not a queue.
+Event IDs/cursors are deduplicated by the existing registry/evaluator. Deadlines
+are computed from receipt/transition time, capped by event/transition lease;
+delayed observations and state heartbeats never restart them. State-backed
+variant events are additionally capped by the emitting session's lease at
+observation and hide if that session disappears, even if another session is
+still connected. Event-only producers use their event lease, without inventing
+persistent state. Expiry is exclusive: an appearance hides at its deadline.
+Transitions need two observed, contiguous states of the same session; first
+appearance, expiry, removal, and same-state renewals are not transitions.
+Resume baselines all variants, discards historical events/transitions and
+restores only currently leased persistent state. Registry failure clears all
+conditional appearances. There is no stale-appearance hold or disconnect latch.
+Legacy standalone automation event lifetime semantics are unchanged.
+
+For example, one editable Pi status item over an arbitrary background:
+
+```toml
+schema_version = 1
+id = "agent-status"
+name = "Agent status"
+
+[[layers]]
+id = "background"
+name = "Background"
+renderer = { kind = "solid", color = [8, 8, 16] }
+target = { kind = "whole" }
+
+[[layers]]
+id = "sessions"
+name = "Agent sessions"
+brightness = 180
+renderer = { kind = "solid", color = [0, 0, 80] }
+target = { kind = "selection", keys = ["F1", "F2"] }
+activation = { kind = "while-state", source = "pi" }
+
+[[layers.variants]]
+id = "idle"
+name = "Idle"
+activation = { kind = "while-state", source = "pi", state = "idle" }
+renderer = { kind = "solid", color = [0, 40, 100] }
+
+[[layers.variants]]
+id = "working"
+name = "Working"
+activation = { kind = "while-state", source = "pi", state = "working" }
+renderer = { kind = "sweep", color = [0, 100, 255], period_ms = 1000 }
+
+[[layers.variants]]
+id = "finished"
+name = "Finished"
+activation = { kind = "on-event", source = "pi", event = "finished", duration_ms = 2000 }
+renderer = { kind = "pulse", color = [0, 255, 80], period_ms = 600 }
+```
+
+The same status item can target any selection or the whole keyboard, and any
+catalog renderer can serve as its background or appearance. Mutually exclusive
+reactive/ripple variants share one logical input-resource budget; two enabled
+logical input-consuming layers are still rejected, even on disjoint targets.
+The engine remains the only SDK owner/RGB writer. Compilation, selection, and
+preview add no acquisition, producer, trust, or automatic-resume path.
+
+`CompiledSetup::selected_appearance(layer_id)` exposes the selected variant ID
+(`None` for fallback), activation, renderer, effective local brightness, and
+occurrence start/deadline. An outer `None` means hidden. This is pre-occlusion
+data for diagnostics/editors; it does not claim a higher stack layer left keys
+visible. `elapsed` is the conditional appearance's evaluator time minus its
+activation start; always-on appearances instead use setup elapsed time. Call
+`observe` on monotonic registry time to update selection, animation and expiry.
 
 ## Validation and safe replacement
 
@@ -107,7 +207,8 @@ settings (or catalog palette defaults) are authoritative.
 
 Pass **unscaled monotonic elapsed** time to `render`/`composition`, not the
 legacy global speed-adjusted `ctx.animation_seconds`. Each decorative layer
-applies its own speed. The binary adapter keeps a separate unscaled clock; focus
+applies its own speed. Conditional appearances use unscaled time since activation,
+not setup age. The binary adapter keeps a separate unscaled clock; focus
 durations, conditions and input simulation are never multiplied by global speed.
 
 `advance_input(dt, keys)` accepts in-memory HID pressure samples;

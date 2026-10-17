@@ -273,6 +273,8 @@ pub struct AutomationRuntime {
     cursor: u64,
     now: Duration,
     initialized: bool,
+    follow_state_leases: bool,
+    leased_identities: Vec<Option<Identity>>,
 }
 
 impl AutomationRuntime {
@@ -287,12 +289,36 @@ impl AutomationRuntime {
             masks,
             activations: vec![None; config.rules.len()],
             matched: vec![false; config.rules.len()],
+            leased_identities: vec![None; config.rules.len()],
             config,
             previous: BTreeMap::new(),
             cursor: 0,
             now: Duration::ZERO,
             initialized: false,
+            follow_state_leases: false,
         })
+    }
+
+    /// Logical behaviors additionally hide state-backed transients on removal.
+    /// Event-only producers continue to use the event's own bounded lease.
+    pub(crate) fn follow_state_leases(mut self) -> Self {
+        self.follow_state_leases = true;
+        self
+    }
+
+    /// Active occurrence timing without rendering a diagnostic placeholder scene.
+    pub fn activation_timing(&self, rule_id: &str) -> Option<(Duration, Option<Duration>)> {
+        self.config
+            .rules
+            .iter()
+            .zip(&self.activations)
+            .find_map(|(rule, active)| {
+                (rule.id == rule_id)
+                    .then_some(active)
+                    .and_then(|a| *a)
+                    .filter(|a| a.expires.is_none_or(|e| self.now < e))
+                    .map(|a| (a.started, a.expires))
+            })
     }
 
     pub fn event_cursor(&self) -> u64 {
@@ -312,8 +338,13 @@ impl AutomationRuntime {
             {
                 self.activations[index] = previous.activations[old];
                 self.matched[index] = previous.matched[old];
+                self.leased_identities[index] = previous.leased_identities[old].clone();
             }
         }
+    }
+
+    pub(crate) fn observed_at(&self) -> Duration {
+        self.now
     }
 
     /// Evaluate a condition without rendering a dummy scene or resolving overlap.
@@ -338,6 +369,7 @@ impl AutomationRuntime {
         self.now = now;
         self.initialized = true;
         self.activations.fill(None);
+        self.leased_identities.fill(None);
         self.matched.fill(false);
         self.previous = Self::states(snapshot, now);
         self.update(
@@ -378,10 +410,22 @@ impl AutomationRuntime {
     ) {
         self.now = now;
         for (index, rule) in self.config.rules.iter().enumerate() {
+            if self.leased_identities[index]
+                .as_ref()
+                .is_some_and(|identity| {
+                    !snapshot
+                        .states
+                        .iter()
+                        .any(|state| state.identity == *identity && state.expires_at > now)
+                })
+            {
+                self.activations[index] = None;
+            }
             if self.activations[index].is_some_and(|a| a.expires.is_some_and(|e| now >= e)) {
                 self.activations[index] = None;
             }
             let mut occurrence = None;
+            let mut occurrence_identity = None;
             self.matched[index] = match rule.mode {
                 RuleMode::WhileState => snapshot.states.iter().any(|s| rule.state_matches(s, now)),
                 RuleMode::OnEvent => {
@@ -393,6 +437,7 @@ impl AutomationRuntime {
                             && rule.event.as_ref() == Some(&event.event)
                         {
                             occurrence = Some((event.received_at, event.expires_at));
+                            occurrence_identity = Some(&event.identity);
                         }
                     }
                     occurrence.is_some()
@@ -413,6 +458,7 @@ impl AutomationRuntime {
                                 && occurrence.is_none_or(|(started, _)| state.updated_at > started)
                             {
                                 occurrence = Some((state.updated_at, state.expires_at));
+                                occurrence_identity = Some(&state.identity);
                             }
                         }
                     }
@@ -429,9 +475,20 @@ impl AutomationRuntime {
                     });
                 }
             } else if let Some((started, lease)) = occurrence {
+                let state_lease = self
+                    .follow_state_leases
+                    .then(|| {
+                        snapshot
+                            .states
+                            .iter()
+                            .find(|state| Some(&state.identity) == occurrence_identity)
+                    })
+                    .flatten();
+                self.leased_identities[index] = state_lease.map(|state| state.identity.clone());
                 let expires = started
                     .saturating_add(Duration::from_millis(rule.duration_ms.unwrap()))
-                    .min(lease);
+                    .min(lease)
+                    .min(state_lease.map_or(Duration::MAX, |state| state.expires_at));
                 if expires > now {
                     self.activations[index] = Some(Activation {
                         started,
@@ -749,6 +806,44 @@ zones = ['function']
         assert!(runtime.activations[1].is_none());
         observe(&mut runtime, &mut registry, 3010);
         assert!(runtime.activations.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn behavior_lease_following_is_opt_in_and_does_not_change_legacy_event_lifetimes() {
+        let mut registry = Registry::default();
+        let mut legacy = AutomationRuntime::new(config()).unwrap();
+        let mut behavior = AutomationRuntime::new(config())
+            .unwrap()
+            .follow_state_leases();
+        legacy.baseline(&registry.snapshot(), ms(0));
+        behavior.baseline(&registry.snapshot(), ms(0));
+        state(&mut registry, "a", 1, "working", 0, 100);
+        publish(
+            &mut registry,
+            "a",
+            2,
+            Payload::Event {
+                event: "finished".into(),
+                ttl_ms: 500,
+            },
+            10,
+        );
+        observe(&mut legacy, &mut registry, 10);
+        observe(&mut behavior, &mut registry, 10);
+        assert_eq!(
+            legacy.activation_timing("finished"),
+            Some((ms(10), Some(ms(510))))
+        );
+        assert_eq!(
+            behavior.activation_timing("finished"),
+            Some((ms(10), Some(ms(100))))
+        );
+        publish(&mut registry, "a", 3, Payload::Remove, 20);
+        observe(&mut legacy, &mut registry, 20);
+        observe(&mut behavior, &mut registry, 20);
+        assert!(legacy.is_active("finished"));
+        assert!(!behavior.is_active("finished"));
+        assert_eq!(behavior.activation_timing("finished"), None);
     }
 
     #[test]
