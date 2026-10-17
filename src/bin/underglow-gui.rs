@@ -1691,6 +1691,111 @@ mod tests {
     }
 
     #[test]
+    fn scenario_controls_never_write_engine_or_change_hardware_enabled_intent() {
+        for enabled in [false, true] {
+            let (mut app, incoming) = controller_fixture();
+            let original = setup_document();
+            app.setup_editor.load(Some(original.clone()));
+            let mut status: Status = serde_json::from_str(STATUS).unwrap();
+            status.enabled = enabled;
+            status.state = if enabled { "active" } else { "paused" }.into();
+            app.status = Some(status);
+            let ctx = egui::Context::default();
+            let render = |app: &mut Controller, events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1100.0, 2200.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| app.show_setup_editor(ui));
+                    },
+                )
+            };
+            let click = |app: &mut Controller, label: &str| {
+                let _ = render(app, vec![]);
+                let output = render(app, vec![]);
+                let pos = output
+                    .shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Text(text) if text.galley.text() == label => {
+                            Some(text.pos + text.galley.size() * 0.5)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing {label}"));
+                for pressed in [true, false] {
+                    let _ = render(
+                        app,
+                        vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: Default::default(),
+                            },
+                        ],
+                    );
+                }
+            };
+            click(&mut app, "Scenario");
+            click(&mut app, "Idle");
+            assert_eq!(
+                app.setup_editor.preview.scenario.snapshot().states[0].state,
+                "idle"
+            );
+            click(&mut app, "Working");
+            assert_eq!(
+                app.setup_editor.preview.scenario.snapshot().states[0].state,
+                "working"
+            );
+            click(&mut app, "Finished (settled, not success)");
+            assert_eq!(
+                app.setup_editor
+                    .preview
+                    .scenario
+                    .events_since(0)
+                    .events
+                    .len(),
+                1
+            );
+            click(&mut app, "Disconnect / remove session");
+            assert!(
+                app.setup_editor
+                    .preview
+                    .scenario
+                    .snapshot()
+                    .states
+                    .is_empty()
+            );
+            click(&mut app, "Reset scenario");
+            assert!(
+                app.setup_editor
+                    .preview
+                    .scenario
+                    .events_since(0)
+                    .events
+                    .is_empty()
+            );
+            click(&mut app, "Return to Live");
+            assert_eq!(app.status.as_ref().unwrap().enabled, enabled);
+            assert_eq!(app.setup_editor.draft.as_ref(), Some(&original));
+            assert_eq!(app.setup_editor.applied.as_ref(), Some(&original));
+            assert!(!app.setup_editor.dirty);
+            assert!(
+                incoming.try_recv().is_err(),
+                "no engine writes, publish, Resume or Save"
+            );
+        }
+    }
+
+    #[test]
     fn canonical_main_page_mounts_inspector_canvas_and_persists_only_explicitly() {
         let (mut app, incoming) = controller_fixture();
         let original = setup_document();

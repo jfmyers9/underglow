@@ -13,7 +13,12 @@ use std::time::{Duration, Instant};
 use underglow::external::{EventBatch, Snapshot};
 use underglow::layer_runtime::CompiledSetup;
 use underglow::render::{Frame, PaletteName, RenderContext};
+use underglow::scenarios::Scenario;
 use underglow::setup::SetupDocument;
+use underglow::source_capabilities::CapabilityRegistry;
+
+#[path = "scenario_controls.rs"]
+mod scenario_controls;
 
 const LIMIT: usize = 512 * 1024;
 const STALE: Duration = Duration::from_millis(750);
@@ -90,7 +95,10 @@ fn request(path: &Path) -> Result<LiveSample, String> {
         if sent < request.len() {
             match stream.write(&request[sent..]) {
                 Ok(0) => return Err("Source connection closed".into()),
-                Ok(n) => sent += n,
+                Ok(n) => {
+                    sent += n;
+                    continue;
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e.to_string()),
             }
@@ -103,7 +111,8 @@ fn request(path: &Path) -> Result<LiveSample, String> {
                     if bytes.len() > LIMIT {
                         return Err("Source snapshot too large".into());
                     }
-                    if let Some(end) = bytes.iter().position(|b| *b == b'\n') {
+                    if let Some(offset) = chunk[..n].iter().position(|b| *b == b'\n') {
+                        let end = bytes.len() - n + offset;
                         let current = std::fs::metadata(path).map_err(|e| e.to_string())?;
                         if generation != (current.dev(), current.ino()) {
                             return Err("Source engine restarted".into());
@@ -112,6 +121,9 @@ fn request(path: &Path) -> Result<LiveSample, String> {
                         sample.generation = generation;
                         return Ok(sample);
                     }
+                    // Drain ready bytes without artificial sleeps or repeatedly
+                    // scanning the accumulated response. Keep the total deadline.
+                    continue;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e.to_string()),
@@ -172,6 +184,7 @@ pub enum Mode {
     #[default]
     Live,
     InputDemo,
+    Scenario,
 }
 
 pub struct Preview {
@@ -180,6 +193,10 @@ pub struct Preview {
     frame: Frame,
     sample: Option<LiveSample>,
     pub mode: Mode,
+    pub scenario: Scenario,
+    controls: scenario_controls::Controls,
+    scenario_tick: Option<Instant>,
+    last_scenario_generation: u64,
     previous_mode: Mode,
     started: Instant,
     last_tick: Option<u32>,
@@ -196,6 +213,10 @@ impl Default for Preview {
             frame: Frame::black(),
             sample: None,
             mode: Mode::Live,
+            scenario: Scenario::default(),
+            controls: scenario_controls::Controls::default(),
+            scenario_tick: None,
+            last_scenario_generation: 0,
             previous_mode: Mode::Live,
             started: Instant::now(),
             last_tick: None,
@@ -207,6 +228,66 @@ impl Default for Preview {
     }
 }
 impl Preview {
+    // Host metadata binding is mounted by the independent behavior editor.
+    #[allow(dead_code)]
+    pub fn set_capabilities(&mut self, capabilities: CapabilityRegistry) {
+        self.controls.capabilities = capabilities;
+    }
+
+    pub fn set_mode(&mut self, mode: Mode) {
+        if mode != self.mode {
+            self.reset_scenario();
+            self.mode = mode;
+            self.baseline = true;
+        }
+    }
+
+    pub fn reset_scenario(&mut self) {
+        self.scenario.reset();
+        self.scenario_tick = None;
+        self.baseline = true;
+    }
+
+    /// Pure controls: no engine intent or command channel is available here.
+    pub fn show_controls(&mut self, ui: &mut egui::Ui) {
+        let mut mode = self.mode;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Composition preview:");
+            ui.selectable_value(&mut mode, Mode::Live, "Live facts");
+            ui.selectable_value(&mut mode, Mode::InputDemo, "Isolated input demo");
+            ui.selectable_value(&mut mode, Mode::Scenario, "Scenario");
+        });
+        self.set_mode(mode);
+        match self.mode {
+            Mode::Live => {
+                ui.small(if self.sample().is_some_and(|s| !s.is_stale()) {
+                    "Read-only live facts · physical input unavailable · no hardware output"
+                } else {
+                    "Live facts disconnected/stale · conditional layers hidden · no hardware output"
+                });
+            }
+            Mode::InputDemo => {
+                ui.small(
+                    "Private simulated keystrokes only · no live source facts or provider activity",
+                );
+            }
+            Mode::Scenario => {
+                ui.strong("Scenario · isolated source facts · no hardware output");
+                ui.horizontal(|ui| {
+                    if ui.button("Reset scenario").clicked() {
+                        self.reset_scenario();
+                    }
+                    if ui.button("Return to Live").clicked() {
+                        self.set_mode(Mode::Live);
+                    }
+                });
+                if self.mode == Mode::Scenario {
+                    self.controls.show(ui, &mut self.scenario);
+                }
+            }
+        }
+    }
+
     pub fn runtime(&self) -> Option<&CompiledSetup> {
         self.runtime.as_ref()
     }
@@ -226,6 +307,17 @@ impl Preview {
     }
 
     pub fn update(&mut self, document: Option<&SetupDocument>, brightness: u8) {
+        let tick = Instant::now();
+        if self.mode == Mode::Scenario {
+            if let Some(previous) = self.scenario_tick
+                && let Err(error) = self.scenario.advance_by(tick.duration_since(previous))
+            {
+                self.error = Some(error.to_string());
+            }
+            self.scenario_tick = Some(tick);
+        } else {
+            self.scenario_tick = None;
+        }
         if document.map(|d| &d.id) != self.document.as_ref().map(|d| &d.id) {
             self.started = Instant::now();
             self.last_tick = None;
@@ -237,6 +329,9 @@ impl Preview {
     }
 
     fn update_at(&mut self, document: Option<&SetupDocument>, brightness: u8, elapsed: Duration) {
+        if self.previous_mode == Mode::Scenario && self.mode != Mode::Scenario {
+            self.scenario.reset();
+        }
         let snapshot = self
             .sample
             .as_ref()
@@ -251,13 +346,21 @@ impl Preview {
             gap: false,
             events: vec![],
         };
-        let (facts, events, now) = snapshot.map_or((&empty, &empty_events, elapsed), |s| {
-            (&s.snapshot, &s.events, s.extrapolated_now())
-        });
+        let synthetic = self.scenario.snapshot();
+        let synthetic_events = self.scenario.events_since(0);
+        let (facts, events, now) = if self.mode == Mode::Scenario {
+            (&synthetic, &synthetic_events, self.scenario.now())
+        } else {
+            snapshot.map_or((&empty, &empty_events, elapsed), |s| {
+                (&s.snapshot, &s.events, s.extrapolated_now())
+            })
+        };
         let changed_mode = self.previous_mode != self.mode;
         let generation = snapshot.map(|s| s.generation);
         if changed_mode
-            || snapshot.is_none()
+            || (self.mode == Mode::Scenario
+                && self.scenario.generation() != self.last_scenario_generation)
+            || (snapshot.is_none() && self.mode != Mode::Scenario)
             || now < self.last_source_now
             || generation != self.last_generation
             || snapshot.is_some_and(|s| {
@@ -314,8 +417,9 @@ impl Preview {
             runtime.observe(facts, events, now);
         }
         // A stale connection baselines again on recovery. No past events replay.
-        self.baseline = snapshot.is_none();
+        self.baseline = snapshot.is_none() && self.mode != Mode::Scenario;
         self.previous_mode = self.mode;
+        self.last_scenario_generation = self.scenario.generation();
         self.last_source_now = now;
         self.last_generation = generation;
         let tick = (elapsed.as_secs_f64() * 30.0) as u32;
@@ -352,6 +456,221 @@ mod tests {
     use super::*;
     use underglow::external::{Limits, Message, Payload, Registry};
     use underglow::render::Color;
+
+    fn conditional_document() -> SetupDocument {
+        serde_json::from_value(serde_json::json!({"schema_version":1,"id":"scenario","name":"Generic scenario","layers":[
+            {"id":"background","name":"Background","renderer":{"kind":"solid","color":[8,8,16]},"target":{"kind":"whole"}},
+            {"id":"status","name":"Status","renderer":{"kind":"solid","color":[0,20,40]},"target":{"kind":"whole"},"activation":{"kind":"while-state","source":"custom"},"variants":[
+                {"id":"busy","name":"Busy","activation":{"kind":"while-state","source":"custom","state":"busy"},"renderer":{"kind":"solid","color":[0,0,255]}},
+                {"id":"done","name":"Done","activation":{"kind":"on-event","source":"custom","event":"done","duration_ms":1000},"renderer":{"kind":"solid","color":[0,255,0]}}
+            ]}
+        ]})).unwrap()
+    }
+
+    #[test]
+    fn synthetic_facts_use_real_evaluator_and_compositor_without_mixing_live_sample() {
+        let doc = conditional_document();
+        let mut live = Registry::default();
+        event(&mut live, 999, 0);
+        live.apply(
+            Message {
+                schema_version: 1,
+                source: "custom".into(),
+                instance: "real-session".into(),
+                sequence: 1,
+                payload: Payload::State {
+                    state: "busy".into(),
+                    ttl_ms: 10_000,
+                },
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+        let raw = sample(&live, 0);
+        let original = (raw.snapshot.clone(), raw.events.clone());
+        let mut preview = Preview::default();
+        preview.set_sample(Some(raw));
+        preview.set_mode(Mode::Scenario);
+        preview.update_at(Some(&doc), 255, Duration::ZERO);
+        assert_eq!(
+            color(&preview, "A"),
+            Color::new(8, 8, 16),
+            "matching live state cannot leak into Scenario"
+        );
+        let mut pure = CompiledSetup::compile(&doc).unwrap();
+        pure.baseline(&preview.scenario.snapshot(), Duration::ZERO);
+        for (now, state, emit) in [
+            (0, "idle", false),
+            (100, "busy", false),
+            (200, "idle", true),
+        ] {
+            preview
+                .scenario
+                .advance_to(Duration::from_millis(now))
+                .unwrap();
+            preview
+                .scenario
+                .publish_state("custom", "scenario-session", state, 1000)
+                .unwrap();
+            if emit {
+                preview
+                    .scenario
+                    .publish_event("custom", "scenario-session", "done", 1000)
+                    .unwrap();
+            }
+            pure.observe(
+                &preview.scenario.snapshot(),
+                &preview.scenario.events_since(0),
+                preview.scenario.now(),
+            );
+            let elapsed = Duration::from_millis(now);
+            preview.update_at(Some(&doc), 255, elapsed);
+            assert_eq!(
+                preview.frame().as_bytes(),
+                expected(&pure, elapsed, 255).as_bytes()
+            );
+        }
+        assert_eq!(color(&preview, "A"), Color::new(0, 255, 0));
+        preview
+            .scenario
+            .remove("custom", "scenario-session")
+            .unwrap();
+        preview.update_at(Some(&doc), 255, Duration::from_millis(200));
+        assert_eq!(color(&preview, "A"), Color::new(8, 8, 16));
+        assert_eq!(preview.sample().unwrap().snapshot, original.0);
+        assert_eq!(preview.sample().unwrap().events, original.1);
+        assert_eq!(live.snapshot(), original.0);
+        assert_eq!(live.events_since(0), original.1);
+        preview
+            .scenario
+            .publish_state("custom", "short-session", "busy", 100)
+            .unwrap();
+        preview.update_at(Some(&doc), 255, Duration::from_millis(200));
+        assert_eq!(color(&preview, "A"), Color::new(0, 0, 255));
+        preview
+            .scenario
+            .advance_by(Duration::from_millis(100))
+            .unwrap();
+        preview.update_at(Some(&doc), 255, Duration::from_millis(300));
+        assert_eq!(
+            color(&preview, "A"),
+            Color::new(8, 8, 16),
+            "exclusive state lease expiry"
+        );
+    }
+
+    #[test]
+    fn scenario_reset_save_discard_reload_and_return_live_do_not_replay_completions() {
+        let mut doc = conditional_document();
+        // Both live and synthetic contexts deliberately use the same selectors.
+        let mut live = Registry::default();
+        live.apply(
+            Message {
+                schema_version: 1,
+                source: "custom".into(),
+                instance: "scenario-session".into(),
+                sequence: 1,
+                payload: Payload::Event {
+                    event: "done".into(),
+                    ttl_ms: 10_000,
+                },
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+        let mut preview = Preview::default();
+        preview.set_sample(Some(sample(&live, 0)));
+        preview.set_mode(Mode::Scenario);
+        preview.update_at(Some(&doc), 255, Duration::ZERO);
+        for index in 0..3 {
+            preview
+                .scenario
+                .publish_event("custom", "scenario-session", "done", 10_000)
+                .unwrap();
+            preview.update_at(Some(&doc), 255, Duration::ZERO);
+            assert_eq!(color(&preview, "A"), Color::new(0, 255, 0));
+            preview.rebaseline(); // Save / Discard / reload hook.
+            if index == 2 {
+                doc.name = "Reloaded".into();
+            }
+            preview.update_at(Some(&doc), 255, Duration::ZERO);
+            assert_eq!(color(&preview, "A"), Color::new(8, 8, 16));
+        }
+        preview.reset_scenario();
+        preview.update_at(Some(&doc), 255, Duration::ZERO);
+        assert_eq!(preview.scenario.snapshot().event_cursor, 0);
+        preview
+            .scenario
+            .publish_event("custom", "scenario-session", "done", 10_000)
+            .unwrap();
+        preview.update_at(Some(&doc), 255, Duration::ZERO);
+        assert_eq!(color(&preview, "A"), Color::new(0, 255, 0));
+        // Direct library reset (as future scenario controls may use) must also
+        // reset evaluator history even when clock and event cursor coincide.
+        preview.scenario.reset();
+        preview
+            .scenario
+            .publish_event("custom", "scenario-session", "done", 10_000)
+            .unwrap();
+        preview.update_at(Some(&doc), 255, Duration::ZERO);
+        assert_eq!(color(&preview, "A"), Color::new(8, 8, 16));
+        preview.set_mode(Mode::Live);
+        preview.update_at(Some(&doc), 255, Duration::ZERO);
+        assert_eq!(
+            color(&preview, "A"),
+            Color::new(8, 8, 16),
+            "old real event must not replay"
+        );
+        assert!(preview.scenario.events_since(0).events.is_empty());
+        preview.set_mode(Mode::Scenario);
+        preview.update_at(Some(&doc), 255, Duration::ZERO);
+        assert_eq!(color(&preview, "A"), Color::new(8, 8, 16));
+    }
+
+    #[test]
+    fn capability_driven_controls_offer_custom_not_pi_only_facts() {
+        let mut descriptor = underglow::source_capabilities::pi_descriptor();
+        descriptor.source = "custom".into();
+        descriptor.display_name = "Custom source".into();
+        descriptor.states[0].id = "resting".into();
+        descriptor.states[0].label = "Resting custom".into();
+        descriptor.states[1].id = "busy".into();
+        descriptor.states[1].label = "Busy custom".into();
+        descriptor.events[0].id = "done".into();
+        descriptor.events[0].label = "Done custom".into();
+        let mut capabilities = CapabilityRegistry::new();
+        capabilities.insert(descriptor).unwrap();
+        let mut preview = Preview::default();
+        preview.set_capabilities(capabilities);
+        preview.set_mode(Mode::Scenario);
+        let ctx = egui::Context::default();
+        let output = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| preview.show_controls(ui));
+        });
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        for label in [
+            "Custom source",
+            "Resting custom",
+            "Busy custom",
+            "Done custom",
+            "Scenario · isolated source facts · no hardware output",
+            "Reset scenario",
+            "Return to Live",
+        ] {
+            assert!(
+                labels.iter().any(|text| text == label),
+                "missing {label}: {labels:?}"
+            );
+        }
+        assert!(!labels.iter().any(|label| label == "Pi sessions"));
+    }
 
     fn document() -> SetupDocument {
         serde_json::from_value(serde_json::json!({"schema_version":1,"id":"preview","name":"Preview","layers":[
@@ -571,11 +890,16 @@ mod tests {
     #[test]
     fn readonly_inspection_has_total_deadline_and_never_sends_publish_or_control() {
         use std::os::unix::net::UnixListener;
+        struct SocketPath(PathBuf);
+        impl Drop for SocketPath {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
         for oversized in [false, true] {
-            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-                ".jim23-source-{}-{oversized}.sock",
-                std::process::id()
-            ));
+            let path = std::env::temp_dir()
+                .join(format!("ug-source-{}-{oversized}.sock", std::process::id()));
+            let _cleanup = SocketPath(path.clone());
             let listener = UnixListener::bind(&path).unwrap();
             let server = thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
@@ -606,7 +930,6 @@ mod tests {
                 "{error}"
             );
             server.join().unwrap();
-            std::fs::remove_file(path).unwrap();
         }
     }
 

@@ -14,6 +14,7 @@ pub mod layout;
 pub mod reactive;
 pub mod render;
 pub mod ripple;
+pub mod scenarios;
 pub mod scenes;
 pub mod setup;
 pub mod setup_edits;

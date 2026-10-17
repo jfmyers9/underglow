@@ -277,6 +277,48 @@ mode changes, stale recovery, and endpoint generation changes baseline event
 cursors so old completions cannot replay. Ordinary scoped edits preserve unchanged
 runtime state through `CompiledSetup::reconfigure`.
 
+### Isolated source scenarios
+
+**Scenario** supplies private external-v1 facts to that same draft evaluator and
+compositor, with no keyboard, Pi session, provider, or live engine required. The
+source picker and state/event buttons come from declared source capabilities,
+not renderer names. Pi offers Idle, Working, and Finished (an occurrence, not
+success). Custom descriptors offer their own vocabulary. Disconnected means
+remove/expire presence, never an invented `disconnected` state.
+
+Choose a session identity (default `scenario-session`), TTL, and a state or event.
+Change identity and publish another state to test independent session leases;
+any-instance conditions aggregate sessions, exact conditions select one. The
+initial controls edit one source at a time; choosing another source clears the
+previous scenario. State does not renew automatically: local monotonic time
+continues running, so short TTLs demonstrate expiry. Events neither renew state
+nor imply successful completion. Removal drops state but preserves leased events
+according to the existing evaluator semantics. Descriptor TTL ranges describe
+real producer output; test TTLs use the registry's bounded 1..300000 ms range.
+Invalid identifiers/TTLs are rejected without changing synthetic facts, leaving
+the input editable for repair.
+
+The Scenario badge remains visible. **Reset scenario** clears synthetic facts,
+sequences, event cursors and deadlines. **Return to Live** does the same and
+baselines the latest real snapshot without replaying historical completions.
+Save/Discard/reload also baseline event history. Real `LiveSample` snapshots and
+event batches are retained unchanged and never mixed into Scenario. Isolated
+input demo remains a separate mode; scenario facts do not imply fake keypresses.
+No scenario action publishes to IPC, writes the engine, changes saved drafts or
+hardware-enabled intent, starts a producer, acquires SDK ownership, or resumes
+lighting. Physical activation still requires explicit Resume.
+
+`underglow::scenarios::Scenario` is a pure private `external::Registry` wrapper.
+It exposes `publish_state`, `publish_event`, `remove`, typed `apply(Message)`,
+`advance_to`/`advance_by(Duration)`, `now`, `limits`, `snapshot`, non-draining
+`events_since(cursor)`, `generation` (reset identity), and `reset`. Its own
+sequence generator is shared across all message kinds and source/session
+identities, independent of live producers.
+Manual typed messages use schema 1 and the same protocol bounds. Time is injected
+and cannot go backwards; errors do not consume sequences or mutate facts. Each
+preview owns its own registry and compiled runtime. This library supports multiple
+independent sources/sessions for deterministic tests and future richer controls.
+
 ## Atomic engine edits
 
 `control setup show` returns `setup: {revision, document}` without migration or

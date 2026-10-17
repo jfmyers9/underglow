@@ -454,6 +454,7 @@ fn fresh_id(prefix: &str) -> String {
 impl Editor {
     /// Declarative metadata from Connections; never starts a producer or grants trust.
     pub fn set_capabilities(&mut self, registry: CapabilityRegistry) {
+        self.preview.set_capabilities(registry.clone());
         self.capabilities = Some(registry);
     }
 
@@ -639,33 +640,7 @@ impl Editor {
             }
         ));
         ui.small("Stack order: bottom → top. Later layers cover earlier layers on their targets.");
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Composition preview:");
-            ui.selectable_value(
-                &mut self.preview.mode,
-                setup_preview::Mode::Live,
-                "Live facts",
-            );
-            ui.selectable_value(
-                &mut self.preview.mode,
-                setup_preview::Mode::InputDemo,
-                "Isolated input demo",
-            );
-        });
-        match self.preview.mode {
-            setup_preview::Mode::Live => {
-                ui.small(if self.preview.sample().is_some_and(|s| !s.is_stale()) {
-                    "Read-only live facts · physical input unavailable · no hardware output"
-                } else {
-                    "Live facts disconnected/stale · conditional layers hidden · no hardware output"
-                });
-            }
-            setup_preview::Mode::InputDemo => {
-                ui.small(
-                    "Private simulated keystrokes only · no live source facts or provider activity",
-                );
-            }
-        }
+        self.preview.show_controls(ui);
         self.preview
             .update(self.draft.as_ref(), self.preview_brightness.unwrap_or(255));
         if self.preview.mode == setup_preview::Mode::Live
