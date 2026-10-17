@@ -14,6 +14,9 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 const PRODUCER: &str = r#"
 import json, os, subprocess, sys, time, uuid
 mode, path, source = sys.argv[1:]
+if mode == 'env-cwd':
+    with open(path + '.context', 'w') as f:
+        json.dump(dict(cwd=os.getcwd(), token=os.environ.get('UG_REVIEW_TOKEN')), f)
 with open(path + '.starts', 'a') as f: f.write(str(time.monotonic()) + '\n')
 descendant = None
 if mode in ('descendants', 'exit-descendants'):
@@ -699,4 +702,55 @@ fn descriptor_only_edits_preserve_pid_and_missing_bindings_remain_repairable() {
         shown["setup"]["document"]["layers"][1]["activation"]["source"],
         "missing"
     );
+}
+
+#[test]
+fn reviewed_argv_environment_and_directory_enable_disable_remain_paused() {
+    let mut h = Harness::new();
+    h.start(&h.config("focus", "env-cwd", false, false, 0));
+    let mut registry =
+        h.cli(&["control", "connections", "show"])["connections"]["registry"].clone();
+    let mut untrusted = registry.clone();
+    untrusted["connections"][1]["producer"]["enabled"] = serde_json::json!(true);
+    h.connections_input(&untrusted.to_string(), "0", false);
+    assert!(!h.dir.join("focus").exists());
+    let cwd = h.dir.join("reviewed directory");
+    fs::create_dir(&cwd).unwrap();
+    let config = &mut registry["connections"][1]["producer"];
+    config["env"] = serde_json::json!({"UG_REVIEW_TOKEN":"private reviewed value"});
+    config["working_dir"] = serde_json::json!(cwd);
+    config["trusted"] = serde_json::json!(true);
+    let saved = h.connections_input(&registry.to_string(), "0", true);
+    assert_eq!(saved["status"]["state"], "paused");
+    assert!(
+        !h.dir.join("focus").exists(),
+        "review/save cannot start a disabled producer"
+    );
+    let mut enabled = saved["connections"]["registry"].clone();
+    enabled["connections"][1]["producer"]["enabled"] = serde_json::json!(true);
+    h.connections_input(&enabled.to_string(), "1", true);
+    let running = h.wait_health("focus", |v| v["healthy"] == true);
+    let evidence: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("focus.context")).unwrap()).unwrap();
+    assert_eq!(
+        evidence["cwd"],
+        serde_json::json!(fs::canonicalize(cwd).unwrap())
+    );
+    assert_eq!(evidence["token"], "private reviewed value");
+    // A stale disable must not alter the process or registry.
+    enabled["connections"][1]["producer"]["enabled"] = serde_json::json!(false);
+    h.connections_input(&enabled.to_string(), "1", false);
+    assert_eq!(
+        h.wait_health("focus", |v| v["healthy"] == true)["pid"],
+        running["pid"]
+    );
+    let mut disabled =
+        h.cli(&["control", "connections", "show"])["connections"]["registry"].clone();
+    disabled["connections"][1]["producer"]["enabled"] = serde_json::json!(false);
+    h.connections_input(&disabled.to_string(), "2", true);
+    h.wait_health("focus", |v| {
+        v["state"] == "disabled" && v["running"] == false
+    });
+    assert_eq!(h.cli(&["control", "status"])["status"]["state"], "paused");
+    assert!(!h.dir.join("runtime/hardware.lock").exists());
 }

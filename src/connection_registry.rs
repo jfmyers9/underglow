@@ -2,7 +2,7 @@
 use crate::setup::{Activation, SetupDocument};
 use crate::source_capabilities::{self, CapabilityRegistry, SourceDescriptor};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_REGISTRY_BYTES: usize = 256 * 1024;
 pub const SCHEMA_VERSION: u32 = 1;
@@ -13,6 +13,11 @@ pub struct ConnectorConfig {
     pub id: String,
     pub source: String,
     pub command: Vec<String>,
+    /// Explicit overrides only; inherited environment is otherwise unchanged.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
     pub enabled: bool,
     pub trusted: bool,
     pub restart_initial_ms: u64,
@@ -27,6 +32,8 @@ impl Default for ConnectorConfig {
             id: String::new(),
             source: String::new(),
             command: Vec::new(),
+            env: BTreeMap::new(),
+            working_dir: None,
             enabled: false,
             trusted: false,
             restart_initial_ms: 1000,
@@ -71,6 +78,25 @@ pub fn validate_producers(configs: &[ConnectorConfig]) -> Result<(), String> {
                 "connector {} requires a bounded nonempty argv command (64 arguments / 16 KiB maximum)",
                 c.id
             ));
+        }
+        if c.env.len() > 64
+            || c.env.iter().any(|(key, value)| {
+                key.is_empty() || key.contains(['=', '\0']) || value.contains('\0')
+            })
+            || c.env.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>() > 16384
+        {
+            return Err(
+                "producer environment requires valid keys/values (64 entries / 16 KiB maximum)"
+                    .into(),
+            );
+        }
+        if c.working_dir
+            .as_ref()
+            .is_some_and(|path| path.is_empty() || path.len() > 4096 || path.contains('\0'))
+        {
+            return Err(
+                "producer working directory must be nonempty and at most 4096 bytes".into(),
+            );
         }
         if !(250..=60000).contains(&c.restart_initial_ms)
             || !(c.restart_initial_ms..=300000).contains(&c.restart_max_ms)

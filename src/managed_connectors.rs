@@ -157,8 +157,12 @@ impl Process {
         stdout.set_nonblocking(true)?;
         // A socketpair is a bounded stdout transport without blocking reader threads
         // or platform-specific fcntl constants. The child endpoint stays blocking.
-        let child = Command::new(&config.command[0])
-            .args(&config.command[1..])
+        let mut command = Command::new(&config.command[0]);
+        command.args(&config.command[1..]).envs(&config.env);
+        if let Some(directory) = &config.working_dir {
+            command.current_dir(directory);
+        }
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::from(OwnedFd::from(peer)))
             .stderr(Stdio::null())

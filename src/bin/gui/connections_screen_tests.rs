@@ -15,7 +15,7 @@ fn report() -> String {
     }];
     serde_json::json!({"ok":true,"connections":{
         "registry":{"schema_version":1,"revision":7,"connections":[
-            {"descriptor":descriptor,"producer":{"enabled":true,"trusted":true,"command":["SECRET_ARGV"],"env":{"TOKEN":"SECRET_ENV"}}},
+            {"descriptor":descriptor,"producer":{"id":"custom-producer","source":"custom","enabled":true,"trusted":true,"command":["SECRET_ARGV"],"env":{"TOKEN":"SECRET_ENV"}}},
             {"descriptor":pi_descriptor()}]},
         "runtime_index":{"custom":{"kind":"managed","producer":{"state":"running","running":true,"healthy":true,"restarts":3,
             "last_message_age_ms":200,"retry_in_ms":null,"last_error":"Malformed protocol message"}},
@@ -262,7 +262,7 @@ fn partial_health_failure_retains_registry_and_facts_without_generic_lighting_er
             busy: false,
         },
     );
-    assert!(text.contains("Connection health: health transport timed out"));
+    assert!(text.contains("Connection health: Connections request failed"));
     assert!(text.contains("Build monitor"));
     assert!(text.contains("Application state: Fresh"));
     assert!(text.contains("values below are last known"));
@@ -270,6 +270,38 @@ fn partial_health_failure_retains_registry_and_facts_without_generic_lighting_er
     assert!(panel.report.is_some());
 }
 
+#[test]
+fn polling_and_rejected_stale_writes_preserve_private_draft_and_last_saved_registry() {
+    let mut panel = Panel::default();
+    panel.receive_report(Ok(report()));
+    let original = panel.registry().unwrap().clone();
+    panel.producer_editor().open(&original, "custom");
+    let mut body: serde_json::Value = serde_json::from_str(&report()).unwrap();
+    body["connections"]["registry"]["revision"] = 8.into();
+    body["connections"]["registry"]["connections"][0]["producer"]["command"] =
+        serde_json::json!(["NEW_PRIVATE_ARGV"]);
+    panel.receive_report(Ok(body.to_string()));
+    let saved = panel.registry().unwrap().clone();
+    assert_eq!(saved.revision, 8);
+    panel.receive_replacement(&original, Ok(serde_json::json!({"ok":false,"error":"SECRET_ENV","connections":{"registry":original,"runtime_index":{}}}).to_string()));
+    assert_eq!(panel.registry(), Some(&saved));
+    let view = View {
+        sample: None,
+        setup: None,
+        runtime: None,
+        connected: true,
+        busy: false,
+    };
+    let text = draw(&mut panel, view);
+    assert!(text.contains("Private draft"));
+    assert!(text.contains("base revision 7"));
+    assert!(text.contains("Registry changed"));
+    assert!(!text.contains("SECRET") && !text.contains("NEW_PRIVATE_ARGV"));
+    // A mismatched success envelope must not replace the last confirmed registry.
+    panel.receive_replacement(&saved, Ok(report()));
+    assert_eq!(panel.registry(), Some(&saved));
+    assert!(draw(&mut panel, view).contains("Private draft"));
+}
 #[test]
 fn control_transport_failure_does_not_hide_independently_fresh_facts() {
     let mut panel = Panel::default();

@@ -1,8 +1,11 @@
-//! Read-only Connections page. The host supplies facts; this component owns no I/O.
+//! Connections page. The host supplies facts and applies explicit intents; no I/O here.
+#[path = "producer_editor.rs"]
+pub mod producer_editor;
 use eframe::egui;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
+use underglow::connection_registry::{Connection, ConnectionRegistry};
 use underglow::external::{EventBatch, EventSnapshot, Identity, Snapshot, StateSnapshot};
 use underglow::layer_runtime::CompiledSetup;
 use underglow::setup::{Activation, SetupDocument};
@@ -11,28 +14,12 @@ use underglow::source_capabilities::SourceDescriptor;
 const MAX_REPORT_BYTES: usize = 512 * 1024;
 const MAX_HISTORY: usize = 256;
 
-/// Deliberately excludes executable argv/env, even when the response contains them.
+/// Secret-bearing registry stays private to Connections, never generic diagnostics.
 #[derive(Deserialize)]
 struct Report {
-    registry: Registry,
+    registry: ConnectionRegistry,
     #[serde(default)]
     runtime_index: BTreeMap<String, Runtime>,
-}
-#[derive(Deserialize)]
-struct Registry {
-    schema_version: u32,
-    revision: u64,
-    connections: Vec<Connection>,
-}
-#[derive(Deserialize)]
-struct Connection {
-    descriptor: SourceDescriptor,
-    producer: Option<ProducerIntent>,
-}
-#[derive(Deserialize)]
-struct ProducerIntent {
-    enabled: bool,
-    trusted: bool,
 }
 #[derive(Deserialize)]
 struct Runtime {
@@ -73,11 +60,16 @@ pub struct View<'a> {
 pub enum Request {
     Refresh,
     OpenLayer(String),
+    Replace {
+        revision: u64,
+        registry: ConnectionRegistry,
+    },
 }
 
 #[derive(Default)]
 pub struct Panel {
     report: Option<Report>,
+    producer_editor: producer_editor::Editor,
     captured: Option<Instant>,
     error: Option<String>,
     generation: Option<(u64, u64)>,
@@ -86,6 +78,38 @@ pub struct Panel {
 }
 
 impl Panel {
+    /// Machine-local data: do not log or copy this into setup/manifest exports.
+    pub fn registry(&self) -> Option<&ConnectionRegistry> {
+        self.report.as_ref().map(|report| &report.registry)
+    }
+
+    #[allow(dead_code)] // Extension point for metadata registration/binding repair.
+    pub fn producer_editor(&mut self) -> &mut producer_editor::Editor {
+        &mut self.producer_editor
+    }
+
+    pub fn receive_replacement(
+        &mut self,
+        submitted: &ConnectionRegistry,
+        result: Result<String, String>,
+    ) {
+        let previous = self.report.take();
+        let previous_captured = self.captured;
+        self.receive_report(result);
+        if self.error.is_none()
+            && submitted.revision.checked_add(1).is_some_and(|revision| {
+                let mut expected = submitted.clone();
+                expected.revision = revision;
+                self.registry() == Some(&expected)
+            })
+        {
+            self.producer_editor.accept_saved(submitted);
+        } else {
+            self.report = previous;
+            self.captured = previous_captured;
+            self.error = Some("Connections write rejected or unconfirmed; last saved registry and private draft retained. Refresh before retrying.".into());
+        }
+    }
     /// Metadata-only handoff for condition forms; never exposes producer trust/argv.
     pub fn has_report(&self) -> bool {
         self.report.is_some()
@@ -110,7 +134,7 @@ impl Panel {
                 ok: bool,
                 connections: Option<Report>,
             }
-            let reply: Reply = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+            let reply: Reply = serde_json::from_str(&body).map_err(|_| "Invalid connection response (private details withheld)".to_string())?;
             if !reply.ok {
                 return Err(
                     "Connections unavailable; check engine connectivity and refresh".into(),
@@ -119,16 +143,7 @@ impl Panel {
             let report = reply
                 .connections
                 .ok_or("Engine returned no connection registry")?;
-            if report.registry.schema_version != 1 || report.registry.connections.len() > 32 {
-                return Err("Unsupported connection registry".into());
-            }
-            let mut sources = BTreeSet::new();
-            for connection in &report.registry.connections {
-                connection.descriptor.validate()?;
-                if !sources.insert(&connection.descriptor.source) {
-                    return Err("Duplicate source identity".into());
-                }
-            }
+            report.registry.validate().map_err(|_| "Invalid connection registry (private details withheld)".to_string())?;
             Ok(report)
         }) {
             Ok(report) => {
@@ -136,7 +151,8 @@ impl Panel {
                 self.captured = Some(Instant::now());
                 self.error = None;
             }
-            Err(error) => self.error = Some(error),
+            // Transport stderr/replies may contain argv/env. Never echo them.
+            Err(_) => self.error = Some("Connections request failed; last saved registry and private draft retained. Refresh to check connectivity/revision.".into()),
         }
     }
 
@@ -183,7 +199,7 @@ impl Panel {
         ui.heading("Connections");
         ui.label("Connectors provide facts. Layers turn those facts into visuals.");
         ui.small(
-            "Read-only inspection: no producers are started and lighting is never resumed here.",
+            "Inspection never starts producers. Explicit controls below change process intent, never resume lighting.",
         );
         if ui
             .add_enabled(!view.busy, egui::Button::new("Refresh connections"))
@@ -303,6 +319,18 @@ impl Panel {
                 });
             });
         }
+        if let Some(report) = &self.report
+            && let Some(replacement) = self.producer_editor.show(
+                ui,
+                &report.registry,
+                view.connected && !view.busy && self.error.is_none(),
+            )
+        {
+            request = Some(Request::Replace {
+                revision: replacement.revision,
+                registry: replacement.registry,
+            });
+        }
         request
     }
 }
@@ -362,15 +390,15 @@ fn show_process(
                 "Last valid connector message {ms}ms before health capture"
             ));
         }
-        if let Some(error) = &health.last_error {
-            ui.label(format!("Connector error: {error}"));
+        if health.last_error.is_some() {
+            ui.label("Connector error: producer failed or sent invalid protocol data (private details withheld)");
         }
         ui.small("Protocol healthy means recent valid traffic, not fresh application state or a matching visual layer.");
     } else {
         ui.label("Process health: Unknown — supervisor has not reported this producer yet.");
     }
     if !intent.enabled || !intent.trusted {
-        ui.small("Repair: review the local producer configuration and explicitly trust/enable it outside this read-only page.");
+        ui.small("Repair: review and save the local producer configuration below, then explicitly enable the reviewed producer.");
     }
 }
 

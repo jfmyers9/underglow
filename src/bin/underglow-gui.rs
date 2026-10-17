@@ -103,9 +103,32 @@ fn parse_reply(bytes: &[u8]) -> Result<Reply, String> {
     Ok(reply)
 }
 
-#[derive(Clone, Debug)]
+/// Secret registry payload travels over bounded stdin, never helper argv or logs.
+fn connections_input(
+    revision: u64,
+    registry: &underglow::connection_registry::ConnectionRegistry,
+) -> Result<Vec<u8>, String> {
+    if registry.revision != revision {
+        return Err("Connection revision conflict; private draft retained".into());
+    }
+    registry
+        .validate()
+        .map_err(|_| "Invalid connection configuration (private details withheld)".to_string())?;
+    let input = serde_json::to_vec(registry)
+        .map_err(|_| "Cannot encode connection configuration".to_string())?;
+    if input.len() >= underglow::connection_registry::MAX_REGISTRY_BYTES {
+        return Err("Connections exceed 256 KiB".into());
+    }
+    Ok(input)
+}
+
+#[derive(Clone)]
 enum Action {
     ConnectionsShow,
+    ConnectionsReplace {
+        revision: u64,
+        registry: underglow::connection_registry::ConnectionRegistry,
+    },
     SetupShow,
     SetupReplace {
         revision: u64,
@@ -121,6 +144,22 @@ impl Action {
     fn is_status(&self) -> bool {
         matches!(self, Self::ConnectionsShow)
             || matches!(self, Self::Control(args) if args.len() == 1 && args[0] == "status")
+    }
+}
+
+impl std::fmt::Debug for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Channel errors and assertions must not print secret-bearing payloads.
+        f.write_str(match self {
+            Self::ConnectionsShow => "ConnectionsShow",
+            Self::ConnectionsReplace { .. } => "ConnectionsReplace(<private>)",
+            Self::SetupShow => "SetupShow",
+            Self::SetupReplace { .. } => "SetupReplace",
+            Self::Control(_) => "Control",
+            Self::DiagnosticsPreview(_) => "DiagnosticsPreview",
+            Self::StartEngine => "StartEngine",
+            Self::Service(_) => "Service",
+        })
     }
 }
 
@@ -156,12 +195,17 @@ impl Backend {
                 .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
         );
         match action {
-            Action::ConnectionsShow => {
+            Action::ConnectionsShow | Action::ConnectionsReplace { .. } => {
                 command.arg("control");
                 if let Some(directory) = &self.state_dir {
                     command.arg("--state-dir").arg(directory);
                 }
-                command.args(["connections", "show"]);
+                command.arg("connections");
+                if let Action::ConnectionsReplace { revision, .. } = action {
+                    command.args(["replace", "--expected-revision", &revision.to_string()]);
+                } else {
+                    command.arg("show");
+                }
             }
             Action::SetupShow | Action::SetupReplace { .. } => {
                 command.arg("control");
@@ -275,6 +319,13 @@ impl Backend {
             );
         }
         let mut command = self.command(action);
+        if let Action::ConnectionsReplace { revision, registry } = action {
+            let input = connections_input(*revision, registry)?;
+            command.stdin(Stdio::piped());
+            return run_with_timeout_input(command, Duration::from_secs(15), Some(input)).map_err(
+                |_| "Connections write failed; private draft retained. Refresh and retry.".into(),
+            );
+        }
         if let Action::SetupReplace { document, .. } = action {
             let input = serde_json::to_vec(document).map_err(|error| error.to_string())?;
             if input.len() > underglow::setup::MAX_DOCUMENT_BYTES {
@@ -715,9 +766,14 @@ impl Controller {
             // Leave an interactive interval even when the previous poll was slow.
             self.last_poll = Instant::now();
             match completion.action {
-                Action::ConnectionsShow => {
+                action @ (Action::ConnectionsShow | Action::ConnectionsReplace { .. }) => {
                     // Never place the secret-bearing registry JSON in generic diagnostics.
-                    self.connections_panel.receive_report(completion.result);
+                    if let Action::ConnectionsReplace { registry, .. } = action {
+                        self.connections_panel
+                            .receive_replacement(&registry, completion.result);
+                    } else {
+                        self.connections_panel.receive_report(completion.result);
+                    }
                     if let Some(registry) = self.connections_panel.capabilities() {
                         self.setup_editor.set_capabilities(registry);
                     }
@@ -1000,6 +1056,9 @@ impl Controller {
         );
         match request {
             Some(connections_screen::Request::Refresh) => self.refresh_connections(),
+            Some(connections_screen::Request::Replace { revision, registry }) => {
+                self.dispatch(Action::ConnectionsReplace { revision, registry });
+            }
             Some(connections_screen::Request::OpenLayer(id)) => {
                 self.setup_editor.selected = Some(id);
                 self.page = Page::Layers;
@@ -1461,6 +1520,100 @@ mod tests {
             ]
         );
         assert!(Action::ConnectionsShow.is_status());
+    }
+
+    #[test]
+    fn connections_replace_uses_private_bounded_stdin_not_argv_or_debug() {
+        use underglow::connection_registry::{ConnectionRegistry, ConnectorConfig};
+        let backend = Backend {
+            directory: "/sibling tools".into(),
+            state_dir: Some("/private/state".into()),
+        };
+        let mut registry = ConnectionRegistry::default();
+        registry.revision = 19;
+        registry.connections[0].producer = Some(ConnectorConfig {
+            id: "local".into(),
+            source: "pi".into(),
+            command: vec!["PRIVATE_ARGV".into(), "$HOME literal argument".into()],
+            env: [("TOKEN".into(), "PRIVATE_ENV".into())].into(),
+            ..Default::default()
+        });
+        let action = Action::ConnectionsReplace {
+            revision: 19,
+            registry: registry.clone(),
+        };
+        let command = backend.command(&action);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "control",
+                "--state-dir",
+                "/private/state",
+                "connections",
+                "replace",
+                "--expected-revision",
+                "19"
+            ]
+        );
+        assert!(!format!("{command:?}").contains("PRIVATE"));
+        assert!(!format!("{action:?}").contains("PRIVATE"));
+        assert!(!action.is_status());
+        let input = connections_input(19, &registry).unwrap();
+        assert_eq!(ConnectionRegistry::from_json(&input).unwrap(), registry);
+        assert!(connections_input(18, &registry).is_err());
+        registry.connections[0]
+            .producer
+            .as_mut()
+            .unwrap()
+            .env
+            .insert("TOKEN".into(), "PRIVATE_ENV".repeat(20000));
+        assert!(
+            !connections_input(19, &registry)
+                .unwrap_err()
+                .contains("PRIVATE_ENV")
+        );
+    }
+
+    #[test]
+    fn connection_write_completion_is_private_and_does_not_resume_lighting() {
+        let (mut app, _) = controller_fixture();
+        app.status = Some(serde_json::from_str(STATUS).unwrap());
+        app.status.as_mut().unwrap().enabled = false;
+        app.diagnostics = "prior diagnostics".into();
+        let (outgoing, replies) = mpsc::channel();
+        app.replies = replies;
+        let registry = underglow::connection_registry::ConnectionRegistry::default();
+        app.connections_panel.receive_report(Ok(
+            serde_json::json!({"ok":true,"connections":{"registry":registry,"runtime_index":{}}})
+                .to_string(),
+        ));
+        app.connections_panel
+            .producer_editor()
+            .open(&registry, "pi");
+        outgoing
+            .send(Completion {
+                action: Action::ConnectionsReplace {
+                    revision: 0,
+                    registry: registry.clone(),
+                },
+                result: Err("PRIVATE_ARGV PRIVATE_ENV".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(app.connections_panel.registry(), Some(&registry));
+        assert_eq!(app.diagnostics, "prior diagnostics");
+        assert!(!app.status.as_ref().unwrap().enabled);
+        assert!(!app.message.contains("PRIVATE"));
+        let mut saved = registry.clone();
+        saved.revision = 1;
+        outgoing.send(Completion {
+            action: Action::ConnectionsReplace { revision: 0, registry },
+            result: Ok(serde_json::json!({"ok":true,"connections":{"registry":saved,"runtime_index":{}}}).to_string()),
+        }).unwrap();
+        app.receive();
+        assert_eq!(app.connections_panel.registry(), Some(&saved));
+        assert_eq!(app.diagnostics, "prior diagnostics");
+        assert!(!app.status.as_ref().unwrap().enabled);
     }
 
     #[test]

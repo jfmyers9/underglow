@@ -92,6 +92,44 @@ source is not a reason to delete a layer. Replacements never resume lighting.
 
 ## Editor hooks and runtime health
 
+### GUI managed producers
+
+Open **Connections**, refresh the machine registry, then **Configure producer**
+for a registered source (including an external-only source). Its source identity
+is read-only. Enter a unique producer ID and an argv list: row zero is the
+executable and each following row is one exact argument, including empty
+arguments. Spaces, quotes, dollar signs and semicolons are literal; there is no
+shell parsing or interpolation. The GUI never probes or executes a draft.
+
+Review the unsandboxed-code warning and every argument, environment override and
+working directory before checking the explicit trust acknowledgment. Values and
+argv are masked until revealed; avoid including secrets where possible. Changing
+configuration revokes draft trust and disables draft intent until reviewed again.
+**Save configuration (disabled)** persists the reviewed definition but never
+starts it. **Enable reviewed producer** only starts an already saved, trusted
+definition; it cannot grant trust. **Disable producer** saves disabled intent;
+the existing bounded supervisor terminates the process group and reaps it
+asynchronously. Saved enabled/trusted intent and observed process health are
+shown separately. A running process is not proof of fresh facts.
+
+Health refreshes never replace an open private draft. Stale/rejected writes keep
+the draft and last saved registry; refresh, explicitly discard/reload the draft,
+and review again before retrying. Each candidate patches only the selected
+connection and preserves all unrelated definitions and trust. Reading metadata,
+opening configuration and saving a definition never silently enable it.
+None of these controls resumes lighting: use the separate explicit **Resume**
+action when ready.
+
+Producer configuration optionally accepts `env` (a string-to-string map of
+overrides, otherwise inherited environment) and `working_dir` (otherwise the
+engine's directory). Neither is shell-expanded. Environment keys cannot be empty
+or contain `=`/NUL; values cannot contain NUL. Overrides are bounded to 64 entries
+and 16 KiB total key/value bytes. Working directories are nonempty, NUL-free and
+at most 4096 bytes when provided. The shared registry validator also enforces
+argv/restart bounds before any save or process change. Filesystem existence and
+permissions are evaluated asynchronously by the supervisor, not the editor.
+These fields are private machine configuration, never capability/setup metadata.
+
 The public `underglow::connection_registry` module exposes `ConnectionRegistry`,
 `Connection`, `ConnectorConfig`, bounded parsing/validation, CAS replacement,
 `managed_configs()`, `capability_registry()`, and `missing_sources(setup)`.

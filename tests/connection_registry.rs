@@ -112,3 +112,60 @@ fn legacy_migration_preserves_explicit_authorization_and_machine_secrets_only_in
             .contains("credential-secret")
     );
 }
+
+#[test]
+fn producer_environment_directory_defaults_bounds_and_exports_are_inert() {
+    let old = r#"{"id":"local","source":"pi","command":["never-executed"]}"#;
+    let config: ConnectorConfig = serde_json::from_str(old).unwrap();
+    assert!(config.env.is_empty());
+    assert!(config.working_dir.is_none());
+    assert!(!config.trusted && !config.enabled);
+    let mut registry = ConnectionRegistry::default();
+    registry.connections[0].producer = Some(config);
+    registry.validate().unwrap();
+    for (key, value) in [
+        ("", "secret"),
+        ("BAD=KEY", "secret"),
+        ("BAD\0KEY", "secret"),
+        ("TOKEN", "secret\0value"),
+    ] {
+        let mut bad = registry.clone();
+        bad.connections[0]
+            .producer
+            .as_mut()
+            .unwrap()
+            .env
+            .insert(key.into(), value.into());
+        let error = bad.validate().unwrap_err();
+        assert!(!error.contains("secret"));
+    }
+    for path in ["".to_string(), "bad\0path".into(), "x".repeat(4097)] {
+        let mut bad = registry.clone();
+        bad.connections[0].producer.as_mut().unwrap().working_dir = Some(path);
+        assert!(bad.validate().is_err());
+    }
+    let mut bad = registry.clone();
+    bad.connections[0].producer.as_mut().unwrap().env =
+        (0..65).map(|i| (format!("K{i}"), "value".into())).collect();
+    assert!(bad.validate().is_err());
+    bad.connections[0].producer.as_mut().unwrap().env =
+        [("TOKEN".into(), "x".repeat(16384))].into();
+    assert!(bad.validate().is_err());
+    let config = registry.connections[0].producer.as_mut().unwrap();
+    config.env = [("TOKEN".into(), "private-env".into())].into();
+    config.working_dir = Some("/private/directory".into());
+    registry.validate().unwrap();
+    let json = serde_json::to_vec(&registry).unwrap();
+    assert_eq!(ConnectionRegistry::from_json(&json).unwrap(), registry);
+    assert!(
+        !serde_json::to_string(
+            &registry
+                .capability_registry()
+                .unwrap()
+                .descriptors()
+                .collect::<Vec<_>>()
+        )
+        .unwrap()
+        .contains("private")
+    );
+}

@@ -8,6 +8,12 @@ arguments, and updates before granting trust. No shell is inserted.
 
 ## Configure and enable
 
+The GUI **Connections** page also offers reviewed argv/environment/directory
+configuration with explicit trust, disabled saves and separate enable/disable
+controls. See [GUI managed producers](connections.md#gui-managed-producers).
+Health polling does not overwrite private drafts, and producer controls never
+resume lighting.
+
 Generate a [starter connector](connectors.md), review it, then configure it using
 the independent [connection registry workflow](connections.md). Producer commands
 and credentials are machine-local, never part of shared layer setups. Existing
