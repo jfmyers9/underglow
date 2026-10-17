@@ -1,6 +1,7 @@
 //! Hardware-independent effect rendering.
 pub mod animation;
 pub mod catalog;
+pub mod compositor;
 pub mod device;
 pub mod effects;
 pub mod external;

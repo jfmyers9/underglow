@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use underglow::compositor::{KeyMask, Layer, compose};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,18 +142,10 @@ impl NotificationProgram {
         }
     }
 
-    fn winner(&self) -> Option<&Notification> {
+    fn active_notifications(&self) -> impl Iterator<Item = &Notification> {
         self.notifications
             .iter()
-            .enumerate()
-            .filter(|(_, n)| n.expires.is_some_and(|expires| self.now < expires))
-            .max_by(|(ai, a), (bi, b)| {
-                a.config
-                    .priority
-                    .cmp(&b.config.priority)
-                    .then_with(|| bi.cmp(ai))
-            })
-            .map(|(_, n)| n)
+            .filter(|n| n.expires.is_some_and(|expires| self.now < expires))
     }
 }
 
@@ -190,22 +183,32 @@ impl SignalProgram for NotificationProgram {
     }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Frame {
-        let mut frame = self.base.render(ctx);
-        if let Some(notification) = self.winner() {
-            let overlay = notification.signal.render(ctx);
-            for key in ctx.layout.keys() {
-                if notification.config.zones.iter().any(|zone| match zone {
-                    SceneZone::Function => key.zone == Zone::Function,
-                    SceneZone::Alpha => key.zone == Zone::Alpha,
-                    SceneZone::Navigation => key.zone == Zone::Navigation,
-                    SceneZone::Arrows => key.zone == Zone::Arrows,
-                    SceneZone::System => key.zone == Zone::System,
-                }) {
-                    frame.set_coord(key.coord, overlay.get_coord(key.coord));
-                }
-            }
-        }
-        frame
+        // Render the current background even when every key is covered. Source
+        // ticking remains independent of visibility, including hidden deadlines.
+        let base = self.base.render(ctx);
+        let layers: Vec<_> = self
+            .active_notifications()
+            .map(|notification| Layer {
+                frame: notification.signal.render(ctx),
+                mask: KeyMask::Zones(
+                    notification
+                        .config
+                        .zones
+                        .iter()
+                        .map(|zone| match zone {
+                            SceneZone::Function => Zone::Function,
+                            SceneZone::Alpha => Zone::Alpha,
+                            SceneZone::Navigation => Zone::Navigation,
+                            SceneZone::Arrows => Zone::Arrows,
+                            SceneZone::System => Zone::System,
+                        })
+                        .collect(),
+                ),
+                priority: i32::from(notification.config.priority),
+                expires: notification.expires,
+            })
+            .collect();
+        compose(base, ctx.layout, &layers, self.now)
     }
 
     fn finished(&self) -> bool {
@@ -318,23 +321,57 @@ mod tests {
         }
     }
 
+    fn assert_zone_colors(p: &NotificationProgram, expected: impl Fn(Zone) -> u8) {
+        let info = DeviceInfo {
+            connected: true,
+            model: "test".into(),
+            max_rows: 6,
+            max_columns: 17,
+            led_index_max: 0,
+            device_type: DeviceType::Keyboard80,
+            layout: Layout::Ansi,
+            v2_interface: true,
+            uses_small_packets: false,
+            uses_multi_report: false,
+        };
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = RenderContext {
+            animation_seconds: 0.0,
+            info: &info,
+            layout: &layout,
+            brightness: 96,
+            palette: PaletteName::Wooting,
+            tick: 0,
+        };
+        let frame = p.render(&ctx);
+        for key in layout.keys() {
+            assert_eq!(
+                frame.get_coord(key.coord),
+                Color::new(expected(key.zone), 0, 0),
+                "{:?} {:?}",
+                key.zone,
+                key.coord
+            );
+        }
+    }
+
     #[test]
     fn edges_expire_without_replay_and_ignore_progress() {
         let state = mock();
         let mut p = program(&mock(), vec![(config("test", 0, 3), state.clone())]);
         p.observe_at(Duration::ZERO);
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
         event(&state, "success");
         p.observe_at(Duration::from_secs(1));
-        assert!(p.winner().is_some());
+        assert!(p.active_notifications().next().is_some());
         state.borrow_mut().snapshot.as_mut().unwrap().progress = Some(0.9);
         p.observe_at(Duration::from_secs(4));
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
         p.observe_at(Duration::from_secs(100));
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
         event(&state, "failure");
         p.observe_at(Duration::from_secs(101));
-        assert!(p.winner().is_some());
+        assert!(p.active_notifications().next().is_some());
     }
 
     #[test]
@@ -347,25 +384,27 @@ mod tests {
         source.borrow_mut().snapshot.as_mut().unwrap().message = "run-1".into();
         p.observe_at(Duration::ZERO);
         p.observe_at(Duration::from_secs(2));
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
 
         source.borrow_mut().snapshot.as_mut().unwrap().message = "run-2".into();
         p.observe_at(Duration::from_secs(3));
-        assert!(p.winner().is_some());
+        assert!(p.active_notifications().next().is_some());
         event(&source, "running");
         p.observe_at(Duration::from_secs(4));
         // A nonmatching status does not refresh the previous alert's deadline.
         p.observe_at(Duration::from_secs(5));
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
         event(&source, "passing");
         p.observe_at(Duration::from_secs(6));
-        assert!(p.winner().is_some());
+        assert!(p.active_notifications().next().is_some());
     }
 
     #[test]
     fn hidden_expired_events_are_not_queued_and_shutdown_clears_active_events() {
         let low = mock();
         let high = mock();
+        low.borrow_mut().ticks = 10;
+        high.borrow_mut().ticks = 90;
         let mut p = program(
             &mock(),
             vec![
@@ -376,14 +415,14 @@ mod tests {
         event(&low, "success");
         event(&high, "success");
         p.observe_at(Duration::ZERO);
-        assert_eq!(p.winner().unwrap().config.id, "high");
+        assert_zone_colors(&p, |zone| if zone == Zone::Function { 90 } else { 0 });
         p.observe_at(Duration::from_secs(5));
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
         event(&high, "failure");
         p.observe_at(Duration::from_secs(6));
-        assert!(p.winner().is_some());
+        assert!(p.active_notifications().next().is_some());
         p.shutdown(true).unwrap();
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
         assert_eq!(low.borrow().stops, 1);
         assert_eq!(high.borrow().stops, 1);
     }
@@ -413,6 +452,9 @@ mod tests {
         let low = mock();
         let high = mock();
         let tie = mock();
+        low.borrow_mut().ticks = 10;
+        high.borrow_mut().ticks = 90;
+        tie.borrow_mut().ticks = 99;
         let mut p = program(
             &mock(),
             vec![
@@ -425,11 +467,73 @@ mod tests {
             event(state, "success");
         }
         p.observe_at(Duration::ZERO);
-        assert_eq!(p.winner().unwrap().config.id, "high");
+        assert_zone_colors(&p, |zone| if zone == Zone::Function { 90 } else { 0 });
         p.observe_at(Duration::from_secs(3));
-        assert_eq!(p.winner().unwrap().config.id, "low");
+        assert_zone_colors(&p, |zone| if zone == Zone::Function { 10 } else { 0 });
         p.observe_at(Duration::from_secs(10));
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
+        assert_zone_colors(&p, |_| 0);
+    }
+
+    #[test]
+    fn simultaneous_zones_and_partial_overlap_have_independent_winners_and_expiry() {
+        let base = mock();
+        let function = mock();
+        let navigation = mock();
+        let high = mock();
+        let tie = mock();
+        function.borrow_mut().ticks = 10;
+        navigation.borrow_mut().ticks = 20;
+        high.borrow_mut().ticks = 90;
+        tie.borrow_mut().ticks = 99;
+        let mut navigation_config = config("navigation", 2, 10);
+        navigation_config.zones = vec![SceneZone::Navigation];
+        let mut high_config = config("high", 9, 2);
+        high_config.zones = vec![SceneZone::Function, SceneZone::Navigation];
+        let mut tie_config = config("tie", 9, 4);
+        tie_config.zones = vec![SceneZone::Function, SceneZone::Arrows];
+        let mut p = program(
+            &base,
+            vec![
+                (config("function", 1, 10), function.clone()),
+                (navigation_config, navigation.clone()),
+                (high_config, high.clone()),
+                (tie_config, tie.clone()),
+            ],
+        );
+        event(&function, "success");
+        event(&navigation, "failure");
+        p.observe_at(Duration::ZERO);
+        assert_zone_colors(&p, |zone| match zone {
+            Zone::Function => 10,
+            Zone::Navigation => 20,
+            _ => 0,
+        });
+        event(&high, "success");
+        event(&tie, "success");
+        p.observe_at(Duration::from_secs(1));
+        assert_zone_colors(&p, |zone| match zone {
+            Zone::Function | Zone::Navigation => 90,
+            Zone::Arrows => 99,
+            _ => 0,
+        });
+        p.observe_at(Duration::from_secs(3));
+        assert_zone_colors(&p, |zone| match zone {
+            Zone::Function | Zone::Arrows => 99,
+            Zone::Navigation => 20,
+            _ => 0,
+        });
+        p.observe_at(Duration::from_secs(5));
+        assert_zone_colors(&p, |zone| match zone {
+            Zone::Function => 10,
+            Zone::Navigation => 20,
+            _ => 0,
+        });
+        p.tick_sources(&AtomicBool::new(false)).unwrap();
+        p.observe_at(Duration::from_secs(10));
+        assert_zone_colors(&p, |_| 1);
+        p.observe_at(Duration::from_secs(100));
+        assert_zone_colors(&p, |_| 1);
     }
 
     #[test]
@@ -491,7 +595,7 @@ mod tests {
         );
         event(&source, "success");
         p.observe_at(Duration::ZERO);
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
         p.preview_tick(100);
         assert_eq!(source.borrow().ticks, 0);
         source.borrow_mut().fail_tick = true;
@@ -502,7 +606,7 @@ mod tests {
         for state in [&base, &source, &other] {
             assert_eq!(state.borrow().stops, 1);
         }
-        assert!(p.winner().is_none());
+        assert!(p.active_notifications().next().is_none());
     }
 
     #[test]
