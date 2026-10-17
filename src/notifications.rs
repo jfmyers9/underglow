@@ -150,6 +150,12 @@ impl NotificationProgram {
 }
 
 impl SignalProgram for NotificationProgram {
+    fn prepare_render(&mut self, ctx: &RenderContext<'_>) {
+        self.base.prepare_render(ctx);
+        for notification in &mut self.notifications {
+            notification.signal.prepare_render(ctx);
+        }
+    }
     fn setup_runtime(&mut self) -> Option<&mut underglow::layer_runtime::CompiledSetup> {
         self.base.setup_runtime()
     }

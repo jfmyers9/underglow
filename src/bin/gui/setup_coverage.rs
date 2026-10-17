@@ -29,6 +29,9 @@ pub fn show(ui: &mut egui::Ui, report: Option<&CoverageReport>, selected: Option
                         layer.index + 1, layer.name, badge, layer.targeted.len(), layer.visible.len(), layer.blended.len(),
                         layer.obscured.len(), layer.overlapping.len());
                     ui.label(label).on_hover_text(&layer.reason);
+                    if let Some(transition) = &layer.transition {
+                        super::setup_explanation::show_transition(ui, transition);
+                    }
                     if !layer.obscured_by.is_empty() {
                         let names: Vec<_> = layer.obscured_by.iter().map(|&index|
                             format!("#{} {}", index + 1, report.layers[index].name)).collect();

@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayerPatch {
+    pub transition: Option<crate::setup::Transition>,
     pub opacity: Option<u8>,
     pub blend: Option<BlendMode>,
     pub name: Option<String>,
@@ -96,6 +97,9 @@ pub fn apply_edits(
             LayerEdit::Update { id, patch } => {
                 let index = position(id, &candidate)?;
                 let layer = &mut candidate.layers[index];
+                if let Some(value) = patch.transition {
+                    layer.transition = value;
+                }
                 if let Some(value) = patch.opacity {
                     layer.opacity = value;
                 }
@@ -188,6 +192,36 @@ mod tests {
 
     fn doc() -> SetupDocument {
         SetupDocument::from_toml(include_str!("../examples/layer-setup.toml")).unwrap()
+    }
+
+    #[test]
+    fn transition_patch_is_scoped_bounded_and_transactional() {
+        use crate::setup::{Transition, TransitionCurve};
+        let original = doc();
+        let edit = |duration_ms| LayerEdit::Update {
+            id: original.layers[0].id.clone(),
+            patch: LayerPatch {
+                transition: Some(Transition {
+                    duration_ms,
+                    curve: TransitionCurve::SmoothStep,
+                }),
+                ..Default::default()
+            },
+        };
+        let candidate = apply_edits(&original, 0, &[edit(250)]).unwrap();
+        let mut expected = original.clone();
+        expected.layers[0].transition = Transition {
+            duration_ms: 250,
+            curve: TransitionCurve::SmoothStep,
+        };
+        expected.revision = 1;
+        assert_eq!(candidate, expected);
+        assert!(apply_edits(&original, 0, &[edit(5001)]).is_err());
+        assert_eq!(original, doc());
+        assert_eq!(
+            SetupDocument::from_toml(&candidate.to_toml().unwrap()).unwrap(),
+            candidate
+        );
     }
 
     #[test]

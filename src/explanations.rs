@@ -69,6 +69,7 @@ pub struct ConditionExplanation {
 }
 #[derive(Clone, Debug)]
 pub struct LayerExplanation {
+    pub transition: Option<crate::transitions::TransitionInspection>,
     pub opacity: u8,
     pub blend: compositor::BlendMode,
     /// Structural contribution, irrespective of RGB coincidences or rounding.
@@ -131,6 +132,7 @@ pub struct CoverageDeadline {
 /// LED positions, not named key counts: unnamed/sparse layout positions count too.
 #[derive(Clone, Debug)]
 pub struct LayerCoverage {
+    pub transition: Option<crate::transitions::TransitionInspection>,
     pub index: usize,
     pub id: String,
     pub name: String,
@@ -262,6 +264,7 @@ pub fn analyze_coverage(
                 })
             });
             LayerCoverage {
+                transition: runtime.transition(&definition.id).cloned(),
                 index,
                 id: definition.id.clone(),
                 name: definition.name.clone(),
@@ -462,6 +465,7 @@ fn explain_key_from_layers(
                 )
             };
             LayerExplanation {
+                transition: runtime.transition(&definition.id).cloned(),
                 opacity: definition.opacity,
                 blend: definition.blend,
                 visible: is_visible,

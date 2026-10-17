@@ -13,6 +13,7 @@ use crate::setup::{Activation, BehaviorVariant, Layer, Renderer, Target};
 /// This function performs no I/O, acquires no hardware, and starts no producer.
 pub fn pi_status_layer(id: String, target: Target, instance: Option<String>) -> Layer {
     Layer {
+        transition: Default::default(),
         opacity: 255,
         blend: Default::default(),
         id,
@@ -166,6 +167,7 @@ mod tests {
                 },
             ] {
                 let background = Layer {
+                    transition: Default::default(),
                     opacity: 255,
                     blend: Default::default(),
                     id: "background".into(),

@@ -5,7 +5,7 @@ use clap::ValueEnum;
 use eframe::egui::{self, Ui};
 use underglow::catalog::{self, PaletteControl, RendererKind, Visualization};
 use underglow::render::PaletteName;
-use underglow::setup::{BlendMode, Layer, Renderer};
+use underglow::setup::{BlendMode, Layer, Renderer, TransitionCurve};
 
 // Scene primitives are not catalog visualizations: these are their only extra
 // capabilities (color; Pulse/Sweep also period), never a copied effect catalog.
@@ -165,7 +165,7 @@ fn color_control(ui: &mut Ui, label: &str, color: &mut [u8; 3]) {
     });
 }
 
-/// Returns true iff this frame changed appearance or per-layer brightness.
+/// Returns true iff this frame changed appearance, compositing or transitions.
 /// Stable layer ID scopes all widget state; names and document order are untouched.
 pub fn show(ui: &mut Ui, layer: &mut Layer) -> bool {
     let before = layer.clone();
@@ -181,6 +181,18 @@ pub fn show(ui: &mut Ui, layer: &mut Layer) -> bool {
             ui.selectable_value(&mut layer.blend, BlendMode::Multiply, "Multiply");
         });
         ui.small("Opacity and blend apply to every appearance in this logical layer. Zero opacity is transparent; black is a color, not transparency.");
+        ui.add(egui::Slider::new(&mut layer.transition.duration_ms, 0..=5000).text("Transition duration (ms)"));
+        egui::ComboBox::from_id_salt("transition-curve")
+            .selected_text(match layer.transition.curve {
+                TransitionCurve::Linear => "Linear",
+                TransitionCurve::SmoothStep => "Smooth step",
+            }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut layer.transition.curve, TransitionCurve::Linear, "Linear");
+                ui.selectable_value(&mut layer.transition.curve, TransitionCurve::SmoothStep, "Smooth step");
+            });
+        ui.small("One transition for this logical layer, shared by base/fallback and all variants. 0 ms switches instantly; the curve eases the crossfade.");
+        ui.small(super::setup_explanation::TRANSITION_HELP);
+        ui.small("Draft only: transition edits never activate hardware; explicit Resume is still required.");
     });
     before != *layer
 }
@@ -287,6 +299,7 @@ mod tests {
 
     fn layer(id: &str) -> Layer {
         Layer {
+            transition: Default::default(),
             opacity: 255,
             blend: Default::default(),
             id: id.into(),
@@ -442,6 +455,38 @@ mod tests {
         let (_, shapes) = click(ctx, layer, pos);
         let pos = text_pos(&shapes, next).unwrap_or_else(|| panic!("missing choice {next}"));
         click(ctx, layer, pos).0
+    }
+
+    #[test]
+    fn headless_transition_changes_only_selected_logical_settings() {
+        let mut document =
+            SetupDocument::from_toml(include_str!("../../../examples/layer-setup.toml")).unwrap();
+        let before = document.clone();
+        let ctx = Context::default();
+        let layer = &mut document.layers[0];
+        run(&ctx, layer, vec![]);
+        let (changed, shapes) = run(&ctx, layer, vec![]);
+        assert!(!changed);
+        let y = text_pos(&shapes, "Transition duration (ms)").unwrap().y;
+        assert!(click(&ctx, layer, Pos2::new(60.0, y)).0);
+        assert!(layer.transition.duration_ms > 0 && layer.transition.duration_ms <= 5000);
+        assert!(select(&ctx, layer, "Linear", "Smooth step"));
+        assert_eq!(layer.transition.curve, TransitionCurve::SmoothStep);
+        assert!(
+            !run(&ctx, layer, vec![]).0,
+            "idle transition controls must not edit the draft"
+        );
+        let edited = layer.clone();
+        layer.transition = before.layers[0].transition;
+        assert_eq!(
+            document, before,
+            "activation, identities, variants, appearance, targets and other layers remain unchanged"
+        );
+        document.layers[0] = edited;
+        assert_eq!(
+            SetupDocument::from_toml(&document.to_toml().unwrap()).unwrap(),
+            document
+        );
     }
 
     #[test]

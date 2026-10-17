@@ -13,6 +13,7 @@ use crate::reactive::ReactiveSimulation;
 use crate::render::{Color, Frame, PaletteName, RenderContext};
 use crate::ripple::{KeyGeometry, RippleSimulation};
 use crate::setup::{Activation, Layer, Renderer, SetupDocument, Target};
+use crate::transitions::{FrameTransition, TransitionInspection};
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -29,6 +30,7 @@ enum Simulation {
 }
 
 struct CompiledLayer {
+    transition: FrameTransition,
     definition: Layer,
     coordinates: Vec<MatrixCoord>,
     zones: Vec<Zone>,
@@ -214,6 +216,7 @@ impl CompiledSetup {
                 conditions.rules.push(rule);
             }
             layers.push(CompiledLayer {
+                transition: FrameTransition::default(),
                 definition: definition.clone(),
                 coordinates,
                 zones: target_zones,
@@ -323,13 +326,27 @@ impl CompiledSetup {
         self.conditions.baseline(snapshot, now);
         for layer in &mut self.layers {
             layer.variant_conditions.baseline(snapshot, now);
+            layer.transition.clear();
         }
     }
 
     pub fn observe(&mut self, snapshot: &Snapshot, events: &EventBatch, now: Duration) {
+        if now < self.conditions.observed_at() {
+            return;
+        }
         self.conditions.observe(snapshot, events, now);
         for layer in &mut self.layers {
             layer.variant_conditions.observe(snapshot, events, now);
+            // Expiry/removal is a safety boundary, not a visual fade to stale
+            // pixels. Check provenance too: a rapid retarget's frozen frame can
+            // still contain an older appearance than its displayed endpoint.
+            let invalid = layer
+                .transition
+                .history_ids()
+                .any(|id| !layer.history_available(id, &self.conditions, snapshot, now));
+            if invalid || layer.appearance(&self.conditions).is_none() {
+                layer.transition.clear();
+            }
         }
     }
 
@@ -353,6 +370,19 @@ impl CompiledSetup {
     }
 
     pub fn reset_input(&mut self) {
+        // Non-input appearances must keep fading even in an input-capable layer.
+        for layer in &mut self.layers {
+            let affected = layer
+                .appearance(&self.conditions)
+                .is_some_and(|(_, simulation)| !matches!(simulation, Simulation::None))
+                || layer
+                    .transition
+                    .history_ids()
+                    .any(|id| layer.input_appearance(id));
+            if affected {
+                layer.transition.clear();
+            }
+        }
         for layer in &mut self.layers {
             for simulation in
                 std::iter::once(&mut layer.simulation).chain(&mut layer.variant_simulations)
@@ -412,7 +442,7 @@ impl CompiledSetup {
     /// canonical per-layer settings, independent of the legacy global clock.
     /// Uncovered keys and non-key cells are black. Higher stack index blends over
     /// lower layers. Final channels respect the global ceiling after blending.
-    /// No pixels from previous frames are retained.
+    /// Only explicitly configured transitions retain bounded outgoing pixels.
     pub fn render(&self, ctx: &RenderContext<'_>, elapsed: Duration) -> Frame {
         let layers = self.composition(ctx, elapsed);
         compositor::compose_capped(
@@ -422,6 +452,50 @@ impl CompiledSetup {
             Duration::ZERO,
             ctx.brightness,
         )
+    }
+
+    /// Explicit mutable frame boundary shared by live output and preview.
+    /// Selection/event evaluation happens only in observe/baseline, never reads.
+    pub fn prepare_render(&mut self, ctx: &RenderContext<'_>, elapsed: Duration) {
+        let now = self.conditions.observed_at();
+        for layer in &mut self.layers {
+            if layer.definition.transition.duration_ms == 0 {
+                layer.transition.clear();
+                continue;
+            }
+            let Some((appearance, simulation)) = layer.appearance(&self.conditions) else {
+                layer.transition.clear();
+                continue;
+            };
+            if !self.input_available && !matches!(simulation, Simulation::None) {
+                layer.transition.clear();
+                continue;
+            }
+            let selected = appearance.variant_id.unwrap_or("").to_owned();
+            let mask = layer.target_mask(ctx);
+            let frame = render_appearance(
+                appearance.renderer,
+                simulation,
+                appearance.brightness,
+                ctx,
+                appearance.elapsed.unwrap_or(elapsed),
+                &mask,
+            );
+            layer
+                .transition
+                .prepare(now, &selected, frame, layer.definition.transition);
+        }
+    }
+
+    pub fn transition(&self, layer_id: &str) -> Option<&TransitionInspection> {
+        let layer = self
+            .layers
+            .iter()
+            .find(|layer| layer.definition.id == layer_id)?;
+        let selected = self.selected_appearance(layer_id)?;
+        (layer.transition.selected() == Some(selected.variant_id.unwrap_or("")))
+            .then(|| layer.transition.inspection())
+            .flatten()
     }
 
     pub fn selected_appearance(&self, layer_id: &str) -> Option<SelectedAppearance<'_>> {
@@ -517,14 +591,23 @@ impl CompiledSetup {
                 Some(compositor::Layer {
                     opacity: layer.definition.opacity,
                     blend: layer.definition.blend,
-                    frame: render_appearance(
-                        appearance.renderer,
-                        simulation,
-                        appearance.brightness,
-                        ctx,
-                        appearance.elapsed.unwrap_or(elapsed),
-                        &mask,
-                    ),
+                    frame: layer
+                        .transition
+                        .frame()
+                        .filter(|_| {
+                            layer.transition.selected() == Some(appearance.variant_id.unwrap_or(""))
+                        })
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            render_appearance(
+                                appearance.renderer,
+                                simulation,
+                                appearance.brightness,
+                                ctx,
+                                appearance.elapsed.unwrap_or(elapsed),
+                                &mask,
+                            )
+                        }),
                     mask,
                     priority: index as i32,
                     expires: None,
@@ -535,6 +618,46 @@ impl CompiledSetup {
 }
 
 impl CompiledLayer {
+    fn input_appearance(&self, id: &str) -> bool {
+        let renderer = self
+            .definition
+            .variants
+            .iter()
+            .find(|v| v.id == id)
+            .map_or(&self.definition.renderer, |v| &v.renderer);
+        matches!(
+            renderer,
+            Renderer::Reactive { .. } | Renderer::Ripples { .. }
+        )
+    }
+
+    fn history_available(
+        &self,
+        id: &str,
+        conditions: &AutomationRuntime,
+        snapshot: &Snapshot,
+        now: Duration,
+    ) -> bool {
+        let (rule_id, activation, runtime) =
+            self.definition.variants.iter().find(|v| v.id == id).map_or(
+                (&self.definition.id, &self.definition.activation, conditions),
+                |v| (&v.id, &v.activation, &self.variant_conditions),
+            );
+        match activation {
+            Activation::Always {} => true,
+            Activation::WhileState {
+                source, instance, ..
+            } => snapshot.states.iter().any(|fact| {
+                fact.identity.source == *source
+                    && instance
+                        .as_ref()
+                        .is_none_or(|id| *id == fact.identity.instance)
+                    && now < fact.expires_at
+            }),
+            _ => activation_active(rule_id, activation, runtime),
+        }
+    }
+
     fn target_mask(&self, ctx: &RenderContext<'_>) -> KeyMask {
         match self.definition.target {
             Target::Whole {} => KeyMask::Whole,
@@ -836,6 +959,7 @@ mod tests {
 
     fn layer(id: &str, renderer: Renderer, target: Target) -> Layer {
         Layer {
+            transition: Default::default(),
             opacity: 255,
             blend: Default::default(),
             id: id.into(),
@@ -983,6 +1107,269 @@ mod tests {
         runtime
             .selected_appearance("sessions")
             .and_then(|appearance| appearance.variant_id)
+    }
+
+    #[test]
+    fn controlled_fades_retarget_without_replay_and_release_at_event_deadline() {
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = context(&info, &layout);
+        let coord = canonical_coord("F1").unwrap();
+        let mut definition = behavior();
+        definition.transition.duration_ms = 100;
+        definition.variants[0].activation = Activation::OnEvent {
+            source: "custom-source".into(),
+            instance: None,
+            event: "finished".into(),
+            duration_ms: 400,
+        };
+        let mut runtime = CompiledSetup::compile(&document(vec![definition])).unwrap();
+        let mut registry = Registry::default();
+        fact(&mut registry, "a", 1, state("idle", 2000), 0);
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        runtime.prepare_render(&ctx, Duration::ZERO);
+        let pixel = |runtime: &CompiledSetup| runtime.render(&ctx, Duration::ZERO).get_coord(coord);
+        assert_eq!(pixel(&runtime), Color::new(0, 0, 255)); // startup baselines, no fade
+        fact(&mut registry, "a", 2, state("working", 2000), 100);
+        observe(&mut runtime, &mut registry, 100);
+        runtime.prepare_render(&ctx, Duration::from_millis(100));
+        assert_eq!(pixel(&runtime), Color::new(0, 0, 255));
+        observe(&mut runtime, &mut registry, 150);
+        runtime.prepare_render(&ctx, Duration::from_millis(150));
+        assert_eq!(pixel(&runtime), Color::new(128, 0, 128));
+        fact(&mut registry, "a", 3, event(1000), 150);
+        observe(&mut runtime, &mut registry, 150);
+        runtime.prepare_render(&ctx, Duration::from_millis(150));
+        assert_eq!(pixel(&runtime), Color::new(128, 0, 128)); // interrupted from visible frame
+        let expiry = runtime.selected_appearance("sessions").unwrap().expires;
+        assert_eq!(expiry, Some(Duration::from_millis(550)));
+        observe(&mut runtime, &mut registry, 200);
+        runtime.prepare_render(&ctx, Duration::from_millis(200));
+        let before = runtime.render(&ctx, Duration::from_millis(200));
+        assert_eq!(before.get_coord(coord), Color::new(64, 128, 64));
+        for _ in 0..4 {
+            runtime.input_unavailable(); // GUI's repeated call cannot cancel non-input fades
+            runtime.prepare_render(&ctx, Duration::from_millis(200));
+            assert_eq!(runtime.render(&ctx, Duration::ZERO), before);
+            assert_eq!(runtime.transition("sessions").unwrap().progress, 0.5);
+        }
+        fact(&mut registry, "a", 4, state("working", 2000), 250);
+        observe(&mut runtime, &mut registry, 250);
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().expires,
+            expiry
+        );
+        runtime.prepare_render(&ctx, Duration::from_millis(250));
+        assert_eq!(pixel(&runtime), Color::new(0, 255, 0));
+        observe(&mut runtime, &mut registry, 550);
+        runtime.prepare_render(&ctx, Duration::from_millis(550));
+        assert_eq!(pixel(&runtime), Color::new(255, 0, 0)); // expiry never visually extended
+        assert!(runtime.transition("sessions").is_none());
+        runtime.baseline(&registry.snapshot(), Duration::from_millis(600));
+        runtime.prepare_render(&ctx, Duration::from_millis(600));
+        assert_eq!(pixel(&runtime), Color::new(255, 0, 0));
+        assert!(runtime.transition("sessions").is_none()); // resume has no old completion/fade
+    }
+
+    #[test]
+    fn source_expiry_removal_and_input_loss_hard_hide_but_noninput_variants_still_fade() {
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = context(&info, &layout);
+        let coord = canonical_coord("F1").unwrap();
+        for remove in [false, true] {
+            let mut definition = behavior();
+            definition.transition.duration_ms = 1000;
+            let mut runtime = CompiledSetup::compile(&document(vec![definition])).unwrap();
+            let mut registry = Registry::default();
+            fact(&mut registry, "a", 1, state("idle", 200), 0);
+            runtime.baseline(&registry.snapshot(), Duration::ZERO);
+            runtime.prepare_render(&ctx, Duration::ZERO);
+            fact(&mut registry, "a", 2, state("working", 100), 100);
+            observe(&mut runtime, &mut registry, 100);
+            runtime.prepare_render(&ctx, Duration::from_millis(100));
+            if remove {
+                fact(&mut registry, "a", 3, Payload::Remove {}, 150);
+            }
+            let now = if remove { 150 } else { 200 };
+            observe(&mut runtime, &mut registry, now);
+            assert_eq!(runtime.render(&ctx, Duration::ZERO), Frame::black());
+            runtime.prepare_render(&ctx, Duration::from_millis(now));
+            assert!(runtime.transition("sessions").is_none());
+        }
+        let mut definition = behavior();
+        definition.transition.duration_ms = 100;
+        definition.renderer = Renderer::Reactive {
+            effect: ReactiveKind::Afterimage,
+            palette: None,
+        };
+        let mut runtime = CompiledSetup::compile(&document(vec![definition])).unwrap();
+        let mut registry = Registry::default();
+        fact(&mut registry, "a", 1, state("idle", 2000), 0);
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        runtime.input_unavailable();
+        runtime.prepare_render(&ctx, Duration::ZERO);
+        fact(&mut registry, "a", 2, state("working", 2000), 100);
+        observe(&mut runtime, &mut registry, 100);
+        runtime.input_unavailable();
+        runtime.prepare_render(&ctx, Duration::from_millis(100));
+        observe(&mut runtime, &mut registry, 150);
+        runtime.input_unavailable();
+        runtime.prepare_render(&ctx, Duration::from_millis(150));
+        assert_eq!(
+            runtime.render(&ctx, Duration::ZERO).get_coord(coord),
+            Color::new(128, 0, 128)
+        );
+        // Enter the input-dependent base, then fail input. No fading input survives.
+        fact(&mut registry, "a", 3, state("other", 2000), 200);
+        observe(&mut runtime, &mut registry, 200);
+        runtime.advance_input(0.1, &[(0x04, 1.0)]);
+        runtime.prepare_render(&ctx, Duration::from_millis(200));
+        runtime.input_unavailable();
+        assert_eq!(runtime.render(&ctx, Duration::ZERO), Frame::black());
+        assert!(runtime.transition("sessions").is_none());
+        runtime.advance_input(0.1, &[(0x04, 1.0)]);
+        runtime.prepare_render(&ctx, Duration::from_millis(200));
+        fact(&mut registry, "a", 4, state("idle", 2000), 250);
+        observe(&mut runtime, &mut registry, 250);
+        runtime.input_unavailable(); // selection changed before failure was delivered
+        runtime.prepare_render(&ctx, Duration::from_millis(250));
+        assert_eq!(
+            runtime.render(&ctx, Duration::ZERO).get_coord(coord),
+            Color::new(0, 0, 255)
+        );
+        assert!(runtime.transition("sessions").is_none());
+    }
+
+    #[test]
+    fn rapid_retarget_does_not_hold_an_expired_ancestor_inside_a_mixed_frame() {
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = context(&info, &layout);
+        let mut definition = layer(
+            "sessions",
+            Renderer::Solid { color: [10; 3] },
+            Target::Whole {},
+        );
+        definition.transition.duration_ms = 1000;
+        definition.variants = [("a", [255, 0, 0]), ("b", [0, 0, 255]), ("c", [0, 255, 0])]
+            .into_iter()
+            .map(|(id, color)| {
+                variant(
+                    id,
+                    Activation::WhileState {
+                        source: "custom-source".into(),
+                        instance: Some(id.into()),
+                        state: None,
+                    },
+                    color,
+                )
+            })
+            .collect();
+        let mut runtime = CompiledSetup::compile(&document(vec![definition])).unwrap();
+        let mut registry = Registry::default();
+        fact(&mut registry, "a", 1, state("active", 200), 0);
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        runtime.prepare_render(&ctx, Duration::ZERO);
+        fact(&mut registry, "b", 1, state("active", 1000), 100);
+        observe(&mut runtime, &mut registry, 100);
+        runtime.prepare_render(&ctx, Duration::from_millis(100));
+        observe(&mut runtime, &mut registry, 150);
+        runtime.prepare_render(&ctx, Duration::from_millis(150));
+        fact(&mut registry, "c", 1, state("active", 1000), 150);
+        observe(&mut runtime, &mut registry, 150);
+        runtime.prepare_render(&ctx, Duration::from_millis(150));
+        assert_eq!(runtime.transition("sessions").unwrap().from, "b");
+        assert!(
+            runtime
+                .render(&ctx, Duration::ZERO)
+                .get_coord(layout.keys()[0].coord)
+                .red
+                > 0
+        );
+        observe(&mut runtime, &mut registry, 200);
+        runtime.prepare_render(&ctx, Duration::from_millis(200));
+        assert_eq!(
+            runtime
+                .render(&ctx, Duration::ZERO)
+                .get_coord(layout.keys()[0].coord),
+            Color::new(0, 255, 0)
+        );
+        assert!(runtime.transition("sessions").is_none());
+    }
+
+    #[test]
+    fn fade_brightness_opacity_cap_and_readonly_explanations_share_one_composition() {
+        use crate::explanations::{ExplanationContext, ExplanationMode, analyze_coverage};
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let mut ctx = context(&info, &layout);
+        ctx.brightness = 128;
+        let coord = canonical_coord("F1").unwrap();
+        let background = layer(
+            "background",
+            Renderer::Solid { color: [100; 3] },
+            Target::Whole {},
+        );
+        let mut definition = behavior();
+        definition.brightness = 128;
+        definition.opacity = 128;
+        definition.transition.duration_ms = 100;
+        let mut runtime = CompiledSetup::compile(&document(vec![background, definition])).unwrap();
+        let mut registry = Registry::default();
+        fact(&mut registry, "a", 1, state("idle", 2000), 0);
+        runtime.baseline(&registry.snapshot(), Duration::ZERO);
+        runtime.prepare_render(&ctx, Duration::ZERO);
+        fact(&mut registry, "a", 2, state("working", 2000), 100);
+        observe(&mut runtime, &mut registry, 100);
+        runtime.prepare_render(&ctx, Duration::from_millis(100));
+        observe(&mut runtime, &mut registry, 150);
+        runtime.prepare_render(&ctx, Duration::from_millis(150));
+        let frame = runtime.render(&ctx, Duration::from_millis(150));
+        assert_eq!(frame.get_coord(coord), Color::new(41, 25, 41));
+        assert!(frame.as_bytes().iter().all(|value| *value <= 128));
+        let snapshot = registry.snapshot();
+        for elapsed in [Duration::MAX, Duration::ZERO, Duration::from_millis(150)] {
+            let context = ExplanationContext {
+                render: &ctx,
+                elapsed,
+                snapshot: &snapshot,
+                now: Duration::from_millis(150),
+                mode: ExplanationMode::Scenario,
+            };
+            let report = analyze_coverage(&runtime, &context);
+            assert_eq!(report.frame, frame);
+            let explanation = report.explain_key(&runtime, &context, coord).unwrap();
+            assert_eq!(explanation.color, frame.get_coord(coord));
+            assert_eq!(
+                explanation.layers[1].selected_variant.as_deref(),
+                Some("working")
+            );
+            assert_eq!(
+                explanation.layers[1].transition.as_ref().unwrap().from,
+                "idle"
+            );
+            assert_eq!(
+                explanation.layers[1].transition.as_ref().unwrap().progress,
+                0.5
+            );
+        }
+        assert_eq!(runtime.render(&ctx, Duration::from_millis(150)), frame);
+        // A stale observation is ignored, including its transition history.
+        runtime.observe(
+            &Snapshot {
+                revision: 0,
+                event_cursor: 0,
+                states: vec![],
+            },
+            &EventBatch {
+                cursor: 0,
+                gap: false,
+                events: vec![],
+            },
+            Duration::ZERO,
+        );
+        assert_eq!(runtime.render(&ctx, Duration::from_millis(150)), frame);
     }
 
     #[test]

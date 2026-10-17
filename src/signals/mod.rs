@@ -52,6 +52,8 @@ pub trait SignalProgram {
     fn tick(&mut self, interrupted: &AtomicBool) -> ProgramResult;
     /// Deterministic preview input; must not open hardware, poll APIs, or spawn commands.
     fn preview_tick(&mut self, _tick: u32) {}
+    /// Explicit mutable frame preparation; render/diagnostics remain read-only.
+    fn prepare_render(&mut self, _ctx: &RenderContext<'_>) {}
     /// Stable notification identity. Exclude continuously changing progress/intensity.
     fn notification_snapshot(&self) -> Option<SignalSnapshot> {
         None

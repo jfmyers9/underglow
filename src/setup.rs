@@ -14,6 +14,7 @@ use crate::key_targets::canonical_coord;
 use crate::layout::Zone;
 use crate::reactive::ReactiveKind;
 use crate::render::PaletteName;
+pub use crate::transitions::{Transition, TransitionCurve};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -44,6 +45,9 @@ pub struct SetupDocument {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layer {
+    /// Optional appearance crossfade; zero preserves instantaneous selection.
+    #[serde(default, skip_serializing_if = "Transition::is_default")]
+    pub transition: Transition,
     /// Independent of renderer brightness; variants inherit both blend settings.
     #[serde(default = "opaque")]
     pub opacity: u8,
@@ -290,6 +294,7 @@ impl SetupDocument {
                 return Err("layers require unique bounded IDs and display names".into());
             }
             let check = || {
+                layer.transition.validate()?;
                 layer.renderer.validate()?;
                 layer.activation.validate()?;
                 if layer.variants.len() > MAX_BEHAVIOR_VARIANTS {
@@ -569,6 +574,39 @@ mod tests {
             assert!(current.replace_from_toml(&invalid).is_err());
             assert_eq!(current, original, "rejected imports are atomic");
         }
+    }
+
+    #[test]
+    fn transitions_default_instant_roundtrip_and_validate_even_when_disabled() {
+        let mut doc = example();
+        assert!(
+            doc.layers
+                .iter()
+                .all(|layer| layer.transition == Transition::default())
+        );
+        assert!(!doc.to_toml().unwrap().contains("transition"));
+        doc.layers[0].transition = Transition {
+            duration_ms: 5000,
+            curve: TransitionCurve::SmoothStep,
+        };
+        assert_eq!(
+            SetupDocument::from_toml(&doc.to_toml().unwrap()).unwrap(),
+            doc
+        );
+        assert_eq!(
+            serde_json::from_value::<SetupDocument>(serde_json::to_value(&doc).unwrap()).unwrap(),
+            doc
+        );
+        let original = doc.clone();
+        let invalid = doc
+            .to_toml()
+            .unwrap()
+            .replace("duration_ms = 5000", "duration_ms = 5001");
+        assert!(doc.replace_from_toml(&invalid).is_err());
+        assert_eq!(doc, original);
+        doc.layers[0].enabled = false;
+        doc.layers[0].transition.duration_ms = 5001;
+        assert!(doc.validate().is_err());
     }
 
     #[test]

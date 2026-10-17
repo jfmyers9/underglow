@@ -514,6 +514,7 @@ mod tests {
                 ctx: egui::Context::default(),
                 editor: BehaviorEditor::default(),
                 layer: Layer {
+                    transition: Default::default(),
                     opacity: 255,
                     blend: Default::default(),
                     id: "stable-layer".into(),

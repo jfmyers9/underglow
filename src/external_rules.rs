@@ -33,6 +33,9 @@ struct ExternalRulesProgram {
 }
 
 impl SignalProgram for ExternalRulesProgram {
+    fn prepare_render(&mut self, ctx: &RenderContext<'_>) {
+        self.base.prepare_render(ctx);
+    }
     fn setup_runtime(&mut self) -> Option<&mut underglow::layer_runtime::CompiledSetup> {
         self.base.setup_runtime()
     }

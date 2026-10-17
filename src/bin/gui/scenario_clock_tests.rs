@@ -35,6 +35,85 @@ fn render(preview: &mut Preview, doc: &SetupDocument) {
     preview.update_at(Some(doc), 255, Duration::from_secs(400));
 }
 
+#[test]
+fn status_transition_scenario_has_exact_composed_rgb_explanations_and_no_hardware_intent() {
+    let mut doc = document();
+    doc.layers.truncate(1);
+    let status: underglow::setup::Layer = serde_json::from_value(serde_json::json!({
+        "id":"status","name":"Status","brightness":255,"opacity":128,
+        "transition":{"duration_ms":100,"curve":"linear"},
+        "target":{"kind":"selection","keys":["A"]},
+        "activation":{"kind":"while-state","source":"pi","instance":"a"},
+        "renderer":{"kind":"solid","color":[0,0,0]},
+        "variants":[
+            {"id":"idle","name":"Idle","activation":{"kind":"while-state","source":"pi","instance":"a","state":"idle"},"renderer":{"kind":"solid","color":[0,0,200]}},
+            {"id":"working","name":"Working","activation":{"kind":"while-state","source":"pi","instance":"a","state":"working"},"renderer":{"kind":"solid","color":[200,0,0]}},
+            {"id":"finished","name":"Finished","activation":{"kind":"on-event","source":"pi","instance":"a","event":"finished","duration_ms":300},"renderer":{"kind":"solid","color":[0,200,0]}}
+        ]
+    })).unwrap();
+    doc.layers.push(status);
+    let mut p = prepared(&doc);
+    state(&mut p, "pi", "a", "idle", 1000);
+    render(&mut p, &doc);
+    assert_eq!(color(&p, "A"), Color::new(4, 4, 108));
+    p.advance_scenario_by(ms(100)).unwrap();
+    state(&mut p, "pi", "a", "working", 1000);
+    render(&mut p, &doc);
+    assert_eq!(color(&p, "A"), Color::new(4, 4, 108));
+    p.advance_scenario_by(ms(50)).unwrap();
+    render(&mut p, &doc);
+    assert_eq!(color(&p, "A"), Color::new(54, 4, 58));
+    let a = underglow::key_targets::canonical_coord("A").unwrap();
+    let explanation = super::super::setup_explanation::report(&p, a).unwrap();
+    assert_eq!(explanation.color, color(&p, "A"));
+    assert_eq!(
+        explanation.layers[1].selected_variant.as_deref(),
+        Some("working")
+    );
+    let transition = explanation.layers[1].transition.as_ref().unwrap();
+    assert_eq!(
+        (&*transition.from, &*transition.to, transition.progress),
+        ("idle", "working", 0.5)
+    );
+    assert!(
+        !explanation.layers[1]
+            .conditions
+            .iter()
+            .find(|c| c.variant_id.as_deref() == Some("idle"))
+            .unwrap()
+            .matched
+    );
+    p.scenario
+        .publish_event("pi", "a", "finished", 1000)
+        .unwrap();
+    render(&mut p, &doc);
+    assert_eq!(color(&p, "A"), Color::new(54, 4, 58)); // no flash on interruption
+    let deadline = p.coverage().unwrap().layers[1].deadline.unwrap().at;
+    p.advance_scenario_by(ms(50)).unwrap();
+    render(&mut p, &doc);
+    assert_eq!(color(&p, "A"), Color::new(29, 54, 33));
+    let frozen = p.frame().clone();
+    p.update_at(Some(&doc), 255, Duration::from_secs(9999));
+    assert_eq!(p.frame(), &frozen); // paused evaluation clock, not wall elapsed
+    assert!(!p.scenario_playing());
+    assert!(p.sample().is_none()); // no real source transport was changed
+    assert_eq!(
+        p.coverage().unwrap().layers[1].deadline.unwrap().at,
+        deadline
+    );
+    p.scenario.advance_to(deadline).unwrap();
+    render(&mut p, &doc);
+    assert_eq!(color(&p, "A"), Color::new(104, 4, 8)); // exact release, no expiry fade
+    assert!(p.coverage().unwrap().layers[1].transition.is_none());
+    p.rebaseline();
+    render(&mut p, &doc);
+    assert_eq!(color(&p, "A"), Color::new(104, 4, 8));
+    p.reset_scenario();
+    render(&mut p, &doc);
+    assert_eq!(color(&p, "A"), Color::new(8, 8, 16));
+    assert!(p.coverage().unwrap().layers[1].transition.is_none());
+}
+
 fn state(preview: &mut Preview, source: &str, instance: &str, state: &str, ttl: u64) {
     preview
         .scenario

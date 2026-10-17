@@ -122,6 +122,38 @@ starts a connector, grants executable trust, or resumes physical lighting.
 
 ## Logical behavior variants
 
+### Controlled appearance transitions
+
+An optional logical-layer `transition = { duration_ms = 250, curve = "smooth-step" }`
+crossfades between visible selected appearances. Duration is 0..5000 ms; the
+default is 0 (instant), preserving old documents and frames. Curves are `linear`
+(default) and `smooth-step`. Variants inherit this timing, target, opacity and
+blend mode; appearance brightness is applied once before the crossfade, then
+logical opacity/blend and the final global safety cap are applied normally.
+
+The shared monotonic evaluation clock drives transitions, not wall time or
+animation speed. Paused scenarios freeze the fade; manual steps advance it
+deterministically. Each logical layer retains at most two frames: the outgoing
+visible frame is frozen while the incoming renderer continues animating. A rapid
+retarget starts from the last presented mixed frame, without a flash or nested
+transition tree. Preparation is an explicit mutable frame boundary; rendering,
+coverage and explanations are read-only and cannot advance or retrigger fades.
+Library callers opt into fades by calling `CompiledSetup::prepare_render` once
+after observing facts/advancing input and before read-only render/composition or
+coverage capture, with the same render context. Existing callers that only
+render remain compatible and switch appearances instantly.
+
+Fades never prolong event deadlines or source leases. Expiry, removal and
+unavailable selected input hard-hide the affected appearance (or immediately
+show its available fallback). Baseline, resume, generation/reset and document
+reconfiguration clear visual history; startup/resume shows current persistent
+facts immediately without replaying completion events or old fades. Physical
+Pause/Stop releases ownership immediately; it never waits for a visual fade.
+No transition starts a connector, reacquires input/RGB SDKs, grants executable
+trust, or resumes hardware. The inspector edits duration/curve in the draft;
+preview badges distinguish frozen historical pixels from currently matched
+conditions. Save/Discard, library storage and declarative sharing retain timing.
+
 `variants` defaults to an empty list (omitted when saving an old setup). Each
 strict variant has a stable `id`, editable `name`, `enabled` (default true),
 `activation`, `renderer`, and optional `brightness`. IDs are unique **within the

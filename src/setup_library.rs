@@ -90,6 +90,7 @@ pub fn starter(starter: Starter, id: String, name: String) -> Result<SetupDocume
     };
     if starter != Starter::Blank {
         document.layers.push(Layer {
+            transition: Default::default(),
             opacity: 255,
             blend: Default::default(),
             id: "background".into(),
@@ -299,6 +300,42 @@ mod tests {
             reopened
                 .update(0, &LibraryMutation::Delete { id: "daily".into() })
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn stored_and_duplicated_setups_preserve_declarative_transition_settings() {
+        let mut document = starter(Starter::MatrixPi, "fades".into(), "Fades".into()).unwrap();
+        document.layers[1].transition = crate::setup::Transition {
+            duration_ms: 250,
+            curve: crate::setup::TransitionCurve::SmoothStep,
+        };
+        let library = SetupLibrary::default()
+            .update(
+                0,
+                &LibraryMutation::Store {
+                    document: document.clone(),
+                },
+            )
+            .unwrap();
+        let library = library
+            .update(
+                1,
+                &LibraryMutation::Duplicate {
+                    id: "fades".into(),
+                    new_id: "copy".into(),
+                    name: "Copy".into(),
+                },
+            )
+            .unwrap();
+        let reopened: SetupLibrary =
+            serde_json::from_slice(&serde_json::to_vec(&library).unwrap()).unwrap();
+        reopened.validate().unwrap();
+        assert_eq!(reopened.get("fades").unwrap(), &document);
+        assert_eq!(reopened.get("copy").unwrap().layers, document.layers);
+        assert_eq!(
+            SetupDocument::from_toml(&document.to_toml().unwrap()).unwrap(),
+            document
         );
     }
 

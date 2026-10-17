@@ -135,6 +135,23 @@ impl SignalProgram for SetupProgram {
         self.runtime
             .preview_tick_at(tick, 1.0 / self.preview_fps as f32);
         self.elapsed = Duration::from_secs_f64(f64::from(tick) / f64::from(self.preview_fps));
+        self.runtime.observe(
+            &underglow::external::Snapshot {
+                revision: 0,
+                event_cursor: 0,
+                states: vec![],
+            },
+            &underglow::external::EventBatch {
+                cursor: 0,
+                gap: false,
+                events: vec![],
+            },
+            self.elapsed,
+        );
+    }
+
+    fn prepare_render(&mut self, ctx: &RenderContext<'_>) {
+        self.runtime.prepare_render(ctx, self.elapsed);
     }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Frame {
@@ -182,6 +199,64 @@ mod tests {
 
     fn document() -> SetupDocument {
         SetupDocument::from_toml(include_str!("../../examples/layer-setup.toml")).unwrap()
+    }
+
+    #[test]
+    fn explicit_prepare_matches_scenario_transition_without_sdk_and_shutdown_clears_history() {
+        use underglow::scenarios::Scenario;
+        let doc: SetupDocument = serde_json::from_value(serde_json::json!({"schema_version":1,"id":"fade","name":"Fade","layers":[
+            {"id":"status","name":"Status","target":{"kind":"whole"},"transition":{"duration_ms":100},
+             "renderer":{"kind":"solid","color":[0,0,200]},
+             "variants":[{"id":"working","name":"Working","activation":{"kind":"while-state","source":"pi","state":"working"},"renderer":{"kind":"solid","color":[200,0,0]}}]}
+        ]})).unwrap();
+        let mut program = SetupProgram::new(&doc, None, 30).unwrap();
+        let mut pure = CompiledSetup::compile(&doc).unwrap();
+        let mut scenario = Scenario::default();
+        let info = DeviceInfo::synthetic_80he();
+        let layout = KeyboardLayout::for_device(&info);
+        let ctx = RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: 255,
+            palette: PaletteName::Heat,
+            tick: 0,
+            animation_seconds: 999.0,
+        };
+        program
+            .runtime
+            .baseline(&scenario.snapshot(), scenario.now());
+        pure.baseline(&scenario.snapshot(), scenario.now());
+        program.prepare_render(&ctx);
+        pure.prepare_render(&ctx, Duration::ZERO);
+        scenario.advance_to(Duration::from_millis(100)).unwrap();
+        scenario.publish_state("pi", "a", "working", 1000).unwrap();
+        for (now, expected) in [
+            (100, Color::new(0, 0, 200)),
+            (150, Color::new(100, 0, 100)),
+            (200, Color::new(200, 0, 0)),
+        ] {
+            scenario.advance_to(Duration::from_millis(now)).unwrap();
+            let snapshot = scenario.snapshot();
+            let events = scenario.events_since(0);
+            program.runtime.observe(&snapshot, &events, scenario.now());
+            pure.observe(&snapshot, &events, scenario.now());
+            program.elapsed = scenario.now();
+            program.prepare_render(&ctx);
+            pure.prepare_render(&ctx, scenario.now());
+            assert_eq!(program.render(&ctx), pure.render(&ctx, scenario.now()));
+            assert_eq!(
+                program.render(&ctx).get_coord(layout.keys()[0].coord),
+                expected
+            );
+            assert!(program.analog.is_none());
+            assert!(program.started.is_none());
+        }
+        program.shutdown(false).unwrap();
+        assert!(program.runtime.transition("status").is_none());
+        assert_eq!(
+            program.render(&ctx).get_coord(layout.keys()[0].coord),
+            Color::new(0, 0, 200)
+        );
     }
 
     #[test]

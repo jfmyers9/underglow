@@ -8,6 +8,29 @@ use underglow::device::DeviceInfo;
 use underglow::explanations::{ExplanationContext, ExplanationMode, KeyExplanation};
 use underglow::layout::{KeyboardLayout, MatrixCoord};
 use underglow::render::{PaletteName, RenderContext};
+use underglow::transitions::TransitionInspection;
+
+pub(super) const TRANSITION_HELP: &str = "Crossfades use a frozen outgoing frame and an animated incoming appearance on the evaluation clock, not wall time. Unavailable input hard-hides the layer; Pause releases hardware immediately, without fading.";
+
+fn transition_details(transition: &TransitionInspection) -> String {
+    fn endpoint(id: &str) -> &str {
+        if id.is_empty() { "Base / fallback" } else { id }
+    }
+    format!(
+        "{} → {} · {:.1}% eased",
+        endpoint(&transition.from),
+        endpoint(&transition.to),
+        transition.progress * 100.0
+    )
+}
+
+pub(super) fn show_transition(ui: &mut egui::Ui, transition: &TransitionInspection) {
+    ui.horizontal_wrapped(|ui| {
+        ui.strong("Transition").on_hover_text(TRANSITION_HELP);
+        ui.label(transition_details(transition));
+    });
+    ui.small("Outgoing pixels are frozen history, not a currently matched condition.");
+}
 
 pub(super) fn report(preview: &Preview, coord: MatrixCoord) -> Option<KeyExplanation> {
     // Invalid edits retain a last-good frame. Never explain it as the raw draft.
@@ -70,6 +93,9 @@ pub fn show(ui: &mut egui::Ui, preview: &Preview, coord: Option<MatrixCoord>) {
             for layer in &report.layers {
                 ui.push_id(&layer.id, |ui| {
                     ui.label(format!("#{} {} — {}", layer.index + 1, layer.name, layer.reason));
+                    if let Some(transition) = &layer.transition {
+                        show_transition(ui, transition);
+                    }
                     ui.small(format!("{:?} · opacity {:.1}% · structurally visible={}", layer.blend, f32::from(layer.opacity) * 100.0 / 255.0, layer.visible));
                     if let Some(rgb) = layer.composed_color {
                         ui.small(format!("After blending RGB {}, {}, {} (before final safety cap)", rgb.red, rgb.green, rgb.blue));
@@ -104,6 +130,26 @@ mod tests {
     use underglow::key_targets::canonical_coord;
     use underglow::render::Color;
     use underglow::setup::{Activation, Renderer, SetupDocument};
+
+    #[test]
+    fn transition_details_distinguish_fallback_and_report_eased_progress() {
+        let mut transition = TransitionInspection {
+            from: String::new(),
+            to: "working".into(),
+            progress: 0.15625,
+        };
+        assert_eq!(
+            transition_details(&transition),
+            "Base / fallback → working · 15.6% eased"
+        );
+        transition.from = "working".into();
+        transition.to.clear();
+        transition.progress = 1.0;
+        assert_eq!(
+            transition_details(&transition),
+            "working → Base / fallback · 100.0% eased"
+        );
+    }
 
     #[test]
     fn actual_preview_report_uses_effective_scenario_facts_and_retained_frame_guard() {

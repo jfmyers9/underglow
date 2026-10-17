@@ -53,7 +53,7 @@ pub fn print_signal_preview(
     let frames = (0..ticks.max(1))
         .map(|tick| {
             signal.preview_tick(tick);
-            signal.render(&RenderContext {
+            let ctx = RenderContext {
                 animation_seconds: f64::from(tick) / f64::from(options.fps.max(1))
                     * f64::from(options.speed)
                     / 100.0,
@@ -62,7 +62,9 @@ pub fn print_signal_preview(
                 brightness: options.brightness,
                 palette: options.palette,
                 tick,
-            })
+            };
+            signal.prepare_render(&ctx);
+            signal.render(&ctx)
         })
         .collect::<Vec<_>>();
     if let Err(error) = signal.shutdown(false) {

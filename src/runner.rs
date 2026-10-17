@@ -257,14 +257,16 @@ fn render_frame(
 ) -> ProgramResult {
     signal.tick(interrupted)?;
     let layout = KeyboardLayout::for_device(keyboard.info());
-    let frame = signal.render(&RenderContext {
+    let ctx = RenderContext {
         animation_seconds,
         info: keyboard.info(),
         layout: &layout,
         brightness: options.brightness,
         palette: options.palette,
         tick,
-    });
+    };
+    signal.prepare_render(&ctx);
+    let frame = signal.render(&ctx);
     keyboard.set_frame(&frame)?;
     keyboard.update()?;
     Ok(())
@@ -311,14 +313,16 @@ fn run_frames(
     {
         let started = Instant::now();
         signal.tick(interrupted)?;
-        let frame = signal.render(&RenderContext {
+        let ctx = RenderContext {
             animation_seconds: epoch.elapsed().as_secs_f64() * f64::from(options.speed) / 100.0,
             info: keyboard.info(),
             layout: &layout,
             brightness: options.brightness,
             palette: options.palette,
             tick,
-        });
+        };
+        signal.prepare_render(&ctx);
+        let frame = signal.render(&ctx);
         keyboard.set_frame(&frame)?;
         keyboard.update()?;
         tick += 1;

@@ -814,6 +814,7 @@ impl Editor {
         self.apply(LayerEdit::Create {
             index,
             layer: Layer {
+                transition: Default::default(),
                 opacity: 255,
                 blend: Default::default(),
                 id: id.clone(),
@@ -1083,6 +1084,8 @@ impl Editor {
                 let mut current = self.draft.clone().unwrap();
                 current.groups = groups;
                 let patch = LayerPatch {
+                    transition: (edited.transition != layer.transition)
+                        .then_some(edited.transition),
                     opacity: (edited.opacity != layer.opacity).then_some(edited.opacity),
                     blend: (edited.blend != layer.blend).then_some(edited.blend),
                     name: (edited.name != layer.name).then_some(edited.name),

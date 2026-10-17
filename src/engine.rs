@@ -562,6 +562,7 @@ impl LivePreview {
                 self.tick,
                 now.saturating_sub(self.previous_preview).as_secs_f32(),
             );
+            setup.prepare_render(&ctx, now.saturating_sub(self.started));
             let contributions = setup.composition(&ctx, now.saturating_sub(self.started));
             conditional_keys = layout
                 .keys()
@@ -587,11 +588,12 @@ impl LivePreview {
                 })
                 .map(|key| [key.coord.row, key.coord.column])
                 .collect();
-            underglow::compositor::compose(
+            underglow::compositor::compose_capped(
                 underglow::render::Frame::black(),
                 &layout,
                 &contributions,
                 now,
+                config.brightness,
             )
         } else {
             effect.render(&ctx)
@@ -2106,6 +2108,69 @@ zones = ['function']
             actual["rgb"],
             serde_json::json!(pure.render(&ctx, Duration::from_secs(2)).as_bytes())
         );
+    }
+
+    #[test]
+    fn canonical_control_preview_fades_match_live_runtime_with_final_global_cap() {
+        use underglow::external::{Payload, Registry};
+        let mut config = validate(include_str!("../examples/layers-profile.toml")).unwrap();
+        config.brightness = 64;
+        let doc = serde_json::from_value(serde_json::json!({"schema_version":1,"id":"fades","name":"Fades","layers":[
+            {"id":"base","name":"Base","renderer":{"kind":"solid","color":[255,0,0]},"target":{"kind":"whole"}},
+            {"id":"status","name":"Status","blend":"add","transition":{"duration_ms":100},"renderer":{"kind":"solid","color":[0,0,255]},"target":{"kind":"whole"},
+             "variants":[{"id":"working","name":"Working","activation":{"kind":"while-state","source":"pi","state":"working"},"renderer":{"kind":"solid","color":[255,0,0]}}]}
+        ]})).unwrap();
+        config.setup = Some(doc);
+        let mut registry = Registry::default();
+        let observation = preview_observation(&mut registry, 0, 0);
+        let mut preview = LivePreview::new(&config, &observation).unwrap();
+        let mut pure =
+            underglow::layer_runtime::CompiledSetup::compile(config.setup.as_ref().unwrap())
+                .unwrap();
+        pure.baseline(&observation.snapshot, observation.now);
+        let info = underglow::device::DeviceInfo::synthetic_80he();
+        let layout = underglow::layout::KeyboardLayout::for_device(&info);
+        let ctx = underglow::render::RenderContext {
+            info: &info,
+            layout: &layout,
+            brightness: 64,
+            palette: config.palette,
+            tick: 0,
+            animation_seconds: 0.0,
+        };
+        pure.prepare_render(&ctx, Duration::ZERO);
+        assert_eq!(
+            preview.frame(&config, Duration::ZERO)["rgb"],
+            serde_json::json!(pure.render(&ctx, Duration::ZERO).as_bytes())
+        );
+        publish_preview(
+            &mut registry,
+            "a",
+            1,
+            Payload::State {
+                state: "working".into(),
+                ttl_ms: 1000,
+            },
+            100,
+        );
+        for (now, color) in [(100, [64, 0, 64]), (150, [64, 0, 32]), (200, [64, 0, 0])] {
+            let observation = preview_observation(&mut registry, 0, now);
+            preview.observe(&observation);
+            pure.observe(&observation.snapshot, &observation.events, observation.now);
+            pure.prepare_render(&ctx, observation.now);
+            let before = registry.snapshot();
+            let actual = preview.frame(&config, observation.now);
+            assert_eq!(
+                actual["rgb"],
+                serde_json::json!(pure.render(&ctx, observation.now).as_bytes())
+            );
+            assert_eq!(
+                pure.render(&ctx, observation.now)
+                    .get_coord(layout.keys()[0].coord),
+                underglow::render::Color::new(color[0], color[1], color[2])
+            );
+            assert_eq!(registry.snapshot(), before);
+        }
     }
 
     #[test]

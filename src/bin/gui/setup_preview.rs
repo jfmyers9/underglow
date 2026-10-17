@@ -573,6 +573,7 @@ impl Preview {
             palette: PaletteName::Wooting,
             tick,
         };
+        runtime.prepare_render(&render, elapsed);
         let coverage = analyze_coverage(
             runtime,
             &ExplanationContext {
