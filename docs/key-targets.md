@@ -1,5 +1,48 @@
 # Named keys and custom groups
 
+## Setup target inspector component
+
+`src/bin/gui/setup_targets.rs` supplies the hardware-free `TargetSelection`
+widget for the layer inspector. It is not a new top-level app; mounting it in
+the setup editor is JIM-20 integration work. It edits only the selected
+`setup::Target` and `SetupDocument.groups`, and returns whether either changed.
+Keep its state per stable layer ID (or reset on selection/import). Pass every
+other layer target, including disabled layers, to protect shared references;
+pass `DeviceInfo::synthetic_80he()` for offline editing. Unsupported device
+models/layouts are explicitly rejected without modifying the document.
+
+- Click selects one direct key; Shift/Ctrl/Command-click toggles membership.
+  Drag selects intersecting key faces; modifier-drag adds. Empty space does not
+  erase selection. Clicking without modifiers explicitly replaces Whole;
+  modifying direct keys otherwise preserves zone and custom-group selectors.
+- The four physical **Arrow keys** preset, individual function keys, named
+  legacy zones, and saved group checkboxes require no TOML. All selectors form
+  a union: removing a direct key does not subtract zone/group coverage.
+- Use **New group from highlighted target**, name it, edit members on the
+  canvas, then **Save group**. Check its group checkbox to assign it to a layer.
+  **Edit / rename** uses a draft; Cancel leaves the document unchanged. Blue
+  fill shows draft members and gold outlines retain the layer's coverage.
+- Renaming repairs references on the selected layer, but is refused if another
+  layer uses that group. Deleting any referenced group is refused. Updating
+  members intentionally updates the shared group for all users. Duplicate
+  names, invalid names/keys, empty groups, and capacity overflow are errors.
+- The canvas reuses the runtime layout's matrix coordinates and geometry;
+  physical names resolve through the existing canonical key map. Unnamed
+  matrix positions are dots, not selectable/invented keys. Whole/legacy zones
+  still highlight these positions and count them, matching the compositor.
+  Saving such coverage as a named-key group is refused rather than silently
+  dropping unnamed cells. Fn, remaps, Mode, right Meta, numpad, and light bar
+  have no physical named selector. Hover shows the canonical key/address.
+- Legacy zone geometry is unchanged: the `Arrows` zone includes right Ctrl
+  and omits ArrowUp; use **Arrow keys (4 physical)** for actual arrows.
+  Clearing the final selector is visibly invalid, never implicit Whole. The
+  enclosing setup editor must validate drafts before persistence/activation.
+
+The component never loads the SDK, starts producers, writes engine state, or
+activates physical output. Headless egui input tests exercise clicks,
+multi-selection, drag, and dirty reporting; compositor tests compare selected
+coverage to rendered pixels. No hardware verification is implied.
+
 Automation scenes can target the whole keyboard, legacy zones, individual
 physical keys, or reusable groups. Matrix (or the selected background) keeps
 advancing underneath; an overlay only replaces its selected keys.
