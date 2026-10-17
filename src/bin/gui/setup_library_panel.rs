@@ -13,12 +13,22 @@ pub struct Report {
 
 pub enum Intent {
     Refresh,
-    SaveCurrent(String),
+    NameDraft(String),
+    SaveCopy(String),
+    ReloadSaved,
     NewDraft(Starter, String),
     Update {
         revision: u64,
         mutation: LibraryMutation,
     },
+}
+
+pub struct View<'a> {
+    pub dirty: bool,
+    pub busy: bool,
+    pub connected: bool,
+    pub draft_name: Option<&'a str>,
+    pub setup_revision: u64,
 }
 
 #[derive(Default)]
@@ -72,37 +82,34 @@ impl Panel {
         Ok(())
     }
 
-    pub fn can_switch(dirty: bool, paused: bool, busy: bool) -> bool {
-        !dirty && paused && !busy
-    }
-
-    pub fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        dirty: bool,
-        paused: bool,
-        busy: bool,
-        has_draft: bool,
-        setup_revision: u64,
-    ) -> Option<Intent> {
+    pub fn show(&mut self, ui: &mut egui::Ui, view: View<'_>) -> Option<Intent> {
         let mut intent = None;
         ui.group(|ui| {
-            ui.horizontal(|ui| {
-                ui.strong("Saved setups");
-                if ui.add_enabled(!busy, egui::Button::new("Refresh library")).clicked() { intent = Some(Intent::Refresh); }
-            });
+            ui.strong("Saved setups");
+            if ui.add_enabled(!view.busy && view.connected, egui::Button::new("Refresh library")).clicked() {
+                intent = Some(Intent::Refresh);
+            }
+            if ui.add_enabled(!view.busy && view.connected, egui::Button::new("Reload saved version")).clicked() {
+                intent = Some(Intent::ReloadSaved);
+            }
             ui.horizontal_wrapped(|ui| {
-                ui.label("Setup name");
+                ui.label("Name for draft / copy");
                 ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(180.0));
-                if ui.add_enabled(has_draft && paused && !busy && !self.name.trim().is_empty(), egui::Button::new("Save current setup")).clicked() {
-                    intent = Some(Intent::SaveCurrent(self.name.trim().into()));
+                let named = !self.name.trim().is_empty();
+                if ui.add_enabled(view.draft_name.is_some() && named && !view.busy, egui::Button::new("Name draft")).clicked() {
+                    intent = Some(Intent::NameDraft(self.name.trim().into()));
+                }
+                if ui.add_enabled(view.draft_name.is_some() && named && !view.busy && view.connected && self.report.is_some(), egui::Button::new("Save a copy")).clicked() {
+                    intent = Some(Intent::SaveCopy(self.name.trim().into()));
                 }
             });
+            if let Some(name) = view.draft_name { ui.small(format!("Current draft: {name}")); }
+            ui.small("Name draft edits locally. Save in the header persists it. Save a copy stores this draft without opening it.");
             ui.horizontal_wrapped(|ui| {
-                ui.label("New editable copy:");
+                ui.label("New draft:");
                 for (starter, label) in [(Starter::Blank, "Blank"), (Starter::Aurora, "Aurora"), (Starter::MatrixPi, "Matrix + Pi")] {
-                    if ui.add_enabled(!dirty && !busy, egui::Button::new(label)).clicked() {
-                        intent = Some(Intent::NewDraft(starter, if self.name.trim().is_empty() { label.into() } else { self.name.trim().into() }));
+                    if ui.add_enabled(!view.busy, egui::Button::new(label)).clicked() {
+                        intent = Some(Intent::NewDraft(starter, label.into()));
                     }
                 }
             });
@@ -121,23 +128,30 @@ impl Panel {
                     let current = report.current_id.as_ref() == Some(&id);
                     let mut mutation = None;
                     ui.horizontal_wrapped(|ui| {
-                        if ui.add_enabled(Self::can_switch(dirty, paused, busy) && !current, egui::Button::new("Open setup (paused)")).clicked() { mutation = Some(LibraryMutation::Switch { id: id.clone(), expected_setup_revision: setup_revision }); }
-                        if ui.add_enabled(!busy && !self.name.trim().is_empty(), egui::Button::new("Duplicate saved setup")).clicked() { mutation = Some(LibraryMutation::Duplicate { id: id.clone(), new_id: fresh_id(), name: self.name.trim().into() }); }
-                        if ui.add_enabled(!busy && !self.name.trim().is_empty() && (!current || (!dirty && paused)), egui::Button::new("Rename saved setup")).clicked() { mutation = Some(LibraryMutation::Rename { id: id.clone(), name: self.name.trim().into() }); }
-                        if ui.add_enabled(!busy && !current, egui::Button::new("Delete saved setup")).clicked() { self.confirm_delete = true; }
+                        if ui.add_enabled(!view.busy && view.connected && (!current || view.dirty), egui::Button::new("Open saved setup")).clicked() {
+                            mutation = Some(LibraryMutation::Switch { id: id.clone(), expected_setup_revision: view.setup_revision });
+                        }
+                        if ui.add_enabled(!view.busy && view.connected && !self.name.trim().is_empty(), egui::Button::new("Duplicate saved setup")).clicked() {
+                            mutation = Some(LibraryMutation::Duplicate { id: id.clone(), new_id: fresh_id(), name: self.name.trim().into() });
+                        }
+                        // Naming the current setup uses the draft + primary Save.
+                        if ui.add_enabled(!view.busy && view.connected && !current && !self.name.trim().is_empty(), egui::Button::new("Rename saved setup")).clicked() {
+                            mutation = Some(LibraryMutation::Rename { id: id.clone(), name: self.name.trim().into() });
+                        }
+                        if ui.add_enabled(!view.busy && view.connected && !current, egui::Button::new("Delete saved setup")).clicked() { self.confirm_delete = true; }
                     });
                     if self.confirm_delete && !current {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Delete only this saved copy?");
-                            if ui.add_enabled(!busy, egui::Button::new("Confirm delete setup")).clicked() { mutation = Some(LibraryMutation::Delete { id }); self.confirm_delete = false; }
+                            if ui.add_enabled(!view.busy && view.connected, egui::Button::new("Confirm delete setup")).clicked() { mutation = Some(LibraryMutation::Delete { id }); self.confirm_delete = false; }
                             if ui.button("Cancel delete").clicked() { self.confirm_delete = false; }
                         });
                     }
                     if let Some(mutation) = mutation { intent = Some(Intent::Update { revision: report.revision, mutation }); }
                 }
             }
-            if dirty { ui.small("Save or Discard the draft before switching or creating another composition."); }
-            ui.small("Switching requires Pause and never resumes lighting. Starter layers are editable copies, not recurring defaults.");
+            if view.dirty { ui.small("Opening or creating another setup offers Save / Discard / Cancel."); }
+            if !view.connected { ui.small("Engine offline: edit, name and test drafts locally. Reconnect before saving or opening a saved setup."); }
         });
         intent
     }
@@ -147,105 +161,26 @@ impl Panel {
 mod tests {
     use super::*;
     #[test]
-    fn switching_and_starters_cannot_silently_discard_dirty_drafts() {
-        assert!(!Panel::can_switch(true, true, false));
-        assert!(!Panel::can_switch(false, false, false));
-        assert!(!Panel::can_switch(false, true, true));
-        assert!(Panel::can_switch(false, true, false));
+    fn report_rejects_unknown_schema_without_replacing_known_library() {
         let mut panel = Panel::default();
         panel
             .receive(Report {
                 schema_version: 1,
                 revision: 4,
-                current_id: Some("daily".into()),
-                setups: vec![SetupSummary {
-                    id: "daily".into(),
-                    name: "Everyday".into(),
-                    layers: 2,
-                }],
+                current_id: None,
+                setups: vec![],
             })
             .unwrap();
-        let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                assert!(panel.show(ui, true, true, false, true, 9).is_none());
-            });
-        });
-        assert_eq!(panel.report.as_ref().unwrap().revision, 4);
-    }
-
-    #[test]
-    fn headless_switch_click_is_disabled_for_dirty_drafts_and_carries_both_cas_tokens() {
-        let mut panel = Panel::default();
-        panel
-            .receive(Report {
-                schema_version: 1,
-                revision: 4,
-                current_id: Some("daily".into()),
-                setups: vec![SetupSummary {
-                    id: "copy".into(),
-                    name: "Customized".into(),
-                    layers: 0,
-                }],
-            })
-            .unwrap();
-        panel.selected = Some("copy".into());
-        let ctx = egui::Context::default();
-        let frame = |panel: &mut Panel, dirty, events| {
-            let mut intent = None;
-            let output = ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1000.0, 600.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        intent = panel.show(ui, dirty, true, false, true, 9);
-                    });
-                },
-            );
-            (output, intent)
-        };
-        for dirty in [true, false] {
-            let (output, _) = frame(&mut panel, dirty, vec![]);
-            let pos = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text() == "Open setup (paused)" => {
-                        Some(text.pos + text.galley.size() * 0.5)
-                    }
-                    _ => None,
+        assert!(
+            panel
+                .receive(Report {
+                    schema_version: 2,
+                    revision: 5,
+                    current_id: None,
+                    setups: vec![]
                 })
-                .expect("switch button");
-            let mut clicked = None;
-            for pressed in [true, false] {
-                let (_, intent) = frame(
-                    &mut panel,
-                    dirty,
-                    vec![
-                        egui::Event::PointerMoved(pos),
-                        egui::Event::PointerButton {
-                            pos,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: Default::default(),
-                        },
-                    ],
-                );
-                clicked = clicked.or(intent);
-            }
-            if dirty {
-                assert!(clicked.is_none());
-            } else {
-                assert!(
-                    matches!(clicked, Some(Intent::Update { revision: 4, mutation: LibraryMutation::Switch { id, expected_setup_revision: 9 } }) if id == "copy")
-                );
-            }
-        }
+                .is_err()
+        );
+        assert_eq!(panel.report.unwrap().revision, 4);
     }
 }

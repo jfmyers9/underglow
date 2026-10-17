@@ -36,38 +36,75 @@ fn visible_rect(output: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
 
 #[track_caller]
 fn click(ctx: &egui::Context, app: &mut Controller, size: egui::Vec2, label: &str) {
-    // Windows have an initial sizing pass; always interact with settled geometry.
-    let _ = frame(ctx, app, size, vec![]);
-    let output = frame(ctx, app, size, vec![]);
-    let Some(rect) = visible_rect(&output, label) else {
-        let matches: Vec<_> = output
+    for _ in 0..20 {
+        let _ = frame(ctx, app, size, vec![]);
+        let output = frame(ctx, app, size, vec![]);
+        let picker_name = app.setup_library.open
+            && app
+                .setup_editor
+                .applied
+                .as_ref()
+                .is_some_and(|doc| doc.name == label);
+        let rect = if picker_name {
+            let below = visible_rect(&output, "New draft:").map(|rect| rect.bottom());
+            let name_visible = visible_rect(&output, "Name for draft / copy").is_some();
+            output.shapes.iter().rev().find_map(|shape| {
+                text_rect(&shape.shape, label).filter(|rect| {
+                    shape.clip_rect.contains_rect(*rect)
+                        && below.map_or(!name_visible, |bottom| rect.top() > bottom)
+                })
+            })
+        } else {
+            visible_rect(&output, label)
+        };
+        if let Some(rect) = rect {
+            assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(rect));
+            for pressed in [true, false] {
+                frame(
+                    ctx,
+                    app,
+                    size,
+                    vec![
+                        egui::Event::PointerMoved(rect.center()),
+                        egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            return;
+        }
+        assert!(
+            app.setup_library.open,
+            "missing visible {label} at {size:?}"
+        );
+        let pane = output
             .shapes
             .iter()
-            .filter_map(|shape| text_rect(&shape.shape, label).map(|rect| (rect, shape.clip_rect)))
-            .collect();
-        panic!(
-            "missing visible {label} at {size:?}, browser={}, text/clip={matches:?}",
-            app.setup_library.open
-        );
-    };
-    assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(rect));
-    let pos = rect.center();
-    for pressed in [true, false] {
-        let _ = frame(
+            .find(|shape| text_rect(&shape.shape, "Close setup browser").is_some())
+            .expect("setup browser")
+            .clip_rect;
+        frame(
             ctx,
             app,
             size,
             vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
+                egui::Event::PointerMoved(pane.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -160.0),
                     modifiers: Default::default(),
                 },
             ],
         );
+        for _ in 0..30 {
+            frame(ctx, app, size, vec![]);
+        }
     }
+    panic!("unreachable {label} in setup browser at {size:?}");
 }
 
 #[test]
@@ -122,7 +159,7 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
             "Connections",
             "Settings",
             "Diagnostics",
-            "Setup: Navigation draft ▾",
+            "Browse setups: Navigation draft",
             "Unsaved changes",
             "Keyboard lighting",
             "Resume lighting",
@@ -134,7 +171,7 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
         assert!(visible_rect(&output, "Saved setups").is_none());
         assert!(visible_rect(&output, "Connector diagnostics").is_none());
 
-        click(&ctx, &mut app, size, "Setup: Navigation draft ▾");
+        click(&ctx, &mut app, size, "Browse setups: Navigation draft");
         assert!(app.setup_library.open);
         assert!(app.page == Page::Editor);
         let output = frame(&ctx, &mut app, size, vec![]);
@@ -143,8 +180,10 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
         click(&ctx, &mut app, size, "Other setup · 1 layers");
         // A saved-item selection is browsing, not an implicit Switch.
         assert!(incoming.try_recv().is_err());
-        click(&ctx, &mut app, size, "Open setup (paused)");
+        click(&ctx, &mut app, size, "Open saved setup");
+        click(&ctx, &mut app, size, "Cancel");
         click(&ctx, &mut app, size, "Blank");
+        click(&ctx, &mut app, size, "Cancel");
         assert!(
             incoming.try_recv().is_err(),
             "dirty replacement actions stay blocked"
@@ -156,7 +195,7 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
         assert!(app.page == Page::Connections);
         assert!(matches!(incoming.try_recv(), Ok(Action::ConnectionsShow)));
         app.pending = false; // complete the read-only fixture request
-        click(&ctx, &mut app, size, "Setup: Navigation draft ▾");
+        click(&ctx, &mut app, size, "Browse setups: Navigation draft");
         assert!(app.setup_library.open);
         assert!(
             app.page == Page::Connections,

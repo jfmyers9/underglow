@@ -16,6 +16,7 @@ use underglow::setup::{Activation, Layer, SetupDocument, Target, TargetZone};
 use underglow::setup_edits::{LayerEdit, LayerPatch, apply_edits};
 use underglow::source_capabilities::CapabilityRegistry;
 
+#[allow(dead_code)] // Standalone Save hook; the host's primary Save uses its workflow.
 pub enum Intent {
     Apply {
         revision: u64,
@@ -780,6 +781,7 @@ impl Editor {
     }
 
     /// Only acknowledge the exact draft submitted, never erase subsequent edits.
+    #[allow(dead_code)] // Standalone component; the host uses validated persistence acknowledgements.
     pub fn accept_saved(&mut self, submitted: &SetupDocument, saved: SetupDocument) -> bool {
         if self.draft.as_ref() != Some(submitted) {
             return false;
@@ -789,6 +791,30 @@ impl Editor {
         self.load(Some(saved));
         self.preview.rebaseline();
         true
+    }
+
+    /// A validated persistence acknowledgement always advances known engine
+    /// state. It may only replace the exact draft whose action was acknowledged.
+    pub fn acknowledge_persisted(
+        &mut self,
+        expected_draft: Option<&SetupDocument>,
+        saved: SetupDocument,
+    ) {
+        let unchanged = self.draft.as_ref() == expected_draft;
+        self.base_revision = saved.revision;
+        self.applied = Some(saved.clone());
+        self.error = None;
+        if unchanged {
+            if self.draft.as_ref().map(|doc| &doc.id) != Some(&saved.id) {
+                self.reset_canvas_context();
+            }
+            self.draft = Some(saved);
+            self.dirty = false;
+            self.reconcile_selection();
+            self.preview.rebaseline();
+        } else {
+            self.dirty = true;
+        }
     }
 
     /// Background status/setup refreshes must never replace an unsaved draft.
@@ -949,18 +975,29 @@ impl Editor {
     }
 
     /// No source polling, engine requests, SDK ownership or preview producers.
+    #[allow(dead_code)] // Standalone component; the application mounts Save in its header.
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<Intent> {
+        self.show_body(ui, true)
+    }
+
+    pub fn show_hosted(&mut self, ui: &mut egui::Ui) {
+        self.show_body(ui, false);
+    }
+
+    fn show_body(&mut self, ui: &mut egui::Ui, standalone: bool) -> Option<Intent> {
         let mut intent = None;
         // Workspace-specific density uses the production fonts/colors, not a test-only style.
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
         ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
         ui.horizontal_wrapped(|ui| {
-            intent = self.show_save_controls(ui);
+            if standalone {
+                intent = self.show_save_controls(ui);
+            }
             if self.draft.is_some() && ui.button("Add layer").clicked() {
                 self.error = self.add().err();
             }
             ui.menu_button("More", |ui| {
-                if ui.button("New blank composition").clicked() {
+                if standalone && ui.button("New blank composition").clicked() {
                     self.confirm_blank = true;
                     ui.close_menu();
                 }

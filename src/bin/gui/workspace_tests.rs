@@ -39,7 +39,7 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             "F1" => Some(keyboard_region(&frame)),
             // These controls intentionally live outside scrollable inspectors.
             "Preview tools" | "Preview" | "Select keys" | "Inspect" | "Save composition"
-            | "Add layer" => None,
+            | "Save" | "Cancel" | "Add layer" => None,
             _ => tools.or(inspector),
         };
         if texts.iter().any(|t| {
@@ -119,10 +119,10 @@ fn workspace_primary_controls_and_complete_keyboard_are_reachable_at_real_sizes(
             "Editor",
             "Connections",
             "Settings",
-            "Setup: Workspace draft ▾",
+            "Browse setups: Workspace draft",
             "Unsaved changes",
             "Resume lighting",
-            "Save composition",
+            "Save",
             "Add layer",
             "Preview tools",
             "Preview",
@@ -159,7 +159,7 @@ fn workspace_primary_controls_and_complete_keyboard_are_reachable_at_real_sizes(
             );
         }
         let draft = app.setup_editor.draft.clone().unwrap();
-        harness.click("Save composition", None, |ctx| app.show_lighting(ctx));
+        harness.click("Save", None, |ctx| app.show_lighting(ctx));
         assert!(
             matches!(incoming.try_recv(), Ok(Action::SetupReplace { document, revision })
             if document == draft && revision == app.setup_editor.base_revision)
@@ -180,7 +180,7 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
         let draft = app.setup_editor.draft.clone();
         let selected = app.setup_editor.selected.clone();
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
-        let save = visible(&frame, "Save composition");
+        let save = visible(&frame, "Save");
         let esc = key(&frame, "Esc");
         let arrow = key(&frame, "→");
         let inspector = visible(&frame, "Layer name");
@@ -190,7 +190,7 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
             });
         }
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
-        assert_eq!(visible(&frame, "Save composition"), save);
+        assert_eq!(visible(&frame, "Save"), save);
         assert_eq!(key(&frame, "Esc"), esc);
         assert_eq!(key(&frame, "→"), arrow);
         assert!(
@@ -276,7 +276,7 @@ fn workspace_compact_edits_and_resizing_keep_one_draft_and_selection() {
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         key(&frame, "Esc");
         key(&frame, "→");
-        visible(&frame, "Save composition");
+        visible(&frame, "Save");
         assert_eq!(app.setup_editor.draft, draft);
         assert_eq!(
             app.setup_editor.selected.as_deref(),

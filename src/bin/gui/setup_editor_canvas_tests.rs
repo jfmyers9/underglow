@@ -330,6 +330,32 @@ fn mounted_layer_and_mode_changes_cannot_commit_an_old_drag_and_load_resets_cont
 }
 
 #[test]
+fn acknowledged_switch_resets_canvas_context_when_setup_ids_change() {
+    let original = document();
+    let mut editor = Editor::default();
+    editor.load(Some(original.clone()));
+    let id = original.layers[0].id.clone();
+    editor.targets.entry(id.clone()).or_default();
+    editor.canvas_selection = Some(id);
+    editor.canvas_mode = setup_targets::CanvasMode::Inspect;
+    editor.explained_key = canonical_coord("F1");
+    let mut replacement = original.clone();
+    replacement.id = "acknowledged-copy-with-the-same-layer-ids".into();
+    replacement.revision += 1;
+
+    editor.acknowledge_persisted(Some(&original), replacement.clone());
+
+    assert_eq!(editor.draft.as_ref(), Some(&replacement));
+    assert_eq!(editor.applied.as_ref(), Some(&replacement));
+    assert_eq!(editor.base_revision, replacement.revision);
+    assert!(!editor.dirty);
+    assert!(editor.targets.is_empty());
+    assert!(editor.canvas_selection.is_none());
+    assert!(editor.explained_key.is_none());
+    assert_eq!(editor.canvas_mode, setup_targets::CanvasMode::Preview);
+}
+
+#[test]
 fn mounted_small_key_hover_reveals_the_full_canonical_physical_name() {
     let mut harness = Harness::new(DEFAULT_SIZE);
     let (mut app, incoming) = app(document());

@@ -30,6 +30,11 @@ mod setup_library_panel;
 mod setup_preview;
 #[path = "gui/setup_targets.rs"]
 mod setup_targets;
+#[path = "gui/setup_workflow.rs"]
+mod setup_workflow;
+#[cfg(test)]
+#[path = "gui/setup_workflow_tests.rs"]
+mod setup_workflow_tests;
 #[path = "gui/sharing_panel.rs"]
 mod sharing_panel;
 #[cfg(test)]
@@ -703,6 +708,7 @@ struct Controller {
     setup_editor: setup_editor::Editor,
     setup_library: setup_library_panel::Panel,
     setup_sharing: sharing_panel::Panel,
+    setup_workflow: setup_workflow::Workflow,
     live_sources: Option<setup_preview::LiveSourceWorker>,
     setup_checked: bool,
 }
@@ -784,6 +790,7 @@ impl Controller {
             setup_editor: setup_editor::Editor::default(),
             setup_library: setup_library_panel::Panel::default(),
             setup_sharing: sharing_panel::Panel::default(),
+            setup_workflow: setup_workflow::Workflow::default(),
             live_sources,
             setup_checked: false,
         }
@@ -808,7 +815,12 @@ impl Controller {
                 self.pending = !poll;
                 self.last_poll = Instant::now();
             }
-            Err(_) => self.message = "Background worker stopped; reopen this window".into(),
+            Err(_) => {
+                self.setup_workflow.abort();
+                self.pending = false;
+                self.message =
+                    "Background worker stopped; draft retained. Reopen this window".into();
+            }
         }
     }
 
@@ -826,6 +838,32 @@ impl Controller {
             }
             // Leave an interactive interval even when the previous poll was slow.
             self.last_poll = Instant::now();
+            if self.setup_workflow.owns(&completion.action) {
+                let parsed = completion
+                    .result
+                    .and_then(|body| parse_reply(body.as_bytes()));
+                if let Ok(reply) = &parsed {
+                    if let Some(status) = &reply.status {
+                        self.connected = true;
+                        self.status = Some(status.clone());
+                    }
+                    if reply.ok
+                        && let Some(report) = &reply.library
+                    {
+                        let _ = self.setup_library.receive(report.clone());
+                    }
+                } else {
+                    self.connected = false;
+                }
+                self.run_workflow(|flow, view| {
+                    flow.complete(
+                        &completion.action,
+                        parsed.as_ref().map_err(String::as_str),
+                        view,
+                    )
+                });
+                continue;
+            }
             match completion.action {
                 action @ (Action::LibraryList | Action::LibraryUpdate { .. }) => {
                     // List/Store imports are library-only; even an unexpected
@@ -901,14 +939,21 @@ impl Controller {
                                         self.message = "Invalid setup revision envelope".into();
                                     } else {
                                         match action {
-                                            Action::SetupReplace { document, .. } => {
-                                                if let Some(saved) = setup.document {
-                                                    self.setup_editor
-                                                        .accept_saved(&document, saved);
-                                                    self.message = "Composition persisted. Resume lighting explicitly when ready.".into();
+                                            Action::SetupReplace { revision, document } => {
+                                                if let Some(saved) = setup.document.filter(|saved| {
+                                                    self.setup_editor.base_revision == revision
+                                                        && revision.checked_add(1) == Some(saved.revision)
+                                                        && underglow::setup_library::same_content(&document, saved)
+                                                        && saved.validate().is_ok()
+                                                }) {
+                                                    self.setup_editor.acknowledge_persisted(Some(&document), saved);
+                                                    self.message = "Saved. Resume lighting separately when ready.".into();
+                                                } else {
+                                                    self.message = "Unexpected save acknowledgement; draft retained. Reload the saved version or save a copy to recover.".into();
                                                 }
                                             }
-                                            _ => self.setup_editor.load(setup.document),
+                                            _ if !self.setup_workflow.pending() => self.setup_editor.load(setup.document),
+                                            _ => {}
                                         }
                                     }
                                 } else {
@@ -1183,33 +1228,124 @@ impl Controller {
         }
     }
 
-    fn show_setup_editor(&mut self, ui: &mut egui::Ui) {
-        if self.setup_checked && self.setup_editor.applied.is_none() {
-            ui.small("Saving a new composition replaces legacy notifications and automation rules in the private engine snapshot. Source profiles and Connections stay unchanged.");
+    fn workflow_view(&self) -> setup_workflow::View<'_> {
+        let lighting = match self.status.as_ref().filter(|_| self.connected) {
+            Some(status) if !status.enabled && status.state == "paused" => {
+                setup_workflow::Lighting::Paused
+            }
+            Some(status) if status.enabled => setup_workflow::Lighting::Active,
+            _ => setup_workflow::Lighting::Unknown,
+        };
+        setup_workflow::View {
+            draft: self.setup_editor.draft.as_ref(),
+            dirty: self.setup_editor.dirty,
+            setup_revision: self.setup_editor.base_revision,
+            connected: self.connected && self.setup_checked,
+            busy: self.pending,
+            lighting,
+            library: self.setup_library.report.as_ref(),
         }
-        self.setup_editor.can_save = !self.pending
-            && self.setup_checked
-            && self.connected
-            && self
-                .status
-                .as_ref()
-                .is_some_and(|s| !s.enabled && s.state == "paused");
+    }
+
+    fn run_workflow(
+        &mut self,
+        request: impl FnOnce(
+            &mut setup_workflow::Workflow,
+            &setup_workflow::View<'_>,
+        ) -> Result<setup_workflow::Update, String>,
+    ) {
+        let mut flow = std::mem::take(&mut self.setup_workflow);
+        let update = request(&mut flow, &self.workflow_view());
+        self.setup_workflow = flow;
+        match update {
+            Ok(update) => {
+                if let Some(accepted) = update.accepted {
+                    self.setup_editor
+                        .acknowledge_persisted(accepted.expected_draft.as_ref(), accepted.document);
+                }
+                if let Some(document) = update.new_draft {
+                    self.setup_editor.discard();
+                    self.setup_editor.starter_draft(document);
+                    self.setup_library.open = false;
+                }
+                if let Some(notice) = update.notice {
+                    self.message = notice;
+                }
+                if let Some(action) = update.action {
+                    self.message = match &action {
+                        Action::SetupReplace { .. } => "Saving setup…",
+                        Action::LibraryList => "Saved; refreshing setup library before opening…",
+                        Action::LibraryUpdate { .. } => "Opening saved setup…",
+                        _ => "Pausing lighting…",
+                    }
+                    .into();
+                    self.dispatch(action);
+                }
+            }
+            Err(error) => {
+                self.message = error.clone();
+                self.setup_editor.save_error(error);
+            }
+        }
+    }
+
+    fn save_setup(&mut self) {
+        self.run_workflow(|flow, view| flow.request_save(view));
+    }
+
+    fn show_workflow_prompt(&mut self, context: &egui::Context) {
+        use setup_workflow::{DirtyChoice, Prompt};
+        let Some(prompt) = self.setup_workflow.prompt() else {
+            return;
+        };
+        let response = egui::Modal::new(egui::Id::new("setup-persistence-choice")).show(context, |ui| {
+            ui.set_width((context.screen_rect().width() - 64.0).min(420.0));
+            match prompt {
+                Prompt::DirtyReplacement => {
+                    ui.heading("Unsaved changes");
+                    ui.label("Save this draft before opening or creating another setup?");
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Save changes").clicked() {
+                            self.run_workflow(|flow, view| flow.resolve_dirty(DirtyChoice::Save, view));
+                        }
+                        if ui.button("Discard changes").clicked() {
+                            self.run_workflow(|flow, view| flow.resolve_dirty(DirtyChoice::Discard, view));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.run_workflow(|flow, view| flow.resolve_dirty(DirtyChoice::Cancel, view));
+                        }
+                    });
+                }
+                Prompt::PauseAndSave | Prompt::PauseAndOpen => {
+                    ui.heading(if prompt == Prompt::PauseAndSave { "Pause lighting to save?" } else { "Pause lighting to open setup?" });
+                    ui.label("This releases keyboard lighting. Saving or opening never resumes it.");
+                    if self.setup_editor.applied.is_none() {
+                        ui.label("Saving adopts this setup and replaces legacy notifications and automation rules. Source profiles and Connections stay unchanged.");
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        let label = if prompt == Prompt::PauseAndSave { "Pause and save" } else { "Pause and open" };
+                        if ui.button(label).clicked() {
+                            self.run_workflow(|flow, view| flow.confirm_pause(view));
+                        }
+                        if ui.button("Cancel").clicked() { self.setup_workflow.cancel(); }
+                    });
+                }
+            }
+        });
+        if response.should_close() {
+            self.setup_workflow.cancel();
+        }
+    }
+
+    fn show_setup_editor(&mut self, ui: &mut egui::Ui) {
         self.setup_editor.preview_brightness = Some(self.brightness);
         self.setup_editor.preview.set_sample(
             self.live_sources
                 .as_ref()
                 .and_then(|worker| worker.sample()),
         );
-        ui.add_enabled_ui(!self.pending, |ui| {
-            if let Some(setup_editor::Intent::Apply { revision, document }) =
-                self.setup_editor.show(ui)
-            {
-                if self.setup_editor.can_save {
-                    self.dispatch(Action::SetupReplace { revision, document });
-                } else {
-                    self.message = "Pause lighting before Save; draft retained.".into();
-                }
-            }
+        ui.add_enabled_ui(!self.pending && !self.setup_workflow.pending(), |ui| {
+            self.setup_editor.show_hosted(ui);
         });
     }
 
@@ -1218,58 +1354,68 @@ impl Controller {
         if self.setup_checked && self.setup_editor.applied.is_none() {
             ui.small("Saving a starter replaces legacy notifications and automation rules. The source profile and Connections are not changed.");
         }
-        let paused = self.connected
-            && self
-                .status
-                .as_ref()
-                .is_some_and(|status| !status.enabled && status.state == "paused");
         let intent = self.setup_library.show(
             ui,
-            self.setup_editor.dirty,
-            paused,
-            self.pending || !self.connected || !self.setup_checked,
-            self.setup_editor.draft.is_some(),
-            self.setup_editor.base_revision,
+            setup_library_panel::View {
+                dirty: self.setup_editor.dirty,
+                busy: self.pending
+                    || self.setup_workflow.pending()
+                    || self.setup_workflow.prompt().is_some(),
+                connected: self.connected && self.setup_checked,
+                draft_name: self
+                    .setup_editor
+                    .draft
+                    .as_ref()
+                    .map(|doc| doc.name.as_str()),
+                setup_revision: self.setup_editor.base_revision,
+            },
         );
         match intent {
             Some(Intent::Refresh) => self.dispatch(Action::LibraryList),
-            Some(Intent::SaveCurrent(name)) if paused && !self.pending => {
-                match self.setup_editor.name_draft(name) {
-                    Ok(()) => {
-                        if let Some(document) = self.setup_editor.draft.clone() {
-                            self.dispatch(Action::SetupReplace {
-                                revision: self.setup_editor.base_revision,
-                                document,
-                            });
-                        }
-                    }
+            Some(Intent::ReloadSaved) => self.run_workflow(|flow, view| {
+                flow.request_destination(setup_workflow::Destination::ReloadSaved, view)
+            }),
+            Some(Intent::NameDraft(name)) => {
+                if let Err(error) = self.setup_editor.name_draft(name) {
+                    self.message = error;
+                }
+            }
+            Some(Intent::SaveCopy(name)) => {
+                let action = self.setup_workflow.save_copy(
+                    &self.workflow_view(),
+                    setup_library_panel::fresh_id(),
+                    name,
+                );
+                match action {
+                    Ok(action) => self.dispatch(action),
                     Err(error) => self.message = error,
                 }
             }
-            Some(Intent::NewDraft(template, name)) if !self.setup_editor.dirty && !self.pending => {
+            Some(Intent::NewDraft(template, name)) => {
                 match underglow::setup_library::starter(
                     template,
                     setup_library_panel::fresh_id(),
                     name,
                 ) {
-                    Ok(document) => {
-                        self.setup_editor.starter_draft(document);
-                    }
+                    Ok(document) => self.run_workflow(|flow, view| {
+                        flow.request_destination(
+                            setup_workflow::Destination::NewDraft(document),
+                            view,
+                        )
+                    }),
                     Err(error) => self.message = error,
                 }
             }
             Some(Intent::Update { revision, mutation }) => {
-                if matches!(
-                    mutation,
-                    underglow::setup_library::LibraryMutation::Switch { .. }
-                ) && self.setup_editor.dirty
-                {
-                    self.message = "Save or Discard the draft before switching".into();
+                if let underglow::setup_library::LibraryMutation::Switch { id, .. } = mutation {
+                    self.run_workflow(|flow, view| {
+                        flow.request_destination(setup_workflow::Destination::Saved(id), view)
+                    });
                 } else {
                     self.dispatch(Action::LibraryUpdate { revision, mutation });
                 }
             }
-            _ => {}
+            None => {}
         }
         let existing_ids = self
             .setup_library
@@ -1491,7 +1637,7 @@ impl Controller {
                 if ui.button("Close setup browser").clicked() {
                     self.setup_library.open = false;
                 }
-                ui.small("Browsing does not change your draft or keyboard lighting. Open a saved setup explicitly while paused, after saving or discarding edits.");
+                ui.small("Browsing does not change your draft or keyboard lighting. Open explicitly; unsaved drafts get Save / Discard / Cancel.");
                 // Keep dismissal reachable even when a picker scrolls its selection into view.
                 egui::ScrollArea::vertical()
                     .id_salt("setup-browser-body")
@@ -1555,18 +1701,27 @@ impl Controller {
             ui.horizontal(|ui| {
                 let title = self.setup_editor.draft.as_ref().map(|doc| doc.name.as_str())
                     .unwrap_or_else(|| effect_description(&self.preset).0);
-                let width = (ui.available_width() - 330.0).clamp(120.0, 400.0);
-                if ui.add_sized([width, 28.0], egui::Button::new(format!("Setup: {title} ▾")).truncate())
+                let width = (ui.available_width() - 410.0).clamp(180.0, 360.0);
+                if ui.add_sized([width, 28.0], egui::Button::new(format!("Browse setups: {title}")).truncate())
                     .on_hover_text(format!("{title} — open setup browser")).clicked() { self.setup_library.open = true; }
                 ui.label(if self.setup_editor.dirty { "Unsaved changes" }
                     else if self.setup_editor.draft.is_some() { "Saved" } else { "Legacy profile" });
+                if self.setup_editor.draft.is_some() {
+                    let can_save = self.setup_editor.dirty && self.connected && self.setup_checked
+                        && !self.pending && !self.setup_workflow.pending() && self.setup_workflow.prompt().is_none()
+                        && self.workflow_view().lighting != setup_workflow::Lighting::Unknown;
+                    if ui.add_enabled(can_save, egui::Button::new("Save"))
+                        .on_hover_text(if !self.connected { "Engine offline: local edits remain available. Reconnect to save." } else { "Save this draft. Active lighting requires explicit Pause and save." }).clicked() {
+                        self.save_setup();
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let label = if self.dev_simulation { "Hardware disabled" } else if self.dev_supervised && !self.connected {
                         "Waiting for engine"
                     } else { primary_label(self.connected, enabled) };
                     let button = egui::Button::new(egui::RichText::new(label).strong().color(BG))
                         .fill(ACCENT).corner_radius(8).min_size(egui::vec2(156.0, 32.0));
-                    if ui.add_enabled(!self.pending && !self.dev_simulation && (self.connected || !self.dev_supervised), button).clicked() {
+                    if ui.add_enabled(!self.pending && !self.setup_workflow.pending() && self.setup_workflow.prompt().is_none() && !self.dev_simulation && (self.connected || !self.dev_supervised), button).clicked() {
                         if !self.connected { self.dispatch(Action::StartEngine); }
                         else { self.control(&[if enabled { "pause" } else { "resume" }]); }
                     }
@@ -1582,8 +1737,13 @@ impl Controller {
             ui.horizontal(|ui| {
                 ui.small("Keyboard lighting");
                 ui.label(egui::RichText::new(state).small().color(brand::state_color(self.connected, self.dev_simulation, self.status.as_ref().map(|s| s.state.as_str()))));
-                if enabled && self.setup_editor.dirty && !self.dev_simulation { ui.small("Uses saved setup"); }
+                if self.setup_editor.dirty && !self.dev_simulation {
+                    let saved = self.setup_editor.applied.as_ref().map(|doc| doc.name.as_str()).unwrap_or("legacy profile");
+                    let caption = if enabled { "Uses saved" } else { "Saved" };
+                    ui.add(egui::Label::new(egui::RichText::new(format!("{caption}: {saved}")).small()).truncate());
+                }
             });
+            if !self.connected { ui.small("Engine offline · edit and test locally; reconnect to save or activate lighting."); }
             let message = if let Some(error) = self.status.as_ref().and_then(|s| s.last_error.as_ref()) {
                 format!("{} · {}{error}", self.message, if self.connected { "Engine: " } else { "Last seen: " })
             } else { self.message.clone() };
@@ -1723,6 +1883,7 @@ impl Controller {
         if self.setup_library.open {
             self.show_setup_browser(context);
         }
+        self.show_workflow_prompt(context);
     }
 }
 
@@ -2225,7 +2386,7 @@ mod tests {
             .map(|t| t.text)
             .collect::<Vec<_>>()
             .join("\n");
-        for label in ["Composition preview", "Save composition", "Preview tools"] {
+        for label in ["Composition preview", "Save", "Preview tools"] {
             assert!(text.contains(label), "missing {label}");
         }
         let mut click = |app: &mut Controller, label: &str| {
@@ -2261,24 +2422,25 @@ mod tests {
         active.state = "active".into();
         active.enabled = true;
         app.status = Some(active);
-        click(&mut app, "Save composition");
+        click(&mut app, "Save");
         assert!(
             incoming.try_recv().is_err(),
             "Save cannot hot-apply while active"
         );
         assert_eq!(app.setup_editor.applied.as_ref(), Some(&original));
+        click(&mut app, "Cancel");
         let mut paused: Status = serde_json::from_str(STATUS).unwrap();
         paused.state = "paused".into();
         paused.enabled = false;
         app.status = Some(paused);
         app.connected = false;
-        click(&mut app, "Save composition");
+        click(&mut app, "Save");
         assert!(
             incoming.try_recv().is_err(),
             "Offline Save retains the draft"
         );
         app.connected = true;
-        click(&mut app, "Save composition");
+        click(&mut app, "Save");
         match incoming.try_recv().unwrap() {
             Action::SetupReplace { revision, document } => {
                 assert_eq!(revision, 0);
@@ -2518,6 +2680,7 @@ mod tests {
             connections_panel: connections_screen::Panel::default(),
             setup_library: setup_library_panel::Panel::default(),
             setup_sharing: sharing_panel::Panel::default(),
+            setup_workflow: setup_workflow::Workflow::default(),
             page: Page::Editor,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
@@ -3266,6 +3429,7 @@ mod tests {
             connections_panel: connections_screen::Panel::default(),
             setup_library: setup_library_panel::Panel::default(),
             setup_sharing: sharing_panel::Panel::default(),
+            setup_workflow: setup_workflow::Workflow::default(),
             page: Page::Editor,
             last_connections: Instant::now() - Duration::from_secs(10),
             live_sources: None,
