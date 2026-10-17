@@ -1,7 +1,5 @@
 //! Appearance-only, declarative layer inspector. No engine, SDK or input producers.
 //! The caller owns validation, document revision, persistence and explicit Resume.
-// Temporary until mounted by the layer editor (JIM-20).
-#![allow(dead_code)]
 
 use clap::ValueEnum;
 use eframe::egui::{self, Ui};

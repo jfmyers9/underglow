@@ -32,6 +32,42 @@ registers login startup automatically.
 
 ## Controls
 
+### Layer composition (canonical setups)
+
+The GUI loads `control setup show` through its background subprocess worker.
+When a canonical setup is available, **Layer composition** is the primary editor;
+whole-preset cards and legacy global-renderer controls are hidden so selecting an
+appearance cannot replace other layers. Status polling never replaces a dirty
+draft. The fixed Pause/Resume control remains separate and explicit.
+
+- Select layers by stable ID. Add, rename, enable/mute, duplicate, delete, and
+  move them **Toward bottom / Toward top**. The bounded, scrolling stack is shown
+  bottom to top; later layers cover earlier layers on their targets.
+- Appearance controls and the 80HE physical-target canvas edit only the selected
+  layer. Duplicates get a fresh ID and retain the original appearance, targets,
+  activation, and behavior variants. Custom-group operations protect references
+  from every other layer, including disabled layers.
+- **New blank composition → Create blank** creates an independently identified,
+  empty setup. Added layers are explicitly always-on, Whole-keyboard Aurora
+  layers using catalog defaults; no Pi behavior is injected.
+- Conditions and behavior appearances remain readable but read-only here.
+  Condition forms and faithful composited draft preview are separate work.
+- **Apply & persist composition** explicitly submits the validated declarative
+  draft via bounded stdin JSON and the last engine revision. It never resumes
+  paused lighting, replaces executable trust, or automatically retries a stale
+  revision. Failed saves retain the draft. The editor is disabled while a save is
+  pending; only acknowledgment of the submitted draft clears its dirty state.
+- The target canvas is an editing aid, not device feedback or a composited preview.
+  Neither editing nor rendering the editor opens an SDK or starts input producers.
+
+Profiles without canonical setups use the clearly labeled **Legacy compatibility
+view** below, including migration warnings when supplied by the engine. Expand
+**Layer editor · create a new composition** to start an explicit blank stack.
+Legacy profile import remains in Settings with its separate executable-trust
+acknowledgment; persist a dirty composition before replacing the profile.
+
+### Legacy compatibility controls
+
 The controller shares the app icon's visual identity: graphite surfaces,
 keycap-like cards, a keycap wordmark, cyan controls, and subtle static RGB seams.
 Settings uses the same theme. RGB decoration is not an activity indicator and
@@ -41,7 +77,7 @@ muted for paused/offline. Preview chassis stay neutral; key illumination still
 follows the selected effect and draft colors. Keyboard legends stay readable as
 the light changes. Native macOS menus retain the platform's styling.
 
-- Opening the GUI only polls status. If unavailable, **Start engine** explicitly
+- Opening the GUI reads status and the canonical setup. If unavailable, **Start engine** explicitly
   starts a standalone engine. Fresh state starts paused; existing persisted
   enabled state remains the engine's responsibility. The GUI does not force resume.
 - Click an effect card: Ripples, Comet, Spectrum (rainbow), Breathe (breath),

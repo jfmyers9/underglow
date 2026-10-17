@@ -1,7 +1,5 @@
 //! Declarative target inspector. No SDK, engine commands, or real input sources.
 //! The layer editor owns document validation/revision and persists dirty edits.
-// Temporary until the layer inspector mounts this component (JIM-20).
-#![allow(dead_code)]
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use std::collections::BTreeMap;

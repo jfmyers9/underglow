@@ -9,6 +9,8 @@ mod connectors;
 mod devpreview;
 #[path = "gui/preview.rs"]
 mod gui_preview;
+#[path = "gui/setup_editor.rs"]
+mod setup_editor;
 #[path = "gui/setup_inspector.rs"]
 mod setup_inspector;
 #[path = "gui/setup_targets.rs"]
@@ -17,7 +19,7 @@ use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
 use serde::Deserialize;
 use std::{
     ffi::OsString,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
@@ -53,6 +55,14 @@ struct Status {
     ripple_color: Option<[u8; 3]>,
     last_error: Option<String>,
     retry_attempt: u32,
+    #[serde(default)]
+    migration_warning: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetupEnvelope {
+    revision: u64,
+    document: Option<underglow::setup::SetupDocument>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +72,8 @@ struct Reply {
     status: Option<Status>,
     #[serde(default)]
     diagnostics: Option<serde_json::Value>,
+    #[serde(default)]
+    setup: Option<SetupEnvelope>,
 }
 
 fn parse_reply(bytes: &[u8]) -> Result<Reply, String> {
@@ -87,6 +99,11 @@ fn parse_reply(bytes: &[u8]) -> Result<Reply, String> {
 
 #[derive(Clone, Debug)]
 enum Action {
+    SetupShow,
+    SetupReplace {
+        revision: u64,
+        document: underglow::setup::SetupDocument,
+    },
     Control(Vec<OsString>),
     DiagnosticsPreview(Vec<OsString>),
     StartEngine,
@@ -131,6 +148,22 @@ impl Backend {
                 .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
         );
         match action {
+            Action::SetupShow | Action::SetupReplace { .. } => {
+                command.arg("control");
+                if let Some(directory) = &self.state_dir {
+                    command.arg("--state-dir").arg(directory);
+                }
+                command.arg("setup");
+                match action {
+                    Action::SetupShow => {
+                        command.arg("show");
+                    }
+                    Action::SetupReplace { revision, .. } => {
+                        command.args(["replace", "--expected-revision", &revision.to_string()]);
+                    }
+                    _ => unreachable!(),
+                }
+            }
             Action::DiagnosticsPreview(args) => {
                 command.arg("diagnostics").args(args);
             }
@@ -222,6 +255,14 @@ impl Backend {
             );
         }
         let mut command = self.command(action);
+        if let Action::SetupReplace { document, .. } = action {
+            let input = serde_json::to_vec(document).map_err(|error| error.to_string())?;
+            if input.len() > underglow::setup::MAX_DOCUMENT_BYTES {
+                return Err("Setup exceeds 256 KiB".into());
+            }
+            command.stdin(Stdio::piped());
+            return run_with_timeout_input(command, Duration::from_secs(15), Some(input));
+        }
         if matches!(action, Action::StartEngine) {
             // The window owns neither the engine lifetime nor its console streams.
             #[cfg(unix)]
@@ -281,7 +322,9 @@ impl Backend {
 
 fn read_pipe(mut pipe: impl Read) -> Vec<u8> {
     let mut bytes = Vec::new();
-    let _ = (&mut pipe).take(64 * 1024).read_to_end(&mut bytes);
+    let _ = (&mut pipe)
+        .take((underglow::setup::MAX_DOCUMENT_BYTES + 64 * 1024) as u64)
+        .read_to_end(&mut bytes);
     bytes
 }
 
@@ -305,7 +348,15 @@ fn stop_helper(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<String, String> {
+fn run_with_timeout(command: Command, timeout: Duration) -> Result<String, String> {
+    run_with_timeout_input(command, timeout, None)
+}
+
+fn run_with_timeout_input(
+    mut command: Command,
+    timeout: Duration,
+    input: Option<Vec<u8>>,
+) -> Result<String, String> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -318,6 +369,14 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<String, S
         .map_err(|e| format!("Cannot run sibling helper: {e}"))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
+    // Never block the worker's timeout loop on a helper that stops reading stdin.
+    let (input_send, input_result) = mpsc::channel();
+    if let Some(input) = input {
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        thread::spawn(move || {
+            let _ = input_send.send(stdin.write_all(&input));
+        });
+    }
     let (out_send, out) = mpsc::channel();
     let (err_send, err) = mpsc::channel();
     thread::spawn(move || {
@@ -342,6 +401,9 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<String, S
     };
     // A completed helper must not leave grandchildren holding its output pipes.
     stop_helper(&mut child);
+    if let Ok(Err(error)) = input_result.try_recv() {
+        return Err(format!("Cannot send setup: {error}"));
+    }
     let stdout = out
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         .map_err(|_| "Timed out reading helper output".to_string())?;
@@ -500,6 +562,8 @@ struct Controller {
     keyboard_preview: gui_preview::KeyboardPreview,
     live_preview: Option<devpreview::Worker>,
     connector_panel: connectors::Panel,
+    setup_editor: setup_editor::Editor,
+    setup_checked: bool,
 }
 
 impl Controller {
@@ -568,6 +632,8 @@ impl Controller {
             keyboard_preview: gui_preview::KeyboardPreview::default(),
             live_preview,
             connector_panel: connectors::Panel::default(),
+            setup_editor: setup_editor::Editor::default(),
+            setup_checked: false,
         }
     }
 
@@ -609,6 +675,47 @@ impl Controller {
             // Leave an interactive interval even when the previous poll was slow.
             self.last_poll = Instant::now();
             match completion.action {
+                action @ (Action::SetupShow | Action::SetupReplace { .. }) => {
+                    self.setup_checked = true;
+                    match completion
+                        .result
+                        .and_then(|body| parse_reply(body.as_bytes()))
+                    {
+                        Ok(reply) => {
+                            if reply.ok {
+                                if let Some(setup) = reply.setup {
+                                    if setup.document.as_ref().map_or(0, |doc| doc.revision)
+                                        != setup.revision
+                                    {
+                                        self.message = "Invalid setup revision envelope".into();
+                                    } else {
+                                        match action {
+                                            Action::SetupReplace { document, .. } => {
+                                                if let Some(saved) = setup.document {
+                                                    self.setup_editor
+                                                        .accept_saved(&document, saved);
+                                                    self.message = "Composition persisted. Resume lighting explicitly when ready.".into();
+                                                }
+                                            }
+                                            _ => self.setup_editor.load(setup.document),
+                                        }
+                                    }
+                                } else {
+                                    self.message = "Engine did not return a setup envelope".into();
+                                }
+                            } else {
+                                self.message = reply.error.unwrap_or_else(|| {
+                                    "Setup request failed; draft retained".into()
+                                });
+                            }
+                            if let Some(status) = reply.status {
+                                self.connected = true;
+                                self.status = Some(status);
+                            }
+                        }
+                        Err(error) => self.message = error,
+                    }
+                }
                 Action::DiagnosticsPreview(_) => {
                     self.connector_panel.receive_preview(completion.result);
                 }
@@ -639,6 +746,9 @@ impl Controller {
                         if reply.ok && args.first().is_some_and(|arg| arg == "settings") {
                             self.settings_dirty = false;
                             self.ripple_colors_dirty = false;
+                        }
+                        if reply.ok && args.first().is_some_and(|arg| arg == "select") {
+                            self.setup_checked = false;
                         }
                         self.connected = reply.status.is_some();
                         self.message = reply.error.unwrap_or_else(|| {
@@ -799,6 +909,21 @@ fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egu
 }
 
 impl Controller {
+    fn show_setup_editor(&mut self, ui: &mut egui::Ui) {
+        ui.add_enabled_ui(!self.pending && self.setup_checked, |ui| {
+            if let Some(setup_editor::Intent::Apply { revision, document }) =
+                self.setup_editor.show(ui)
+            {
+                if self.connected {
+                    self.dispatch(Action::SetupReplace { revision, document });
+                } else {
+                    self.message =
+                        "Engine offline; draft retained. Start the engine before applying.".into();
+                }
+            }
+        });
+    }
+
     fn ripple_preview_colors(&self) -> gui_preview::RippleColors {
         if !self.ripple_colors_dirty
             && let Some(status) = &self.status
@@ -916,7 +1041,8 @@ impl Controller {
                     ui.colored_label(brand::WARNING, "Profiles can execute commands as your user.");
                     if ui.add(egui::TextEdit::singleline(&mut self.config_path).hint_text("/path/to/profile.toml").desired_width(f32::INFINITY)).changed() { self.trust_config = false; }
                     ui.checkbox(&mut self.trust_config, "I trust this file and its commands");
-                    if ui.add_enabled(self.connected && self.trust_config && !self.config_path.trim().is_empty(), egui::Button::new("Use profile")).clicked() {
+                    if self.setup_editor.dirty { ui.small("Persist the composition draft before replacing it with a legacy profile."); }
+                    if ui.add_enabled(self.connected && !self.setup_editor.dirty && self.trust_config && !self.config_path.trim().is_empty(), egui::Button::new("Use profile")).clicked() {
                         let path = self.config_path.clone(); self.control(&["select", "--config", &path]);
                     }
                 });
@@ -988,6 +1114,17 @@ impl Controller {
                     ui.colored_label(brand::WARNING, if self.connected { error.clone() } else { format!("Last seen: {error}") });
                 }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                if let Some(warning) = self.status.as_ref().and_then(|status| status.migration_warning.as_ref()) {
+                    ui.colored_label(brand::WARNING, warning);
+                }
+                if !self.setup_checked { ui.small("Loading canonical setup from engine…"); }
+                if self.setup_editor.draft.is_some() {
+                    ui.label(&self.message);
+                    self.show_setup_editor(ui);
+                    ui.small("Whole-preset selection is hidden: choose an appearance in the selected layer to preserve the rest of the stack.");
+                    ui.small("Target canvas is an editing aid, not a composited lighting preview or device feedback.");
+                } else {
+                ui.small("Legacy compatibility view · whole-preset controls");
                 card().show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Lighting controls").size(18.0).strong());
@@ -1093,6 +1230,11 @@ impl Controller {
                         });
                     }
                 });
+                ui.collapsing("Layer editor · create a new composition", |ui| {
+                    ui.small("This profile has no canonical setup (or uses unsupported legacy behavior). These controls replace whole presets. Create a blank composition to start a layer stack explicitly.");
+                    self.show_setup_editor(ui);
+                });
+                }
                 ui.add_space(4.0);
                 if let Some(request) = self.connector_panel.show(ui, self.connected, self.pending) {
                     match request {
@@ -1116,7 +1258,11 @@ impl eframe::App for Controller {
             menu_bar.hide_on_close(context);
         }
         self.receive();
-        if !self.pending && !self.poll_pending && self.last_poll.elapsed() >= Duration::from_secs(3)
+        if self.connected && !self.setup_checked && !self.pending && !self.poll_pending {
+            self.dispatch(Action::SetupShow);
+        } else if !self.pending
+            && !self.poll_pending
+            && self.last_poll.elapsed() >= Duration::from_secs(3)
         {
             self.control(&["status"]);
         }
@@ -1166,6 +1312,272 @@ fn application_icon(bundled_app: bool) -> egui::IconData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn setup_document() -> underglow::setup::SetupDocument {
+        underglow::setup::SetupDocument::from_toml(include_str!("../../examples/layer-setup.toml"))
+            .unwrap()
+    }
+
+    #[test]
+    fn setup_transport_uses_cas_arguments_not_document_argv_and_rejects_oversize() {
+        let backend = Backend {
+            directory: "/nonexistent-sibling".into(),
+            state_dir: Some("/private/state with spaces".into()),
+        };
+        let action = Action::SetupReplace {
+            revision: 9,
+            document: setup_document(),
+        };
+        assert_eq!(
+            backend.command(&action).get_args().collect::<Vec<_>>(),
+            [
+                "control",
+                "--state-dir",
+                "/private/state with spaces",
+                "setup",
+                "replace",
+                "--expected-revision",
+                "9"
+            ]
+        );
+        assert_eq!(
+            backend
+                .command(&Action::SetupShow)
+                .get_args()
+                .collect::<Vec<_>>(),
+            [
+                "control",
+                "--state-dir",
+                "/private/state with spaces",
+                "setup",
+                "show"
+            ]
+        );
+        let mut document = setup_document();
+        document.name = "x".repeat(underglow::setup::MAX_DOCUMENT_BYTES);
+        assert!(
+            backend
+                .execute(&Action::SetupReplace {
+                    revision: 0,
+                    document
+                })
+                .unwrap_err()
+                .contains("256 KiB")
+        );
+    }
+
+    #[test]
+    fn setup_replies_load_without_poll_clobber_and_only_acknowledge_saved_draft() {
+        let (mut app, incoming) = controller_fixture();
+        let (outgoing, replies) = mpsc::channel();
+        app.replies = replies;
+        let original = setup_document();
+        let reply = |document: &underglow::setup::SetupDocument| {
+            serde_json::json!({
+                "ok":true,"status":serde_json::from_str::<serde_json::Value>(STATUS).unwrap(),
+                "setup":{"revision":document.revision,"document":document}
+            })
+            .to_string()
+        };
+        outgoing
+            .send(Completion {
+                action: Action::SetupShow,
+                result: Ok(reply(&original)),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&original));
+        assert!(app.setup_checked);
+        app.setup_editor
+            .apply(underglow::setup_edits::LayerEdit::Enable {
+                id: original.layers[0].id.clone(),
+                enabled: false,
+            })
+            .unwrap();
+        let submitted = app.setup_editor.draft.clone().unwrap();
+        let mut newer = original.clone();
+        newer.revision = 1;
+        outgoing
+            .send(Completion {
+                action: Action::SetupShow,
+                result: Ok(reply(&newer)),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&submitted));
+        outgoing
+            .send(Completion {
+                action: Action::SetupReplace {
+                    revision: 0,
+                    document: submitted.clone(),
+                },
+                result: Ok(r#"{"ok":false,"error":"stale setup revision"}"#.into()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.setup_editor.dirty);
+        assert_eq!(app.setup_editor.base_revision, 0);
+        let mut saved = submitted.clone();
+        saved.revision = 1;
+        outgoing
+            .send(Completion {
+                action: Action::SetupReplace {
+                    revision: 0,
+                    document: submitted,
+                },
+                result: Ok(reply(&saved)),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(app.setup_editor.draft, Some(saved));
+        assert!(!app.setup_editor.dirty);
+        assert!(
+            incoming.try_recv().is_err(),
+            "loading/saving cannot auto-resume or send other controls"
+        );
+    }
+
+    #[test]
+    fn canonical_main_page_mounts_inspector_canvas_and_persists_only_explicitly() {
+        let (mut app, incoming) = controller_fixture();
+        let original = setup_document();
+        app.setup_editor.load(Some(original.clone()));
+        app.setup_editor.selected = Some(original.layers[0].id.clone());
+        let ctx = egui::Context::default();
+        let render = |app: &mut Controller, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(940.0, 1800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.show_lighting(ctx),
+            )
+        };
+        let click = |app: &mut Controller, label: &str| {
+            let _ = render(app, vec![]);
+            let output = render(app, vec![]);
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing {label}"));
+            for pressed in [true, false] {
+                let _ = render(
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+        };
+        let output = render(&mut app, vec![]);
+        let mut text = String::new();
+        for shape in &output.shapes {
+            painted_text(&shape.shape, &mut text);
+        }
+        for label in [
+            "Layer composition",
+            "Layer brightness",
+            "Physical targets · 80HE ANSI",
+            "Whole-preset selection is hidden",
+        ] {
+            assert!(text.contains(label), "missing {label}");
+        }
+        assert!(!text.contains("Choose an effect"));
+        assert!(!text.contains("Lighting controls"));
+        click(&mut app, "Matrix");
+        click(&mut app, "Aurora");
+        click(&mut app, "F1");
+        let draft = app.setup_editor.draft.as_ref().unwrap();
+        assert_eq!(draft.layers[0].renderer.catalog_id(), Some("aurora"));
+        assert_eq!(
+            draft.layers[0].target,
+            underglow::setup::Target::Selection {
+                zones: vec![],
+                keys: vec!["F1".into()],
+                groups: vec![]
+            }
+        );
+        assert_eq!(draft.layers[1], original.layers[1]);
+        assert_eq!(draft.groups, original.groups);
+        assert!(
+            incoming.try_recv().is_err(),
+            "local appearance/target clicks never issue select preset or write engine"
+        );
+        let expected = draft.clone();
+        click(&mut app, "Apply & persist composition");
+        match incoming.try_recv().unwrap() {
+            Action::SetupReplace { revision, document } => {
+                assert_eq!(revision, 0);
+                assert_eq!(document, expected);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(app.pending);
+        click(&mut app, "Add layer");
+        assert_eq!(
+            app.setup_editor.draft.as_ref(),
+            Some(&expected),
+            "inflight save disables edits"
+        );
+        assert!(incoming.try_recv().is_err());
+        // Native minimum width retains the editor without whole-preset controls.
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(620.0, 640.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| app.show_lighting(ctx),
+        );
+        let mut text = String::new();
+        for shape in &output.shapes {
+            painted_text(&shape.shape, &mut text);
+        }
+        assert!(text.contains("Layer composition"));
+        assert!(text.contains("Resume lighting"));
+        assert!(!text.contains("Choose an effect"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_stdin_and_large_replies_are_bounded_without_blocking_on_stdin() {
+        let input = vec![b'x'; 200 * 1024];
+        let mut command = Command::new("/bin/cat");
+        command.stdin(Stdio::piped());
+        assert_eq!(
+            run_with_timeout_input(command, Duration::from_secs(2), Some(input.clone()))
+                .unwrap()
+                .as_bytes(),
+            input
+        );
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 5"]).stdin(Stdio::piped());
+        let start = Instant::now();
+        assert!(
+            run_with_timeout_input(command, Duration::from_millis(80), Some(input))
+                .unwrap_err()
+                .contains("timed out")
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn connector_preview_uses_worker_arguments_without_engine_control_or_shell() {
@@ -1349,6 +1761,8 @@ mod tests {
             keyboard_preview: gui_preview::KeyboardPreview::default(),
             live_preview: None,
             connector_panel: connectors::Panel::default(),
+            setup_editor: setup_editor::Editor::default(),
+            setup_checked: true,
         };
         (app, incoming)
     }
@@ -2010,6 +2424,8 @@ mod tests {
             keyboard_preview: gui_preview::KeyboardPreview::default(),
             live_preview: None,
             connector_panel: connectors::Panel::default(),
+            setup_editor: setup_editor::Editor::default(),
+            setup_checked: true,
         };
         app.ripple_colors = RippleColors {
             enabled: true,
