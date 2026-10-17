@@ -190,7 +190,12 @@ cannot resume paused lighting; explicitly resume through normal engine controls.
 python3 scripts/check-connector.py connectors/examples/fixtures/valid.ndjson
 python3 scripts/check-connector.py /tmp/my-focus/fixture.ndjson
 python3 -m unittest scripts/tests/test_connectors.py -v
+make test-connectors
 ```
+
+`make test-connectors` runs both the Pi connector and starter-kit tests. It is an
+optional target requiring Node 22.19+ and Python 3; `make check` is unchanged and
+does not require Node.
 
 The checker uses only Python's standard library. It bounds input lines and checks
 v1 exact fields, tokens, integer types/ranges, default TTL, duplicate fields, and

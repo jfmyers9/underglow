@@ -54,9 +54,13 @@ install-dry-run:
 uninstall-dry-run:
 	@if [ "$$(uname -s)" = Darwin ]; then scripts/uninstall-macos.sh; else scripts/uninstall-linux.sh; fi
 
-.PHONY: dev test-dev
+.PHONY: dev test-dev test-connectors
 dev:
 	python3 scripts/dev.py $(if $(filter 1,$(DEV_HARDWARE)),--hardware,)
 
 test-dev:
 	python3 -m unittest discover -s scripts/tests -p 'test_dev.py'
+
+test-connectors:
+	node --test connectors/pi/connector.test.mjs
+	python3 -m unittest discover -s scripts/tests -p 'test_connectors.py'
