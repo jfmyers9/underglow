@@ -1,7 +1,7 @@
 use crate::device::DeviceInfo;
 use crate::layout::{KeyboardLayout, MatrixCoord};
 use clap::ValueEnum;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const MAX_ROWS: usize = 6;
@@ -78,7 +78,7 @@ impl Frame {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum PaletteName {

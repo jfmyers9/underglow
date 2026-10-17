@@ -7,10 +7,10 @@ mod heatmap;
 use crate::layout::MatrixCoord;
 use crate::render::{Frame, RenderContext};
 use clap::ValueEnum;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReactiveKind {
     Constellation,

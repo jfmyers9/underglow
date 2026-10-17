@@ -13,6 +13,7 @@ pub mod reactive;
 pub mod render;
 pub mod ripple;
 pub mod scenes;
+pub mod setup;
 
 /// Full brightness (100%); CLI/config values use RGB channels, not percentages.
 pub const DEFAULT_BRIGHTNESS: u8 = 255;

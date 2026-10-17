@@ -1,0 +1,38 @@
+# Canonical setup format; compiler/engine integration is delivered separately.
+schema_version = 1
+id = "everyday"
+name = "Matrix with agent activity"
+
+[groups]
+agent-indicators = ["F1", "F2", "F3", "F4"]
+
+[[layers]]
+id = "ambient"
+name = "Matrix background"
+enabled = true
+brightness = 160
+[layers.renderer]
+kind = "effect"
+effect = "matrix"
+speed = 100
+[layers.target]
+kind = "whole"
+[layers.activation]
+kind = "always"
+
+[[layers]]
+id = "pi-working"
+name = "Pi activity"
+enabled = true
+brightness = 200
+[layers.renderer]
+kind = "sweep"
+color = [0, 100, 255]
+period_ms = 1200
+[layers.target]
+kind = "selection"
+groups = ["agent-indicators"]
+[layers.activation]
+kind = "while-state"
+source = "pi"
+state = "working"
