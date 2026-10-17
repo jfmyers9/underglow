@@ -235,6 +235,30 @@ pause closes that session, restoring/releasing keyboard lighting and clearing
 input/transient state. Hardware-free tests cover lifecycle state and composition;
 real SDK restoration still requires a physical-device smoke test.
 
+## GUI drafts and composition preview
+
+The layer editor keeps an applied baseline separate from its local draft.
+**Discard draft** restores that baseline. **Save composition** submits the complete
+draft with the baseline engine revision; a rejected/stale save retains the draft,
+baseline, and error. Status refreshes never overwrite dirty work. Saved documents
+use the same canonical persistence format and survive restart.
+
+Save is available only while the connected engine reports paused lighting. It
+never resumes lighting: physical activation remains the separate explicit Resume
+action. Editing, Discard, and composition preview send no lighting commands.
+
+The full keyboard preview owns an independent `CompiledSetup` and uses its shared
+renderer/compositor, including opaque black, stack order, layer targets, palette,
+speed, and brightness capped by global brightness. **Live facts** inspects only
+the private source endpoint in a bounded background worker; it does not start
+providers or read physical input. **Isolated input demo** supplies private demo
+keystrokes to the same Focus/reactive/ripple simulations and never mixes in live
+facts or publishes synthetic sources. These modes never acquire an SDK lease.
+Conditional state expires on the extrapolated engine clock. Load, Save, Discard,
+mode changes, stale recovery, and endpoint generation changes baseline event
+cursors so old completions cannot replay. Ordinary scoped edits preserve unchanged
+runtime state through `CompiledSetup::reconfigure`.
+
 ## Atomic engine edits
 
 `control setup show` returns `setup: {revision, document}` without migration or

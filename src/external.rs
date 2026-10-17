@@ -191,7 +191,7 @@ pub enum ApplyOutcome {
     IgnoredStale,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StateSnapshot {
     pub identity: Identity,
     /// Sequence of the state update, not of a subsequent event or removal.
@@ -202,7 +202,7 @@ pub struct StateSnapshot {
     pub revision: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventSnapshot {
     pub cursor: u64,
     pub identity: Identity,
@@ -213,7 +213,7 @@ pub struct EventSnapshot {
     pub revision: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub revision: u64,
     pub event_cursor: u64,
@@ -221,7 +221,7 @@ pub struct Snapshot {
     pub states: Vec<StateSnapshot>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventBatch {
     /// Save this cursor after processing, even when no events remain.
     pub cursor: u64,

@@ -344,6 +344,33 @@ struct GroupDraft {
     target: Target,
 }
 
+/// Full compositor output, using the same physical keyboard geometry as editing.
+/// Black is a real pixel, never interpreted as transparency or a missing overlay.
+pub fn composition_preview(ui: &mut egui::Ui, frame: &underglow::render::Frame) {
+    let layout = KeyboardLayout::for_device(&DeviceInfo::synthetic_80he());
+    let width = ui.available_width().clamp(100.0, 700.0);
+    let unit = width / 18.5;
+    let (board, _) = ui.allocate_exact_size(Vec2::new(width, unit * 6.4), Sense::hover());
+    let keys = canvas_keys(&layout, board.min + Vec2::splat(unit * 0.25), unit);
+    for (key, position) in keys.iter().zip(layout.keys()) {
+        let color = frame.get_coord(position.coord);
+        ui.painter().rect_filled(
+            key.rect,
+            3,
+            Color32::from_rgb(color.red, color.green, color.blue),
+        );
+        if let Some(name) = &key.name {
+            ui.painter().text(
+                key.rect.center(),
+                Align2::CENTER_CENTER,
+                legend(name),
+                FontId::monospace((unit * 0.21).clamp(6.0, 12.0)),
+                Color32::WHITE,
+            );
+        }
+    }
+}
+
 /// Keep one instance per stable layer ID (or reset it when changing layers).
 #[derive(Default)]
 pub struct TargetSelection {

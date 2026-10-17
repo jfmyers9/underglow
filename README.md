@@ -1,8 +1,9 @@
 # Underglow
 
-Reactive keyboard lighting and notifications for Wooting keyboards. Choose an
-effect, react to key presses, or show build status, timers, and API alerts through
-light. Wootility remains the keyboard configuration tool.
+Composable keyboard lighting for Wooting keyboards. Arrange animations,
+key-reactive effects and information-driven status layers on the keyboard.
+Connectors supply facts; layers choose their visuals. Wootility remains the
+keyboard configuration tool.
 
 Formerly **Wooting Signals**. The CLI is now `underglow`, with `underglow-gui`
 and `underglow-service` companions. This is an independent project, not an
@@ -27,13 +28,19 @@ cargo run -- engine
 # In another terminal:
 cargo run -- control select --preset ripples
 cargo run -- control resume
-cargo run -- control settings --brightness 180 --palette ocean
+cargo run -- control settings --brightness 180 --fps 30
 cargo run -- control pause
 ```
 
 Build the optional settings app with `cargo build --features gui --bins`, then
 launch `target/debug/underglow-gui`. Closing its window leaves the engine running.
 Use Pause to restore/release lighting, or Stop engine to shut it down.
+
+The GUI edits an ordered layer stack with per-layer appearance controls and a
+keyboard target canvas. Preview the complete draft without hardware, then Save
+while paused or Discard changes. Saving never resumes lighting. See the
+[setup format](docs/setup-format.md), [migration policy](docs/setup-migration.md)
+and separate [connection registry](docs/connections.md).
 
 For the faster development loop, run **`make dev`**: incremental rebuilds,
 automatic GUI/engine restarts, isolated settings, and hardware-free effect
@@ -55,9 +62,11 @@ while the engine owns hardware; pause it before using `doctor` or a standalone t
 For development, run **`make dev`**, then **`pi`** in another terminal in this
 checkout. The project extension discovers the engine automatically, and the
 main GUI preview shows live Pi overlays without hardware access. Fresh state
-starts with Matrix; existing animation/settings are preserved and missing Pi
-rules are added automatically. No environment exports or extension flags are
-needed. Restart older watchers/Pi sessions once after updating.
+starts with Matrix + Pi; supported existing profiles migrate once while keeping
+their animation/settings. Deleted Pi layers stay deleted across rebuilds and
+restarts. Unsupported legacy profiles remain intact with a compatibility warning.
+No environment exports or extension flags are needed. Restart older watchers/Pi
+sessions once after updating.
 
 Use `make dev DEV_HARDWARE=1` and explicitly Resume lighting to use the physical
 keyboard. No global extension or login service is installed.

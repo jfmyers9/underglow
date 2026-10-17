@@ -1,5 +1,5 @@
 //! Hardware-free layer draft and stable-ID operations. Transport belongs to the host.
-use super::{setup_inspector, setup_targets};
+use super::{setup_inspector, setup_preview, setup_targets};
 use eframe::egui;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -160,6 +160,136 @@ mod tests {
     }
 
     #[test]
+    fn headless_build_matrix_cyan_arrows_function_row_save_and_discard() {
+        let ctx = egui::Context::default();
+        let mut editor = Editor {
+            can_save: true,
+            ..Default::default()
+        };
+        click(&ctx, &mut editor, "New blank composition", 0);
+        click(&ctx, &mut editor, "Create blank", 0);
+        click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Aurora", 0);
+        click(&ctx, &mut editor, "Matrix", 0);
+        click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Aurora", 0);
+        click(&ctx, &mut editor, "Solid", 0);
+        let (output, _) = run(&ctx, &mut editor, vec![]);
+        let swatch = text_position(&output, "Color", 0) - egui::vec2(38.0, 0.0);
+        click_at(&ctx, &mut editor, swatch);
+        click(&ctx, &mut editor, "R 255", 0);
+        run(
+            &ctx,
+            &mut editor,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        command: true,
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                },
+                egui::Event::Text("0".into()),
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        assert_eq!(
+            editor.draft.as_ref().unwrap().layers[1].renderer,
+            underglow::setup::Renderer::Solid {
+                color: [0, 255, 255]
+            }
+        );
+        click(&ctx, &mut editor, "Layer composition", 0); // close color popup
+        click(&ctx, &mut editor, "Arrow keys (4 physical)", 0);
+        click(&ctx, &mut editor, "Add layer", 0);
+        click(&ctx, &mut editor, "Aurora", 0);
+        click(&ctx, &mut editor, "Pulse", 0);
+        click(&ctx, &mut editor, "Named zones (legacy engine map)", 0);
+        click(&ctx, &mut editor, "Function", 0);
+        let draft = editor.draft.clone().unwrap();
+        assert_eq!(draft.layers[0].renderer.catalog_id(), Some("matrix"));
+        assert_eq!(draft.layers[0].target, Target::Whole {});
+        assert_eq!(
+            draft.layers[1].target,
+            Target::Selection {
+                zones: vec![],
+                keys: ["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"]
+                    .map(str::to_owned)
+                    .to_vec(),
+                groups: vec![]
+            }
+        );
+        assert!(matches!(
+            draft.layers[2].renderer,
+            underglow::setup::Renderer::Pulse { .. }
+        ));
+        assert_eq!(
+            draft.layers[2].target,
+            Target::Selection {
+                zones: vec![underglow::setup::TargetZone::Function],
+                keys: vec![],
+                groups: vec![]
+            }
+        );
+        let (output, _) = run(&ctx, &mut editor, vec![]);
+        let pos = text_position(&output, "Save composition", 0);
+        let mut intent = None;
+        for pressed in [true, false] {
+            intent = run(
+                &ctx,
+                &mut editor,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            )
+            .1
+            .or(intent);
+        }
+        let Some(Intent::Apply { revision, document }) = intent else {
+            panic!("Save must emit one explicit CAS intent");
+        };
+        assert_eq!(revision, 0);
+        assert_eq!(document, draft);
+        editor.save_error("stale setup revision".into());
+        assert_eq!(editor.draft.as_ref(), Some(&draft));
+        assert!(editor.applied.is_none());
+        assert!(editor.dirty);
+        assert!(editor.error.is_some());
+        let mut saved = draft.clone();
+        saved.revision = 1;
+        assert!(editor.accept_saved(&draft, saved.clone()));
+        assert!(editor.error.is_none());
+        let restored = SetupDocument::from_toml(&saved.to_toml().unwrap()).unwrap();
+        let mut restarted = Editor::default();
+        restarted.load(Some(restored));
+        assert_eq!(restarted.draft, Some(saved.clone()));
+        click(&ctx, &mut editor, "Add layer", 0);
+        editor.load(Some(draft)); // refresh cannot overwrite dirty state or baseline
+        assert_eq!(editor.draft.as_ref().unwrap().layers.len(), 4);
+        click(&ctx, &mut editor, "Discard draft", 0);
+        assert_eq!(editor.draft, Some(saved.clone()));
+        assert_eq!(editor.applied, Some(saved));
+        assert!(!editor.dirty);
+        assert_eq!(editor.base_revision, 1);
+    }
+
+    #[test]
     fn headless_build_select_rename_mute_duplicate_reorder_and_delete_stack() {
         let ctx = egui::Context::default();
         let mut editor = Editor::default();
@@ -175,7 +305,7 @@ mod tests {
         // Actual mounted appearance inspector and physical-key canvas, not mocks.
         click(&ctx, &mut editor, "Aurora", 0);
         click(&ctx, &mut editor, "Matrix", 0);
-        click(&ctx, &mut editor, "F1", 0);
+        click(&ctx, &mut editor, "F1", 1); // Editing canvas, not composed preview legend.
         let selected = &editor.draft.as_ref().unwrap().layers[1];
         assert_eq!(selected.renderer.catalog_id(), Some("matrix"));
         assert_eq!(
@@ -231,6 +361,11 @@ mod tests {
 #[derive(Default)]
 pub struct Editor {
     pub draft: Option<SetupDocument>,
+    /// Last acknowledged applied composition, independent from local edits.
+    pub applied: Option<SetupDocument>,
+    pub preview: setup_preview::Preview,
+    pub can_save: bool,
+    pub preview_brightness: Option<u8>,
     /// Last engine revision, never a count of local keystrokes.
     pub base_revision: u64,
     pub dirty: bool,
@@ -260,7 +395,9 @@ impl Editor {
             return false;
         }
         self.dirty = false;
+        self.error = None;
         self.load(Some(saved));
+        self.preview.rebaseline();
         true
     }
 
@@ -270,8 +407,26 @@ impl Editor {
             return;
         }
         self.base_revision = document.as_ref().map_or(0, |doc| doc.revision);
+        if self.applied != document {
+            self.preview.rebaseline();
+        }
+        self.applied = document.clone();
         self.draft = document;
         self.reconcile_selection();
+    }
+
+    pub fn discard(&mut self) {
+        self.draft = self.applied.clone();
+        self.dirty = false;
+        self.error = None;
+        self.confirm_blank = false;
+        self.targets.clear();
+        self.reconcile_selection();
+        self.preview.rebaseline();
+    }
+
+    pub fn save_error(&mut self, error: String) {
+        self.error = Some(error);
     }
 
     fn reconcile_selection(&mut self) {
@@ -345,7 +500,10 @@ impl Editor {
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<Intent> {
         let mut intent = None;
         ui.heading("Layer composition");
-        ui.small("Draft only until Apply & persist. Applying never resumes paused lighting.");
+        ui.small("Hardware-free draft preview. Save while paused; Resume lighting separately.");
+        if !self.can_save {
+            ui.small("Pause lighting before Save. Offline drafts remain editable.");
+        }
         ui.horizontal_wrapped(|ui| {
             if ui.button("New blank composition").clicked() {
                 self.confirm_blank = true;
@@ -354,7 +512,10 @@ impl Editor {
                 self.error = self.add().err();
             }
             if ui
-                .add_enabled(self.dirty, egui::Button::new("Apply & persist composition"))
+                .add_enabled(
+                    self.dirty && self.can_save,
+                    egui::Button::new("Save composition"),
+                )
                 .clicked()
                 && let Some(doc) = &self.draft
             {
@@ -367,6 +528,12 @@ impl Editor {
                     }
                     Err(error) => self.error = Some(error),
                 }
+            }
+            if ui
+                .add_enabled(self.dirty, egui::Button::new("Discard draft"))
+                .clicked()
+            {
+                self.discard();
             }
         });
         if self.confirm_blank {
@@ -401,6 +568,49 @@ impl Editor {
             }
         ));
         ui.small("Stack order: bottom → top. Later layers cover earlier layers on their targets.");
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Composition preview:");
+            ui.selectable_value(
+                &mut self.preview.mode,
+                setup_preview::Mode::Live,
+                "Live facts",
+            );
+            ui.selectable_value(
+                &mut self.preview.mode,
+                setup_preview::Mode::InputDemo,
+                "Isolated input demo",
+            );
+        });
+        match self.preview.mode {
+            setup_preview::Mode::Live => {
+                ui.small(if self.preview.sample().is_some_and(|s| !s.is_stale()) {
+                    "Read-only live facts · physical input unavailable · no hardware output"
+                } else {
+                    "Live facts disconnected/stale · conditional layers hidden · no hardware output"
+                });
+            }
+            setup_preview::Mode::InputDemo => {
+                ui.small(
+                    "Private simulated keystrokes only · no live source facts or provider activity",
+                );
+            }
+        }
+        self.preview
+            .update(self.draft.as_ref(), self.preview_brightness.unwrap_or(255));
+        if self.preview.mode == setup_preview::Mode::Live
+            && self
+                .preview
+                .runtime()
+                .is_some_and(|runtime| runtime.requirements().analog_input)
+        {
+            ui.small("Input-driven layers are hidden here. Choose Isolated input demo to simulate keystrokes.");
+        }
+        if let Some(error) = &self.preview.error {
+            ui.colored_label(egui::Color32::LIGHT_RED, error);
+        }
+        setup_targets::composition_preview(ui, self.preview.frame());
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(33));
         if doc.layers.is_empty() {
             ui.label("Empty composition · no hidden layers or Pi behavior. Add a layer to begin.");
         }

@@ -13,6 +13,8 @@ mod gui_preview;
 mod setup_editor;
 #[path = "gui/setup_inspector.rs"]
 mod setup_inspector;
+#[path = "gui/setup_preview.rs"]
+mod setup_preview;
 #[path = "gui/setup_targets.rs"]
 mod setup_targets;
 use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
@@ -188,7 +190,7 @@ impl Backend {
         command
     }
 
-    fn engine_log(&self) -> Result<(PathBuf, std::fs::File), String> {
+    fn runtime_directory(&self) -> Result<PathBuf, String> {
         let directory = if let Some(path) = &self.state_dir {
             path.clone()
         } else {
@@ -202,6 +204,11 @@ impl Backend {
                     .join("wooting-signals")
             }
         };
+        Ok(directory)
+    }
+
+    fn engine_log(&self) -> Result<(PathBuf, std::fs::File), String> {
+        let directory = self.runtime_directory()?;
         let result = (|| -> std::io::Result<_> {
             let mut builder = std::fs::DirBuilder::new();
             builder.recursive(true);
@@ -563,6 +570,7 @@ struct Controller {
     live_preview: Option<devpreview::Worker>,
     connector_panel: connectors::Panel,
     setup_editor: setup_editor::Editor,
+    live_sources: Option<setup_preview::LiveSourceWorker>,
     setup_checked: bool,
 }
 
@@ -575,6 +583,10 @@ impl Controller {
         let repaint = context.clone();
         let custom_state = backend.state_dir.is_some();
         let bundled_app = backend.bundled_app();
+        let live_sources = backend
+            .runtime_directory()
+            .ok()
+            .map(|directory| setup_preview::LiveSourceWorker::start(directory, context.clone()));
         let live_preview = if std::env::var("WOOTING_DEV_SUPERVISED").as_deref() == Ok("1")
             && std::env::var("WOOTING_DEV_SIMULATION").as_deref() == Ok("1")
         {
@@ -633,6 +645,7 @@ impl Controller {
             live_preview,
             connector_panel: connectors::Panel::default(),
             setup_editor: setup_editor::Editor::default(),
+            live_sources,
             setup_checked: false,
         }
     }
@@ -707,13 +720,17 @@ impl Controller {
                                 self.message = reply.error.unwrap_or_else(|| {
                                     "Setup request failed; draft retained".into()
                                 });
+                                self.setup_editor.save_error(self.message.clone());
                             }
                             if let Some(status) = reply.status {
                                 self.connected = true;
                                 self.status = Some(status);
                             }
                         }
-                        Err(error) => self.message = error,
+                        Err(error) => {
+                            self.message = error.clone();
+                            self.setup_editor.save_error(error);
+                        }
                     }
                 }
                 Action::DiagnosticsPreview(_) => {
@@ -910,15 +927,27 @@ fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egu
 
 impl Controller {
     fn show_setup_editor(&mut self, ui: &mut egui::Ui) {
-        ui.add_enabled_ui(!self.pending && self.setup_checked, |ui| {
+        self.setup_editor.can_save = !self.pending
+            && self.setup_checked
+            && self.connected
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|s| !s.enabled && s.state == "paused");
+        self.setup_editor.preview_brightness = Some(self.brightness);
+        self.setup_editor.preview.set_sample(
+            self.live_sources
+                .as_ref()
+                .and_then(|worker| worker.sample()),
+        );
+        ui.add_enabled_ui(!self.pending, |ui| {
             if let Some(setup_editor::Intent::Apply { revision, document }) =
                 self.setup_editor.show(ui)
             {
-                if self.connected {
+                if self.setup_editor.can_save {
                     self.dispatch(Action::SetupReplace { revision, document });
                 } else {
-                    self.message =
-                        "Engine offline; draft retained. Start the engine before applying.".into();
+                    self.message = "Pause lighting before Save; draft retained.".into();
                 }
             }
         });
@@ -1463,12 +1492,13 @@ mod tests {
             let pos = output
                 .shapes
                 .iter()
-                .find_map(|s| match &s.shape {
+                .filter_map(|s| match &s.shape {
                     egui::Shape::Text(text) if text.galley.text() == label => {
                         Some(text.pos + text.galley.size() * 0.5)
                     }
                     _ => None,
                 })
+                .next_back() // Target-edit canvas follows the read-only composed preview.
                 .unwrap_or_else(|| panic!("missing {label}"));
             for pressed in [true, false] {
                 let _ = render(
@@ -1520,7 +1550,28 @@ mod tests {
             "local appearance/target clicks never issue select preset or write engine"
         );
         let expected = draft.clone();
-        click(&mut app, "Apply & persist composition");
+        let mut active: Status = serde_json::from_str(STATUS).unwrap();
+        active.state = "active".into();
+        active.enabled = true;
+        app.status = Some(active);
+        click(&mut app, "Save composition");
+        assert!(
+            incoming.try_recv().is_err(),
+            "Save cannot hot-apply while active"
+        );
+        assert_eq!(app.setup_editor.applied.as_ref(), Some(&original));
+        let mut paused: Status = serde_json::from_str(STATUS).unwrap();
+        paused.state = "paused".into();
+        paused.enabled = false;
+        app.status = Some(paused);
+        app.connected = false;
+        click(&mut app, "Save composition");
+        assert!(
+            incoming.try_recv().is_err(),
+            "Offline Save retains the draft"
+        );
+        app.connected = true;
+        click(&mut app, "Save composition");
         match incoming.try_recv().unwrap() {
             Action::SetupReplace { revision, document } => {
                 assert_eq!(revision, 0);
@@ -1762,6 +1813,7 @@ mod tests {
             live_preview: None,
             connector_panel: connectors::Panel::default(),
             setup_editor: setup_editor::Editor::default(),
+            live_sources: None,
             setup_checked: true,
         };
         (app, incoming)
@@ -2425,6 +2477,7 @@ mod tests {
             live_preview: None,
             connector_panel: connectors::Panel::default(),
             setup_editor: setup_editor::Editor::default(),
+            live_sources: None,
             setup_checked: true,
         };
         app.ripple_colors = RippleColors {
