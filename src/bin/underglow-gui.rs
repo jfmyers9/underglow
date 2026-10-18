@@ -1867,7 +1867,11 @@ impl Controller {
                     let saved = self.setup_editor.applied.as_ref().map(|doc| doc.name.as_str()).unwrap_or("legacy profile");
                     let context = format!("Keyboard lighting: {state}\nPhysical output uses saved: {saved}\n{}\nSaving never enables or resumes lighting.", self.message);
                     if self.dev_simulation {
-                        ui.label(egui::RichText::new("Hardware disabled").small().color(MUTED)).on_hover_text(context);
+                        // Label layout is left-to-right inside the trailing slot;
+                        // a bare Label in an RTL row can paint beyond its right edge.
+                        ui.allocate_ui_with_layout(egui::vec2(140.0, 30.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new("Hardware disabled").small().color(MUTED)).on_hover_text(context);
+                        });
                     } else {
                         let label = if self.dev_supervised && !self.connected { "Waiting for engine" }
                             else { primary_label(self.connected, enabled) };

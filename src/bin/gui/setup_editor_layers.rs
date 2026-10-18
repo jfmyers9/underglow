@@ -159,7 +159,7 @@ impl Editor {
                                     })
                                     .err();
                             }
-                            let width = (ui.clip_rect().width() - 64.0).max(28.0);
+                            let width = (ui.available_width() - 44.0).max(28.0);
                             // A vertical slot gives truncation a bounded wrap width even
                             // when a long label has expanded a horizontal row's min rect.
                             if ui
