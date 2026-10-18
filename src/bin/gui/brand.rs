@@ -1,5 +1,5 @@
 //! Shared application chrome. Effect colors remain owned by the renderer.
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind};
+use eframe::egui::{self, Color32, Rect, Stroke, StrokeKind};
 
 pub const BG: Color32 = Color32::from_rgb(21, 24, 27);
 pub const SURFACE: Color32 = Color32::from_rgb(27, 31, 35);
@@ -12,79 +12,10 @@ pub const ACCENT: Color32 = Color32::from_rgb(137, 206, 230);
 pub const SUCCESS: Color32 = Color32::from_rgb(136, 211, 170);
 pub const WARNING: Color32 = Color32::from_rgb(239, 193, 124);
 pub const ERROR: Color32 = Color32::from_rgb(240, 153, 163);
-const SPECTRUM: [Color32; 6] = [
-    Color32::from_rgb(52, 132, 255),
-    Color32::from_rgb(149, 87, 255),
-    Color32::from_rgb(245, 76, 211),
-    Color32::from_rgb(255, 115, 131),
-    Color32::from_rgb(255, 209, 99),
-    Color32::from_rgb(85, 230, 161),
-];
 
 pub fn icon_data() -> egui::IconData {
     eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon/underglow-256.png"))
         .expect("checked-in application icon must be a valid PNG")
-}
-
-fn icon_texture(context: &egui::Context) -> egui::TextureHandle {
-    let id = egui::Id::new("underglow-brand-icon");
-    if let Some(texture) = context.data(|data| data.get_temp::<egui::TextureHandle>(id)) {
-        return texture;
-    }
-    let icon = icon_data();
-    let texture = context.load_texture(
-        "Underglow keycap",
-        egui::ColorImage::from_rgba_unmultiplied(
-            [icon.width as usize, icon.height as usize],
-            &icon.rgba,
-        ),
-        egui::TextureOptions::LINEAR,
-    );
-    context.data_mut(|data| data.insert_temp(id, texture.clone()));
-    texture
-}
-
-pub fn wordmark(ui: &mut egui::Ui, compact: bool) {
-    let size = if compact { 36.0 } else { 54.0 };
-    ui.horizontal(|ui| {
-        let texture = icon_texture(ui.ctx());
-        ui.add(egui::Image::new((texture.id(), egui::vec2(size, size))))
-            .on_hover_text("Underglow · keyboard lighting and notifications");
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 3.0;
-            ui.label(
-                egui::RichText::new("UNDERGLOW")
-                    .size(if compact { 14.0 } else { 18.0 })
-                    .strong()
-                    .color(INK),
-            );
-            ui.label(
-                egui::RichText::new("Lighting + signals")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-        });
-    });
-}
-
-/// A static, narrow light seam, not an activity indicator or a lighting palette.
-pub fn spectrum(painter: &egui::Painter, rect: Rect, opacity: f32) {
-    let mut mesh = egui::Mesh::default();
-    let segments = (SPECTRUM.len() - 1) as f32;
-    for (i, colors) in SPECTRUM.windows(2).enumerate() {
-        let left = rect.left() + rect.width() * i as f32 / segments;
-        let right = rect.left() + rect.width() * (i + 1) as f32 / segments;
-        let index = mesh.vertices.len() as u32;
-        let a = colors[0].gamma_multiply(opacity);
-        let b = colors[1].gamma_multiply(opacity);
-        mesh.colored_vertex(Pos2::new(left, rect.top()), a);
-        mesh.colored_vertex(Pos2::new(right, rect.top()), b);
-        mesh.colored_vertex(Pos2::new(left, rect.bottom()), a);
-        mesh.colored_vertex(Pos2::new(right, rect.bottom()), b);
-        mesh.add_triangle(index, index + 1, index + 2);
-        mesh.add_triangle(index + 2, index + 1, index + 3);
-    }
-    painter.add(egui::Shape::mesh(mesh));
 }
 
 pub fn divider(ui: &mut egui::Ui) {
@@ -218,12 +149,10 @@ mod tests {
     }
 
     #[test]
-    fn main_page_and_settings_share_one_cached_icon_texture() {
-        let context = egui::Context::default();
-        let first = icon_texture(&context);
-        let second = icon_texture(&context);
-        assert_eq!(first.id(), second.id());
-        assert_eq!(first.size(), [256, 256]);
+    fn native_application_icon_remains_a_valid_raster_asset() {
+        let icon = icon_data();
+        assert_eq!([icon.width, icon.height], [256, 256]);
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
     }
 
     #[test]
