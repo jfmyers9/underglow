@@ -84,17 +84,12 @@ impl Panel {
 
     pub fn show(&mut self, ui: &mut egui::Ui, view: View<'_>) -> Option<Intent> {
         let mut intent = None;
-        ui.group(|ui| {
-            ui.strong("Saved setups");
-            if ui.add_enabled(!view.busy && view.connected, egui::Button::new("Refresh library")).clicked() {
-                intent = Some(Intent::Refresh);
-            }
-            if ui.add_enabled(!view.busy && view.connected, egui::Button::new("Reload saved version")).clicked() {
-                intent = Some(Intent::ReloadSaved);
-            }
+        ui.scope(|ui| {
+            ui.strong("Current draft");
+            ui.label("Name for draft / copy");
+            ui.add(egui::TextEdit::singleline(&mut self.name)
+                .desired_width(ui.available_width()));
             ui.horizontal_wrapped(|ui| {
-                ui.label("Name for draft / copy");
-                ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(180.0));
                 let named = !self.name.trim().is_empty();
                 if ui.add_enabled(view.draft_name.is_some() && named && !view.busy, egui::Button::new("Name draft")).clicked() {
                     intent = Some(Intent::NameDraft(self.name.trim().into()));
@@ -102,9 +97,14 @@ impl Panel {
                 if ui.add_enabled(view.draft_name.is_some() && named && !view.busy && view.connected && self.report.is_some(), egui::Button::new("Save a copy")).clicked() {
                     intent = Some(Intent::SaveCopy(self.name.trim().into()));
                 }
+                if ui.add_enabled(!view.busy && view.connected, egui::Button::new("Reload saved version")).clicked() {
+                    intent = Some(Intent::ReloadSaved);
+                }
             });
             if let Some(name) = view.draft_name { ui.small(format!("Current draft: {name}")); }
             ui.small("Name draft edits locally. Save in the header persists it. Save a copy stores this draft without opening it.");
+            ui.add_space(8.0);
+            ui.separator();
             ui.horizontal_wrapped(|ui| {
                 ui.label("New draft:");
                 for (starter, label) in [(Starter::Blank, "Blank"), (Starter::Aurora, "Aurora"), (Starter::MatrixPi, "Matrix + Pi")] {
@@ -112,6 +112,16 @@ impl Panel {
                         intent = Some(Intent::NewDraft(starter, label.into()));
                     }
                 }
+            });
+            ui.add_space(8.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.strong("Saved setups");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(!view.busy && view.connected, egui::Button::new("Refresh library")).clicked() {
+                        intent = Some(Intent::Refresh);
+                    }
+                });
             });
             if let Some(report) = &self.report {
                 let selected_name = report.setups.iter().find(|entry| Some(&entry.id) == self.selected.as_ref()).map(|entry| entry.name.as_str()).unwrap_or("Select saved setup");
@@ -131,6 +141,9 @@ impl Panel {
                         if ui.add_enabled(!view.busy && view.connected && (!current || view.dirty), egui::Button::new("Open saved setup")).clicked() {
                             mutation = Some(LibraryMutation::Switch { id: id.clone(), expected_setup_revision: view.setup_revision });
                         }
+                    });
+                    ui.collapsing("Manage saved setup", |ui| {
+                        ui.small("Uses the name entered above. The current setup is renamed through its draft and Save.");
                         if ui.add_enabled(!view.busy && view.connected && !self.name.trim().is_empty(), egui::Button::new("Duplicate saved setup")).clicked() {
                             mutation = Some(LibraryMutation::Duplicate { id: id.clone(), new_id: fresh_id(), name: self.name.trim().into() });
                         }
@@ -138,12 +151,12 @@ impl Panel {
                         if ui.add_enabled(!view.busy && view.connected && !current && !self.name.trim().is_empty(), egui::Button::new("Rename saved setup")).clicked() {
                             mutation = Some(LibraryMutation::Rename { id: id.clone(), name: self.name.trim().into() });
                         }
-                        if ui.add_enabled(!view.busy && view.connected && !current, egui::Button::new("Delete saved setup")).clicked() { self.confirm_delete = true; }
+                        if ui.add_enabled(!view.busy && view.connected && !current, egui::Button::new(egui::RichText::new("Delete saved setup").color(super::brand::ERROR))).clicked() { self.confirm_delete = true; }
                     });
                     if self.confirm_delete && !current {
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Delete only this saved copy?");
-                            if ui.add_enabled(!view.busy && view.connected, egui::Button::new("Confirm delete setup")).clicked() { mutation = Some(LibraryMutation::Delete { id }); self.confirm_delete = false; }
+                            if ui.add_enabled(!view.busy && view.connected, egui::Button::new(egui::RichText::new("Confirm delete setup").color(super::brand::ERROR))).clicked() { mutation = Some(LibraryMutation::Delete { id }); self.confirm_delete = false; }
                             if ui.button("Cancel delete").clicked() { self.confirm_delete = false; }
                         });
                     }

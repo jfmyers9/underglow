@@ -297,24 +297,25 @@ impl Panel {
             self.observe(sample);
         }
         let mut request = None;
-        ui.heading("Connections");
+        ui.horizontal(|ui| {
+            ui.heading("Connections");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(!view.busy, egui::Button::new("Refresh connections"))
+                    .clicked()
+                {
+                    request = Some(Request::Refresh);
+                }
+            });
+        });
         if let Some(notice) = &self.binding_notice {
             ui.label(notice);
         }
         ui.small(
             "Recent data and process health are separate. Browsing never starts a connection.",
         );
-        if ui
-            .add_enabled(!view.busy, egui::Button::new("Refresh connections"))
-            .clicked()
-        {
-            request = Some(Request::Refresh);
-        }
         if let Some(error) = &self.error {
-            ui.colored_label(
-                egui::Color32::LIGHT_RED,
-                format!("Connection health: {error}"),
-            );
+            ui.colored_label(super::brand::ERROR, format!("Connection health: {error}"));
         }
         ui.collapsing("Connection report details", |ui| {
             if let Some(captured) = self.captured {
@@ -388,11 +389,14 @@ impl Panel {
             let label =
                 connection.map_or_else(|| source.clone(), |c| c.descriptor.display_name.clone());
             ui.push_id(&source, |ui| {
-                ui.group(|ui| {
-                    ui.strong(label);
-                    ui.label(if recent_facts(view.sample, &source) { "Recent data available" } else { "No recent data" });
-                    ui.label(process_summary);
-                    if connection.is_none() && self.report.is_some() { ui.label("Missing connection binding"); }
+                super::brand::card().show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.add(egui::Label::new(egui::RichText::new(&label).strong()).truncate()).on_hover_text(&label);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.small(if recent_facts(view.sample, &source) { "Recent data available" } else { "No recent data" });
+                        ui.small(process_summary);
+                    });
+                    if connection.is_none() && self.report.is_some() { ui.colored_label(super::brand::WARNING, "Missing connection binding"); }
                     let focused = view.setup.into_iter().flat_map(bindings).find(|binding| {
                         binding.source == source && self.focused_layer.as_deref() == Some(binding.layer_id)
                     });

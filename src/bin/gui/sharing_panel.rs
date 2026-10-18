@@ -195,9 +195,9 @@ impl Panel {
 
     pub fn show(&mut self, ui: &mut egui::Ui, view: View<'_>) -> Option<SetupDocument> {
         let mut store = None;
-        ui.heading("Share setups");
-        ui.label("Current setup format (v1) only · 256 KiB maximum.");
-        ui.label("Connections, credentials and executable trust stay on this machine. Import never starts producers or activates lighting.");
+        ui.strong("Share setups");
+        ui.small("Current setup format (v1) only · 256 KiB maximum.");
+        ui.small("Connections, credentials and executable trust stay on this machine. Import never starts producers or activates lighting.");
         ui.horizontal(|ui| {
             let before = self.format;
             ui.selectable_value(&mut self.format, Format::Toml, "TOML");
@@ -207,7 +207,7 @@ impl Panel {
             }
         });
         ui.strong("Export a new file");
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.export_draft, false, "Applied setup");
             ui.selectable_value(
                 &mut self.export_draft,
@@ -218,6 +218,7 @@ impl Panel {
         ui.add(
             egui::TextEdit::singleline(&mut self.export_path)
                 .char_limit(4096)
+                .desired_width(ui.available_width())
                 .hint_text("Explicit new destination path; existing files are never overwritten"),
         );
         let document = if self.export_draft {
@@ -243,6 +244,7 @@ impl Panel {
             .add(
                 egui::TextEdit::multiline(&mut self.text)
                     .char_limit(MAX_DOCUMENT_BYTES)
+                    .desired_width(ui.available_width())
                     .desired_rows(4)
                     .hint_text(
                         "Paste a strict SetupDocument, not application/connection configuration",
@@ -253,13 +255,14 @@ impl Panel {
             .add(
                 egui::TextEdit::singleline(&mut self.import_path)
                     .char_limit(4096)
+                    .desired_width(ui.available_width())
                     .hint_text("Or a regular local file path; URLs are never fetched"),
             )
             .changed();
         if changed || path_changed {
             self.cancel();
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Validate pasted setup").clicked() {
                 self.review(ImportPreview::parse(self.text.as_bytes(), self.format));
             }
@@ -316,6 +319,8 @@ impl Panel {
                         self.message = Some(error);
                     }
                     egui::ComboBox::from_id_salt("destination")
+                        .width(ui.available_width().min(360.0))
+                        .truncate()
                         .selected_text(
                             choice
                                 .source
@@ -337,7 +342,7 @@ impl Panel {
                                 }
                             }
                         });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.selectable_value(
                             &mut choice.exact,
                             Some(false),
@@ -357,17 +362,24 @@ impl Panel {
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_id)
                     .char_limit(128)
+                    .desired_width(ui.available_width())
                     .hint_text("New local setup ID (cannot replace existing entries)"),
             );
             let candidate = self.candidate(&view);
             match &candidate {
                 Ok(candidate) => {
                     for warning in &candidate.warnings {
-                        ui.label(format!("Capability warning (facts preserved): {warning:?}"));
+                        ui.colored_label(
+                            super::brand::WARNING,
+                            format!("Capability warning (facts preserved): {warning:?}"),
+                        );
                     }
                 }
                 Err(error) => {
-                    ui.label(format!("Not ready to store: {error}"));
+                    ui.colored_label(
+                        super::brand::WARNING,
+                        format!("Not ready to store: {error}"),
+                    );
                 }
             }
             if ui

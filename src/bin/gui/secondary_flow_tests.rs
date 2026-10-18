@@ -82,6 +82,19 @@ fn text(harness: &mut Harness, app: &mut Controller) -> String {
 }
 
 fn click(harness: &mut Harness, app: &mut Controller, label: &str) {
+    let switcher = format!(
+        "{} ▾",
+        app.setup_editor
+            .draft
+            .as_ref()
+            .map(|doc| doc.name.as_str())
+            .unwrap_or_else(|| effect_description(&app.preset).0)
+    );
+    let label = if label == "Change setup..." {
+        switcher.as_str()
+    } else {
+        label
+    };
     for _ in 0..35 {
         // Resolve the hit after the real pane has settled. The quick-test rows
         // leave less compact inspector height, so an earlier visible hit can
@@ -103,7 +116,7 @@ fn click(harness: &mut Harness, app: &mut Controller, label: &str) {
             .or_else(|| {
                 texts
                     .iter()
-                    .find(|t| t.text.starts_with("Selected layer:"))
+                    .find(|t| t.text == "Layer actions")
                     .map(|t| t.clip)
             });
         let pos = pane.map_or(
@@ -417,5 +430,94 @@ fn secondary_opening_a_saved_setup_from_legacy_requires_adoption_before_switch()
             })
         ));
         assert!(incoming.try_recv().is_err());
+    }
+}
+
+#[test]
+fn secondary_long_connection_identity_keeps_summary_bounded_and_truthful() {
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE, egui::vec2(1280.0, 800.0)] {
+        let (mut app, incoming, _) = fixture(false);
+        let mut descriptor = underglow::source_capabilities::pi_descriptor();
+        descriptor.display_name = "A source with a deliberately long descriptive connection name that must not push its summary outside the application window".into();
+        app.connections_panel
+            .receive_report(Ok(serde_json::json!({"ok":true,"connections":{
+            "registry":{"schema_version":1,"revision":3,"connections":[{"descriptor":descriptor}]},
+            "runtime_index":{}}})
+            .to_string()));
+        app.page = Page::Connections;
+        let original = app.setup_editor.draft.clone();
+        let mut harness = Harness::new(size);
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        let title = frame
+            .texts()
+            .into_iter()
+            .find(|t| t.text.starts_with("A source with"))
+            .expect("connection identity");
+        assert!(
+            title.fully_visible(),
+            "long name must truncate, not overflow: {title:?}"
+        );
+        assert!(harness.screen().contains_rect(title.rect));
+        let summary = text(&mut harness, &mut app);
+        assert!(summary.contains("No recent data"));
+        assert!(summary.contains("Process health: unknown"));
+        assert!(!summary.contains("Application state: Fresh"));
+        assert_eq!(app.setup_editor.draft, original);
+        assert!(incoming.try_recv().is_err());
+    }
+}
+
+#[test]
+fn secondary_saved_copy_management_remains_explicit_and_reachable() {
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE] {
+        for action in [
+            "Duplicate saved setup",
+            "Rename saved setup",
+            "Delete saved setup",
+        ] {
+            let (mut app, incoming, _) = fixture(false);
+            app.setup_library
+                .report
+                .as_mut()
+                .unwrap()
+                .setups
+                .push(SetupSummary {
+                    id: "other".into(),
+                    name: "Other saved copy".into(),
+                    layers: 1,
+                });
+            let original = app.setup_editor.draft.clone();
+            let mut harness = Harness::new(size);
+            click(&mut harness, &mut app, "Change setup...");
+            let frame = harness.settle(|ctx| app.show_lighting(ctx));
+            let picker = frame
+                .texts()
+                .into_iter()
+                .rev()
+                .find(|t| t.text == "Daily" && t.fully_visible())
+                .expect("saved setup picker");
+            harness.click_at(picker.rect.center(), |ctx| app.show_lighting(ctx));
+            click(&mut harness, &mut app, "Other saved copy · 1 layers");
+            assert!(incoming.try_recv().is_err(), "selection only browses");
+            click(&mut harness, &mut app, "Manage saved setup");
+            click(&mut harness, &mut app, action);
+            if action == "Delete saved setup" {
+                assert!(incoming.try_recv().is_err(), "delete requires confirmation");
+                click(&mut harness, &mut app, "Confirm delete setup");
+            }
+            let Ok(Action::LibraryUpdate { revision, mutation }) = incoming.try_recv() else {
+                panic!("expected explicit library update for {action}");
+            };
+            assert_eq!(revision, 8);
+            match (action, mutation) {
+                ("Duplicate saved setup", LibraryMutation::Duplicate { id, .. })
+                | ("Rename saved setup", LibraryMutation::Rename { id, .. })
+                | ("Delete saved setup", LibraryMutation::Delete { id }) => assert_eq!(id, "other"),
+                (_, mutation) => panic!("wrong mutation for {action}: {mutation:?}"),
+            }
+            assert_eq!(app.setup_editor.draft, original);
+            assert!(!app.status.as_ref().unwrap().enabled);
+            assert!(incoming.try_recv().is_err());
+        }
     }
 }

@@ -1126,7 +1126,7 @@ fn primary_label(connected: bool, enabled: bool) -> &'static str {
 fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 76.0), egui::Sense::click());
     let fill = if selected {
-        egui::Color32::from_rgb(27, 37, 53)
+        ui.visuals().selection.bg_fill
     } else if response.hovered() {
         brand::RAISED
     } else {
@@ -1134,33 +1134,18 @@ fn effect_card(ui: &mut egui::Ui, mode: &str, selected: bool, width: f32) -> egu
     };
     let outline = if selected || response.has_focus() {
         ACCENT
-    } else {
+    } else if response.hovered() {
         BORDER
+    } else {
+        egui::Color32::TRANSPARENT
     };
-    ui.painter()
-        .rect_filled(rect.translate(egui::vec2(0.0, 3.0)), 12, BG);
     ui.painter().rect(
         rect,
-        12,
+        6,
         fill,
         egui::Stroke::new(1.0, outline),
         egui::StrokeKind::Inside,
     );
-    ui.painter().line_segment(
-        [
-            rect.left_top() + egui::vec2(14.0, 2.0),
-            rect.right_top() + egui::vec2(-14.0, 2.0),
-        ],
-        egui::Stroke::new(1.0, brand::GLINT.gamma_multiply(0.5)),
-    );
-    if selected {
-        let seam = egui::Rect::from_min_max(
-            rect.left_bottom() + egui::vec2(14.0, -5.0),
-            rect.right_bottom() + egui::vec2(-14.0, -3.0),
-        );
-        brand::spectrum(ui.painter(), seam.expand2(egui::vec2(0.0, 2.0)), 0.08);
-        brand::spectrum(ui.painter(), seam, 0.85);
-    }
     let (title, detail) = effect_description(mode);
     let text_color = if ui.is_enabled() { INK } else { MUTED };
     ui.painter().text(
@@ -1339,7 +1324,8 @@ impl Controller {
         if self.pending_adoption.is_none() {
             return;
         }
-        let response = egui::Modal::new(egui::Id::new("legacy-setup-adoption")).show(context, |ui| {
+        let response = egui::Modal::new(egui::Id::new("legacy-setup-adoption"))
+            .frame(egui::Frame::popup(&context.style()).inner_margin(16)).show(context, |ui| {
             ui.set_width((context.screen_rect().width() - 64.0).min(420.0));
             ui.heading("Replace legacy lighting with this setup?");
             ui.label("This replaces legacy notifications, automation rules and visuals in the engine's private snapshot. Unsupported legacy behavior is not carried into the new setup.");
@@ -1375,7 +1361,8 @@ impl Controller {
         let Some(prompt) = self.setup_workflow.prompt() else {
             return;
         };
-        let response = egui::Modal::new(egui::Id::new("setup-persistence-choice")).show(context, |ui| {
+        let response = egui::Modal::new(egui::Id::new("setup-persistence-choice"))
+            .frame(egui::Frame::popup(&context.style()).inner_margin(16)).show(context, |ui| {
             ui.set_width((context.screen_rect().width() - 64.0).min(420.0));
             match prompt {
                 Prompt::DirtyReplacement => {
@@ -1525,6 +1512,7 @@ impl Controller {
         let mut open = self.sharing_open;
         let bounds = context.screen_rect().shrink(16.0);
         egui::Window::new("Import and export setups")
+            .frame(egui::Frame::window(&context.style()).inner_margin(16))
             .open(&mut open)
             .collapsible(false)
             .default_width(520.0)
@@ -1673,11 +1661,12 @@ impl Controller {
 
     fn show_settings(&mut self, context: &egui::Context) {
         let mut open = self.settings_open;
+        let bounds = context.screen_rect().shrink(16.0);
         egui::Window::new("Settings").open(&mut open).default_width(480.0)
+            .frame(egui::Frame::window(&context.style()).inner_margin(16))
+            .max_width(bounds.width()).max_height(bounds.height() - 40.0).constrain_to(bounds)
             .resizable(true).vscroll(true).show(context, |ui| {
-            brand::wordmark(ui, true);
-            brand::divider(ui);
-            ui.label(egui::RichText::new("App settings").size(20.0).strong());
+            ui.heading("App settings");
             ui.small("Effects, brightness, palette and frame rate are on the lighting page.");
             ui.add_enabled_ui(!self.pending, |ui| {
                 ui.separator();
@@ -1751,6 +1740,7 @@ impl Controller {
         let mut open = self.setup_library.open;
         let bounds = context.screen_rect().shrink(16.0);
         egui::Window::new("Setup browser")
+            .frame(egui::Frame::window(&context.style()).inner_margin(16))
             .open(&mut open)
             .collapsible(false)
             .default_pos(bounds.min + egui::vec2(16.0, 16.0))
@@ -1759,13 +1749,15 @@ impl Controller {
             .max_height(bounds.height() - 40.0)
             .constrain_to(bounds)
             .show(context, |ui| {
-                if ui.button("Close setup browser").clicked() {
-                    self.setup_library.open = false;
-                }
-                if ui.button("Share setups").clicked() {
-                    self.sharing_open = true;
-                    self.setup_library.open = false;
-                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Close setup browser").clicked() {
+                        self.setup_library.open = false;
+                    }
+                    if ui.button("Share setups").clicked() {
+                        self.sharing_open = true;
+                        self.setup_library.open = false;
+                    }
+                });
                 ui.small("Browsing does not change your draft or keyboard lighting. Open explicitly; unsaved drafts get Save / Discard / Cancel.");
                 // Keep dismissal reachable even when a picker scrolls its selection into view.
                 egui::ScrollArea::vertical()
@@ -1780,6 +1772,7 @@ impl Controller {
         let mut open = self.diagnostics_open;
         let bounds = context.screen_rect().shrink(16.0);
         egui::Window::new("Diagnostics")
+            .frame(egui::Frame::window(&context.style()).inner_margin(16))
             .open(&mut open)
             .default_width(520.0)
             .max_width(bounds.width())
@@ -1875,7 +1868,7 @@ impl Controller {
                     } else {
                         let label = if self.dev_supervised && !self.connected { "Waiting for engine" }
                             else { primary_label(self.connected, enabled) };
-                        let button = egui::Button::new(label).min_size(egui::vec2(140.0, 30.0));
+                        let button = egui::Button::new(egui::RichText::new(label).color(brand::state_color(self.connected, false, self.status.as_ref().map(|s| s.state.as_str())))).min_size(egui::vec2(140.0, 30.0));
                         if ui.add_enabled(!self.pending && !self.setup_workflow.pending() && self.setup_workflow.prompt().is_none() && !self.dev_simulation && (self.connected || !self.dev_supervised), button).on_hover_text(context).clicked() {
                             if !self.connected { self.dispatch(Action::StartEngine); }
                             else { self.control(&[if enabled { "pause" } else { "resume" }]); }
@@ -3233,7 +3226,6 @@ mod tests {
             painted_text(&shape.shape, &mut text);
         }
         assert!(text.contains("App settings"));
-        assert!(text.contains("UNDERGLOW"));
         assert!(text.contains("Advanced engine controls"));
         for label in [
             "Frame rate",
