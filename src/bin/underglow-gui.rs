@@ -1814,10 +1814,10 @@ impl Controller {
     /// Paint only: separated from transport polling for hardware-free UI tests.
     fn show_lighting(&mut self, context: &egui::Context) {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(12)).show(context, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
             ui.horizontal(|ui| {
-                brand::wordmark(ui, true);
+                ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                ui.label(egui::RichText::new("underglow").size(18.0).strong());
+                ui.add_space(12.0);
                 ui.selectable_value(&mut self.page, Page::Editor, "Editor");
                 if ui.selectable_value(&mut self.page, Page::Connections, "Connections").clicked()
                     && self.last_connections.elapsed() >= Duration::from_secs(5) { self.refresh_connections(); }
@@ -1827,62 +1827,68 @@ impl Controller {
                 });
             });
             let enabled = self.connected && self.status.as_ref().is_some_and(|s| s.enabled);
-            ui.horizontal(|ui| {
-                let title = self.setup_editor.draft.as_ref().map(|doc| doc.name.as_str())
-                    .unwrap_or_else(|| effect_description(&self.preset).0);
-                let width = (ui.available_width() - 410.0).clamp(180.0, 360.0);
-                ui.allocate_ui_with_layout(egui::vec2(width, 34.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    let kind = if self.setup_editor.draft.is_some() { "Current setup" } else { "Legacy profile" };
-                    ui.add(egui::Label::new(egui::RichText::new(format!("{kind}: {title}")).small()).truncate()).on_hover_text(title);
-                    if ui.small_button("Change setup...").on_hover_text("Create, open or manage saved combinations of layers. Browsing does not replace your draft.").clicked() {
-                        self.setup_library.open = true;
-                    }
-                });
-                ui.label(if self.setup_editor.dirty { "Unsaved changes" }
-                    else if self.setup_editor.draft.is_some() { "Saved" } else { "Legacy profile" });
-                if self.setup_editor.draft.is_some() {
-                    let can_save = self.setup_editor.dirty && self.connected && self.setup_checked
-                        && !self.pending && !self.setup_workflow.pending() && self.setup_workflow.prompt().is_none()
-                        && self.workflow_view().lighting != setup_workflow::Lighting::Unknown;
-                    if ui.add_enabled(can_save, egui::Button::new("Save"))
-                        .on_hover_text(if !self.connected { "Engine offline: local edits remain available. Reconnect to save." } else { "Save this draft. Active lighting requires explicit Pause and save." }).clicked() {
-                        self.save_setup();
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = if self.dev_simulation { "Hardware disabled" } else if self.dev_supervised && !self.connected {
-                        "Waiting for engine"
-                    } else { primary_label(self.connected, enabled) };
-                    let button = egui::Button::new(egui::RichText::new(label).strong().color(BG))
-                        .fill(ACCENT).corner_radius(8).min_size(egui::vec2(156.0, 32.0));
-                    if ui.add_enabled(!self.pending && !self.setup_workflow.pending() && self.setup_workflow.prompt().is_none() && !self.dev_simulation && (self.connected || !self.dev_supervised), button).clicked() {
-                        if !self.connected { self.dispatch(Action::StartEngine); }
-                        else { self.control(&[if enabled { "pause" } else { "resume" }]); }
-                    }
-                    ui.add_visible(self.pending, egui::Spinner::new());
-                });
-            });
-            let state = if self.dev_simulation { "Development simulation · hardware disabled" } else if !self.connected { "Engine offline" } else {
+            let state = if self.dev_simulation { "Simulation · hardware disabled" } else if !self.connected { "Engine offline" } else {
                 match self.status.as_ref().map(|s| s.state.as_str()) {
                     Some("active") => "Lighting active", Some("retrying") => "Reconnecting",
                     Some("error") => "Needs attention", Some("paused") => "Paused · keyboard in control", _ => "Keyboard lighting",
                 }
             };
             ui.horizontal(|ui| {
-                ui.small("Keyboard lighting");
-                ui.label(egui::RichText::new(state).small().color(brand::state_color(self.connected, self.dev_simulation, self.status.as_ref().map(|s| s.state.as_str()))));
-                if self.setup_editor.dirty && !self.dev_simulation {
-                    let saved = self.setup_editor.applied.as_ref().map(|doc| doc.name.as_str()).unwrap_or("legacy profile");
-                    let caption = if enabled { "Uses saved" } else { "Saved" };
-                    ui.add(egui::Label::new(egui::RichText::new(format!("{caption}: {saved}")).small()).truncate());
+                let title = self.setup_editor.draft.as_ref().map(|doc| doc.name.as_str())
+                    .unwrap_or_else(|| effect_description(&self.preset).0);
+                // Reserve measured control budgets before laying out long setup names.
+                let output_width = if self.dev_simulation { 140.0 } else { 158.0 };
+                let width = (ui.available_width() - output_width - 200.0).max(100.0);
+                let kind = if self.setup_editor.draft.is_some() { "Current setup" } else { "Legacy profile" };
+                let switcher = ui.scope(|ui| {
+                    ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                    ui.add_sized([width, 32.0], egui::Button::new(
+                        egui::RichText::new(format!("{title} ▾")).size(20.0).strong()).truncate())
+                }).inner;
+                if switcher.on_hover_text(format!("{kind}: {title}\nChange setup: browse, create or open a setup. Browsing never replaces this draft.")).clicked() {
+                    self.setup_library.open = true;
                 }
+                let saving = self.setup_workflow.pending();
+                ui.label(egui::RichText::new(if saving { "Pending…" } else if self.setup_editor.dirty { "Unsaved changes" }
+                    else if self.setup_editor.draft.is_some() { "Saved" } else { "Legacy profile" }).small().color(MUTED));
+                if self.setup_editor.draft.is_some() {
+                    let can_save = self.setup_editor.dirty && self.connected && self.setup_checked
+                        && !self.pending && !self.setup_workflow.pending() && self.setup_workflow.prompt().is_none()
+                        && self.workflow_view().lighting != setup_workflow::Lighting::Unknown;
+                    let button = egui::Button::new(egui::RichText::new("Save").color(if can_save { BG } else { INK }))
+                        .min_size(egui::vec2(56.0, 30.0));
+                    let button = if can_save { button.fill(ACCENT) } else { button };
+                    if ui.add_enabled(can_save, button)
+                        .on_hover_text(if !self.connected { "Engine offline: local edits remain available. Reconnect to save." } else { "Save this draft. Active lighting requires explicit Pause and save." }).clicked() {
+                        self.save_setup();
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let saved = self.setup_editor.applied.as_ref().map(|doc| doc.name.as_str()).unwrap_or("legacy profile");
+                    let context = format!("Keyboard lighting: {state}\nPhysical output uses saved: {saved}\n{}\nSaving never enables or resumes lighting.", self.message);
+                    if self.dev_simulation {
+                        ui.label(egui::RichText::new("Hardware disabled").small().color(MUTED)).on_hover_text(context);
+                    } else {
+                        let label = if self.dev_supervised && !self.connected { "Waiting for engine" }
+                            else { primary_label(self.connected, enabled) };
+                        let button = egui::Button::new(label).min_size(egui::vec2(140.0, 30.0));
+                        if ui.add_enabled(!self.pending && !self.setup_workflow.pending() && self.setup_workflow.prompt().is_none() && !self.dev_simulation && (self.connected || !self.dev_supervised), button).on_hover_text(context).clicked() {
+                            if !self.connected { self.dispatch(Action::StartEngine); }
+                            else { self.control(&[if enabled { "pause" } else { "resume" }]); }
+                        }
+                    }
+                });
             });
-            if !self.connected { ui.small("Engine offline · edit and test locally; reconnect to save or activate lighting."); }
-            let message = if let Some(error) = self.status.as_ref().and_then(|s| s.last_error.as_ref()) {
-                format!("{} · {}{error}", self.message, if self.connected { "Engine: " } else { "Last seen: " })
-            } else { self.message.clone() };
-            ui.add(egui::Label::new(egui::RichText::new(&message).small()).truncate()).on_hover_text(&message);
+            // Routine transport chatter belongs in output details. Unknown notices and
+            // errors stay visible: never infer severity by searching message text.
+            let routine = matches!(self.message.as_str(), "" | "Engine connected" | "Checking engine…");
+            let error = self.status.as_ref().and_then(|s| s.last_error.as_ref());
+            if error.is_some() || !routine {
+                let message = error.map_or_else(|| self.message.clone(), |error| {
+                    format!("{} · {}{error}", self.message, if self.connected { "Engine: " } else { "Last seen: " })
+                });
+                ui.add(egui::Label::new(egui::RichText::new(&message).small().color(brand::WARNING)).truncate()).on_hover_text(message);
+            }
             brand::divider(ui);
             if self.page == Page::Connections {
                 egui::ScrollArea::vertical().id_salt("connections").auto_shrink([false, false])
@@ -2814,7 +2820,7 @@ mod tests {
             queued_action: None,
             status: None,
             connected: true,
-            message: "Fixture".into(),
+            message: "Engine connected".into(),
             diagnostics: String::new(),
             service: String::new(),
             custom_state: true,
@@ -3198,8 +3204,7 @@ mod tests {
                         painted_text(&shape.shape, &mut text);
                     }
                     for label in [
-                        "UNDERGLOW",
-                        "Lighting + signals",
+                        "underglow",
                         "Lighting controls",
                         "Brightness",
                         "Palette",
@@ -3260,12 +3265,10 @@ mod tests {
             for shape in output.shapes {
                 if let egui::Shape::Text(text) = shape.shape
                     && [
-                        "UNDERGLOW",
+                        "underglow",
                         "Settings",
                         "Resume lighting",
                         "Hardware disabled",
-                        "Development simulation · hardware disabled",
-                        "Keyboard lighting",
                     ]
                     .contains(&text.galley.job.text.as_str())
                 {

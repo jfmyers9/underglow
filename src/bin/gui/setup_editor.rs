@@ -11,6 +11,8 @@ mod canvas;
 mod editing_tests;
 #[path = "setup_editor_inspector.rs"]
 mod inspector;
+#[path = "setup_editor_layers.rs"]
+mod layers;
 #[path = "setup_editor_workspace.rs"]
 mod workspace;
 use std::collections::BTreeMap;
@@ -1064,34 +1066,21 @@ impl Editor {
 
     fn show_body(&mut self, ui: &mut egui::Ui, standalone: bool) -> Option<Intent> {
         let mut intent = None;
-        // Use the shared production metrics; bounded panes own scrolling,
-        // rather than shrinking controls through a second density theme.
-        ui.horizontal_wrapped(|ui| {
-            if standalone {
+        if standalone {
+            ui.horizontal_wrapped(|ui| {
                 intent = self.show_save_controls(ui);
-            }
-            if self.draft.is_some() {
-                self.show_add_layer_menu(ui);
-            }
-            ui.menu_button("More", |ui| {
-                if standalone && ui.button("New blank composition").clicked() {
-                    self.confirm_blank = true;
-                    ui.close_menu();
-                }
-                ui.small(format!(
-                    "Engine revision {} · {}",
-                    self.base_revision,
-                    if self.dirty {
-                        "Unapplied draft"
-                    } else {
-                        "Persisted"
+                ui.menu_button("More", |ui| {
+                    if ui.button("New blank composition").clicked() {
+                        self.confirm_blank = true;
+                        ui.close_menu();
                     }
-                ));
-                if !self.can_save {
-                    ui.small("Pause lighting before Save. Offline drafts remain editable.");
-                }
+                    ui.small(format!("Engine revision {}", self.base_revision));
+                    if !self.can_save {
+                        ui.small("Pause lighting before Save. Offline drafts remain editable.");
+                    }
+                });
             });
-        });
+        }
         if self.confirm_blank {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Replace this draft with an empty stack?");

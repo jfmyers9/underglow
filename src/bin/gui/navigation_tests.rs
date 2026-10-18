@@ -36,6 +36,19 @@ fn visible_rect(output: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
 
 #[track_caller]
 fn click(ctx: &egui::Context, app: &mut Controller, size: egui::Vec2, label: &str) {
+    let switcher = format!(
+        "{} ▾",
+        app.setup_editor
+            .draft
+            .as_ref()
+            .map(|doc| doc.name.as_str())
+            .unwrap_or_else(|| effect_description(&app.preset).0)
+    );
+    let label = if label == "Change setup..." {
+        switcher.as_str()
+    } else {
+        label
+    };
     for _ in 0..20 {
         let _ = frame(ctx, app, size, vec![]);
         let output = frame(ctx, app, size, vec![]);
@@ -109,7 +122,11 @@ fn click(ctx: &egui::Context, app: &mut Controller, size: egui::Vec2, label: &st
 
 #[test]
 fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window_sizes() {
-    for size in [egui::vec2(620.0, 640.0), egui::vec2(940.0, 850.0)] {
+    for size in [
+        egui::vec2(620.0, 640.0),
+        egui::vec2(940.0, 850.0),
+        egui::vec2(1280.0, 800.0),
+    ] {
         let ctx = egui::Context::default();
         configure_style(&ctx);
         let (mut app, incoming) = controller_fixture();
@@ -159,9 +176,8 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
             "Connections",
             "Settings",
             "Diagnostics",
-            "Change setup...",
+            "Navigation draft ▾",
             "Unsaved changes",
-            "Keyboard lighting",
             "Resume lighting",
         ] {
             let rect = visible_rect(&output, label)
@@ -221,7 +237,11 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
 
 #[test]
 fn navigation_header_separates_setup_save_and_output_states_with_long_names() {
-    for size in [egui::vec2(620.0, 640.0), egui::vec2(940.0, 850.0)] {
+    for size in [
+        egui::vec2(620.0, 640.0),
+        egui::vec2(940.0, 850.0),
+        egui::vec2(1280.0, 800.0),
+    ] {
         for (connected, enabled, state, label) in [
             (true, true, "active", "Pause lighting"),
             (true, false, "paused", "Resume lighting"),
@@ -251,13 +271,16 @@ fn navigation_header_separates_setup_save_and_output_states_with_long_names() {
                     "Connections",
                     "Settings",
                     "Diagnostics",
-                    "Keyboard lighting",
                     label,
                     if dirty { "Unsaved changes" } else { "Saved" },
                 ] {
                     let rect =
                         visible_rect(&output, text).unwrap_or_else(|| panic!("missing {text}"));
                     assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(rect));
+                    assert!(
+                        rect.bottom() < 100.0,
+                        "{text} exceeds the two-row header budget: {rect:?}"
+                    );
                 }
                 assert!(incoming.try_recv().is_err());
             }
@@ -283,4 +306,28 @@ fn navigation_secondary_windows_are_explicit_and_do_not_dispatch() {
         assert!(app.page == Page::Editor);
         assert!(incoming.try_recv().is_err());
     }
+}
+
+#[test]
+fn navigation_simulation_is_passive_and_critical_notices_remain_visible() {
+    let ctx = egui::Context::default();
+    configure_style(&ctx);
+    let (mut app, incoming) = controller_fixture();
+    app.dev_simulation = true;
+    app.setup_editor.load(Some(setup_document()));
+    let size = egui::vec2(620.0, 640.0);
+    let _ = frame(&ctx, &mut app, size, vec![]);
+    let output = frame(&ctx, &mut app, size, vec![]);
+    let status = visible_rect(&output, "Hardware disabled").expect("passive simulation status");
+    assert!(status.bottom() < 100.0);
+    assert!(visible_rect(&output, "Resume lighting").is_none());
+    click(&ctx, &mut app, size, "Hardware disabled");
+    assert!(incoming.try_recv().is_err());
+    app.message = "Setup revision conflict; draft retained".into();
+    let output = frame(&ctx, &mut app, size, vec![]);
+    assert!(
+        visible_rect(&output, &app.message).is_some(),
+        "save failures must not be hidden in details"
+    );
+    assert!(incoming.try_recv().is_err());
 }
