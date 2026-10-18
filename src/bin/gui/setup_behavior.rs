@@ -416,7 +416,7 @@ fn duration(ui: &mut Ui, ms: &mut u64) {
 }
 
 fn activation_summary(activation: &Activation) -> String {
-    match activation {
+    let summary = match activation {
         Activation::Always {} => "Shown all the time".into(),
         Activation::WhileState {
             source,
@@ -427,7 +427,7 @@ fn activation_summary(activation: &Activation) -> String {
             source,
             state: None,
             ..
-        } => format!("Shown while {source} is available"),
+        } => format!("While {source} has current state data"),
         Activation::OnEvent {
             source,
             event,
@@ -451,7 +451,19 @@ fn activation_summary(activation: &Activation) -> String {
             "Shown for {duration_ms} ms when {source} changes from {} to {state}",
             from_state.as_deref().unwrap_or("any observed state")
         ),
+    };
+    match selector(activation).and_then(|(_, instance)| instance.as_deref()) {
+        Some(instance) => format!("{summary} · session {instance}"),
+        None => summary,
     }
+}
+
+fn base_label(layer: &Layer) -> &'static str {
+    if matches!(&layer.activation, Activation::WhileState { source, state: None, .. } if source == "pi")
+        && layer.variants.iter().any(|v| matches!(&v.activation, Activation::WhileState { source, state: Some(state), .. } if source == "pi" && state == "working"))
+        && layer.variants.iter().any(|v| matches!(&v.activation, Activation::OnEvent { source, event, .. } if source == "pi" && event == "finished")) {
+        "Idle / fallback"
+    } else { "Base / fallback appearance" }
 }
 
 /// Selection is view state, keyed by stable logical layer/variant IDs.
@@ -460,6 +472,27 @@ pub struct BehaviorEditor {
     selected: BTreeMap<String, Option<String>>,
 }
 impl BehaviorEditor {
+    /// View summaries never publish the selected appearance as a test fact.
+    pub fn summary(&mut self, layer: &Layer) -> (String, String) {
+        let selected = self.selection(layer).clone();
+        let variant = layer
+            .variants
+            .iter()
+            .find(|v| Some(&v.id) == selected.as_ref());
+        let title = variant
+            .map(|v| v.name.as_str())
+            .unwrap_or_else(|| base_label(layer));
+        let condition = variant.map(|v| &v.activation).unwrap_or(&layer.activation);
+        let mut when = activation_summary(condition);
+        if variant.is_none() && !layer.variants.is_empty() {
+            when.push_str("; fallback when no other appearance matches");
+        }
+        if !layer.enabled || variant.is_some_and(|v| !v.enabled) {
+            when = format!("Disabled · {when}");
+        }
+        (title.into(), when)
+    }
+
     fn selection(&mut self, layer: &Layer) -> &mut Option<String> {
         let selected = self.selected.entry(layer.id.clone()).or_default();
         if selected
@@ -471,37 +504,33 @@ impl BehaviorEditor {
         selected
     }
 
-    fn appearance_picker(&mut self, ui: &mut Ui, layer: &Layer, compact: bool) {
+    fn appearance_picker(&mut self, ui: &mut Ui, layer: &Layer, _compact: bool) {
         let selected = self.selection(layer);
         if layer.variants.is_empty() {
             return;
         }
-        let base = if matches!(&layer.activation, Activation::WhileState { source, state: None, .. } if source == "pi")
-            && layer.variants.iter().any(|v| matches!(&v.activation, Activation::WhileState { source, state: Some(state), .. } if source == "pi" && state == "working"))
-            && layer.variants.iter().any(|v| matches!(&v.activation, Activation::OnEvent { source, event, .. } if source == "pi" && event == "finished")) {
-                "Idle / fallback"
-            } else { "Base / fallback appearance" };
+        let base = base_label(layer);
         let title = layer
             .variants
             .iter()
             .find(|v| Some(&v.id) == selected.as_ref())
             .map(|v| v.name.as_str())
             .unwrap_or(base);
-        if !compact {
-            ui.label("Editing appearance");
-        }
-        egui::ComboBox::from_id_salt("selected-appearance")
-            .width(ui.available_width())
-            .truncate()
-            .selected_text(title)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(selected, None, base);
-                for variant in &layer.variants {
-                    ui.selectable_value(selected, Some(variant.id.clone()), &variant.name);
-                }
-            })
-            .response
-            .on_hover_text(title);
+        ui.horizontal(|ui| {
+            ui.label("Editing");
+            egui::ComboBox::from_id_salt("selected-appearance")
+                .width((ui.available_width() - 12.0).max(60.0))
+                .truncate()
+                .selected_text(title)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(selected, None, base);
+                    for variant in &layer.variants {
+                        ui.selectable_value(selected, Some(variant.id.clone()), &variant.name);
+                    }
+                })
+                .response
+                .on_hover_text(title);
+        });
     }
 
     /// Shared stable-ID appearance selection, without exposing trigger forms first.
@@ -523,42 +552,24 @@ impl BehaviorEditor {
                     .iter_mut()
                     .find(|v| Some(&v.id) == selected.as_ref())
                 {
-                    if !compact {
-                        ui.checkbox(&mut variant.enabled, "Appearance enabled");
-                    }
-                    if compact {
-                        setup_inspector::show_renderer_compact(ui, &mut variant.renderer);
-                        ui.checkbox(&mut variant.enabled, "Appearance enabled");
-                    } else {
-                        setup_inspector::show_renderer(ui, &mut variant.renderer);
-                    }
+                    setup_inspector::show_renderer_compact(ui, &mut variant.renderer);
                     let mut inherit = variant.brightness.is_none();
-                    if ui
-                        .checkbox(&mut inherit, "Inherit layer brightness")
-                        .changed()
-                    {
+                    if ui.checkbox(&mut inherit, "Use layer brightness").changed() {
                         variant.brightness = (!inherit).then_some(layer.brightness);
                     }
                     if let Some(value) = &mut variant.brightness {
-                        ui.add(egui::Slider::new(value, 0..=255).text("Appearance brightness"));
+                        setup_inspector::brightness_control(ui, value, "Appearance brightness");
                     }
                 } else {
-                    if compact {
-                        setup_inspector::show_renderer_compact(ui, &mut layer.renderer);
-                    } else {
-                        setup_inspector::show_renderer(ui, &mut layer.renderer);
-                    }
+                    setup_inspector::show_renderer_compact(ui, &mut layer.renderer);
                 }
             });
-            ui.add(egui::Slider::new(&mut layer.brightness, 0..=255).text("Layer brightness"));
-            ui.collapsing("Advanced layer settings", |ui| {
-                setup_inspector::show_advanced(ui, layer)
-            });
+            setup_inspector::brightness_control(ui, &mut layer.brightness, "Layer brightness");
         });
     }
 
-    /// Conditions use only the host's fresh, read-only real-source observations.
-    pub fn show_behavior(
+    /// Direct condition editor: managing appearances belongs to Looks, not here.
+    pub fn show_condition(
         &mut self,
         ui: &mut Ui,
         layer: &mut Layer,
@@ -566,45 +577,65 @@ impl BehaviorEditor {
         snapshot: Option<&Snapshot>,
         events: Option<&EventBatch>,
     ) {
-        ui.push_id(("behavior-tab", layer.id.clone()), |ui| {
-            self.appearance_picker(ui, layer, false);
-            if ui.add_enabled(layer.variants.len() < MAX_BEHAVIOR_VARIANTS, egui::Button::new("Add behavior appearance")).clicked() {
-                let id = (1..).map(|i| format!("appearance-{i}")).find(|id| !layer.variants.iter().any(|v| &v.id == id)).unwrap();
-                layer.variants.push(BehaviorVariant { id: id.clone(), name: "New appearance".into(), enabled: true,
-                    activation: Activation::Always {}, renderer: layer.renderer.clone(), brightness: None });
-                *self.selection(layer) = Some(id);
-            }
+        ui.push_id(("condition", layer.id.clone()), |ui| {
             let selected = self.selection(layer).clone();
-            let choices = Choices { registry, snapshot, events };
-            let index = layer.variants.iter().position(|v| Some(&v.id) == selected.as_ref());
-            if let Some(index) = index {
+            let activation = if let Some(variant) = layer
+                .variants
+                .iter_mut()
+                .find(|v| Some(&v.id) == selected.as_ref())
+            {
+                &mut variant.activation
+            } else {
+                &mut layer.activation
+            };
+            condition(
+                ui,
+                activation,
+                &Choices {
+                    registry,
+                    snapshot,
+                    events,
+                },
+            );
+        });
+    }
+
+    pub fn show_appearance_menu(&mut self, ui: &mut Ui, layer: &mut Layer) {
+        ui.menu_button("Appearance actions", |ui| {
+            self.show_appearance_management(ui, layer)
+        });
+    }
+
+    fn show_appearance_management(&mut self, ui: &mut Ui, layer: &mut Layer) {
+        ui.push_id(("appearance-actions", layer.id.clone()), |ui| {
+            let selected = self.selection(layer).clone();
+            if let Some(index) = layer.variants.iter().position(|v| Some(&v.id) == selected.as_ref()) {
                 let variant = &mut layer.variants[index];
                 ui.label("Appearance name");
-                ui.add(egui::TextEdit::singleline(&mut variant.name).char_limit(128).desired_width(ui.available_width()));
+                ui.add(egui::TextEdit::singleline(&mut variant.name).char_limit(128).desired_width(200.0));
                 ui.checkbox(&mut variant.enabled, "Appearance enabled");
-                ui.label(activation_summary(&variant.activation));
                 let variant_id = variant.id.clone();
-                ui.push_id(("variant-condition", &variant_id), |ui| {
-                    ui.collapsing("Advanced condition", |ui| condition(ui, &mut variant.activation, &choices));
-                });
-                egui::CollapsingHeader::new("Advanced appearance settings").id_salt(("variant-advanced", &variant_id)).show(ui, |ui| {
+                ui.collapsing("Advanced appearance settings", |ui| {
                     ui.small(format!("Stable appearance ID: {variant_id}"));
-                    ui.small("Transient appearances outrank persistent ones; later matching appearances win within each class. All appearances share this layer's keys.");
+                    ui.small("Transient appearances outrank persistent ones; later matching appearances win within each class.");
                     ui.horizontal_wrapped(|ui| {
                         if ui.add_enabled(index > 0, egui::Button::new("Lower priority")).clicked() { layer.variants.swap(index, index - 1); }
                         if ui.add_enabled(index + 1 < layer.variants.len(), egui::Button::new("Higher priority")).clicked() { layer.variants.swap(index, index + 1); }
                     });
                 });
-                if ui.button("Delete appearance").clicked() { layer.variants.remove(index); *self.selection(layer) = None; }
-            } else {
-                ui.label(activation_summary(&layer.activation));
-                ui.small("This is the layer's base appearance when no enabled appearance overrides it.");
-                ui.collapsing("Advanced condition", |ui| condition(ui, &mut layer.activation, &choices));
+                if ui.button("Delete appearance").clicked() {
+                    layer.variants.remove(index);
+                    *self.selection(layer) = None;
+                    ui.close_menu();
+                }
+                ui.separator();
             }
-            let activation = layer.variants.iter().find(|v| Some(&v.id) == self.selection(layer).as_ref()).map(|v| &v.activation).unwrap_or(&layer.activation);
-            if registry.validate_activation(activation).is_err()
-                || registry.validate_activation(activation).is_ok_and(|w| !w.is_empty()) {
-                ui.colored_label(egui::Color32::YELLOW, "Saved condition needs attention. Open Advanced condition to inspect or repair it.");
+            if ui.add_enabled(layer.variants.len() < MAX_BEHAVIOR_VARIANTS, egui::Button::new("Add behavior appearance")).clicked() {
+                let id = (1..).map(|i| format!("appearance-{i}")).find(|id| !layer.variants.iter().any(|v| &v.id == id)).unwrap();
+                layer.variants.push(BehaviorVariant { id: id.clone(), name: "New appearance".into(), enabled: true,
+                    activation: Activation::Always {}, renderer: layer.renderer.clone(), brightness: None });
+                *self.selection(layer) = Some(id);
+                ui.close_menu();
             }
         });
     }
@@ -682,13 +713,15 @@ mod tests {
                         if self.appearance {
                             self.editor.show_appearance(ui, &mut self.layer);
                         } else {
-                            self.editor.show_behavior(
+                            self.editor.appearance_picker(ui, &self.layer, false);
+                            self.editor.show_condition(
                                 ui,
                                 &mut self.layer,
                                 &self.registry,
                                 Some(&self.snapshot),
                                 Some(&self.events),
                             );
+                            self.editor.show_appearance_management(ui, &mut self.layer);
                         }
                     });
                 },
@@ -745,10 +778,7 @@ mod tests {
             ]);
         }
         fn mode(&mut self, label: &str) {
-            let output = self.frame(vec![]);
-            if !texts(&output).contains(&Mode::of(&self.layer.activation).label().to_owned()) {
-                self.click("Advanced condition");
-            }
+            self.frame(vec![]);
             self.click(Mode::of(&self.layer.activation).label());
             self.click(label);
         }
@@ -867,7 +897,7 @@ mod tests {
             duration_ms: 500,
         };
         let original = f.layer.clone();
-        f.click("Advanced condition");
+
         let labels = texts(&f.frame(vec![]));
         f.frame(vec![]);
         assert_eq!(f.layer, original);
@@ -1013,7 +1043,7 @@ mod tests {
             egui::Event::Text("Renamed appearance".into()),
         ]);
         assert_eq!(f.layer.variants[0].name, "Renamed appearance");
-        f.click("Advanced condition");
+
         f.click("Always");
         f.click("When an event occurs");
         assert!(
@@ -1024,11 +1054,13 @@ mod tests {
         f.click("Matrix");
         assert_eq!(f.layer.variants[0].renderer.catalog_id(), Some("matrix"));
         assert_eq!(f.layer.variants[0].brightness, None);
+        f.click("Behavior view"); // Enablement has one home, under When.
         f.click("Appearance enabled");
         assert!(!f.layer.variants[0].enabled);
-        f.click("Inherit layer brightness");
+        f.click("Appearance view");
+        f.click("Use layer brightness");
         assert_eq!(f.layer.variants[0].brightness, Some(73));
-        f.click("Inherit layer brightness");
+        f.click("Use layer brightness");
         f.click("Behavior view");
         f.click("Add behavior appearance");
         let second = f.layer.variants[1].id.clone();
@@ -1061,7 +1093,7 @@ mod tests {
             event: "finished".into(),
             duration_ms: 60_001,
         };
-        f.click("Advanced condition");
+
         f.frame(vec![]);
         assert!(matches!(
             f.layer.activation,

@@ -104,7 +104,9 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
             visible(&frame, "Pause test");
             visible(
                 &frame,
-                "Preview only · Quick test playing · no hardware output",
+                &format!(
+                    "Preview only · Testing: {label} · Quick test playing · no hardware output"
+                ),
             );
             let inspector = frame
                 .texts()
@@ -183,7 +185,7 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
         visible(&frame, "Play test");
         visible(
             &frame,
-            "Preview only · Quick test paused · no hardware output",
+            "Preview only · Testing: Working · Quick test paused · no hardware output",
         );
         harness.click("Live", Some(region), |ctx| app.show_lighting(ctx));
         assert!(!app.setup_editor.preview.quick_active());

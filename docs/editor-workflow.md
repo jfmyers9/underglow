@@ -27,8 +27,8 @@ Underglow         Editor | Connections                    Settings
 -----------------------------------------------------------------
 Layers             Keyboard preview            Pi status
 ----------------   -------------------------   ------------------
-Pi status          [Preview][Select keys]       Appearance | Keys
-Matrix             [Inspect]                   Behavior
+Pi status          [Preview][Select keys]       Where · targets
+Matrix             [Inspect]                   Looks · appearance
 [+ Add layer]      +-----------------------+   ------------------
                    | one composed keyboard |   Selected appearance
                    | with target overlays  |   Color / effect
@@ -59,7 +59,7 @@ Lighting off                            [Enable]
 | one composed keyboard with target overlays   |
 +----------------------------------------------+
 Preview only   [Live][Try behavior]
-Pi status     [Appearance][Keys][Behavior]
+Pi status     Where / Looks / When · persistent summaries
 +----------------------------------------------+
 | inspector content scrolls here                |
 +----------------------------------------------+
@@ -91,21 +91,37 @@ the primary controls reachable; a taller virtual window is not a substitute.
 | Select keys | Edits the selected layer's target using named physical keys | Yes |
 | Inspect | Explains the actual captured composition for that key | No |
 
-The Keys inspector and Select keys mode communicate the same selection context.
+Where and Select keys mode communicate the same selection context.
 Target, coverage and inspection overlays do not replace or modify rendered RGB
 colors. Named groups retain reference-safe operations. Unsupported positions
 are identified honestly; no new keyboard layout is implied by the restructure.
 
-## Selected-layer inspector
+## Selected-layer inspector (refined after the user walkthrough)
 
-- **Appearance:** color/effect, supported parameters and appearance selection.
-  Pi remains one logical layer with Idle, Working and Finished appearances.
-- **Keys:** whole-keyboard/direct-key selection, shortcuts, zones and groups,
-  using the one shared canvas rather than a second keyboard.
-- **Behavior:** when the selected appearance is shown, with readable summaries
-  and the existing generic condition builder available for advanced editing.
-- Stable IDs, raw precedence, blend/transition details and protocol-level
-  diagnostics remain available without crowding the default editing path.
+The first refinement added a pinned navigation index, but the user found that
+it still presented the old form with duplicated headings. The replacement is
+three consistently styled cards in one scroll area:
+
+- **Where:** target summary; one Edit keys toggle; optional Selection options.
+- **Looks:** Editing picker, effect/color/percentage brightness; Appearance actions.
+- **When:** readable condition, direct Edit condition toggle, source status.
+
+There is no index above the cards and no duplicate Done/Close controls. All
+three cards fit in the normal workspace; at compact sizes they scroll together
+with an always-visible scrollbar while the keyboard, layer identity and Save
+stay fixed. Key and condition editors can be open independently.
+
+Appearance selection is stable-ID view state and never changes test input.
+Test captions name the simulated behavior separately. Pi remains one logical
+layer with Idle/fallback, Working and Finished appearances. Missing data never
+means idle or success. Saved brightness bytes are not quantized by percentage
+display. Original setups, source trust, save acknowledgements and lighting
+ownership semantics are unchanged.
+
+Layer actions own layer management. Appearance actions own appearance management.
+Layer mixing & transitions and Technical details retain infrequent controls.
+The original M7 wireframes above are historical; their tab strip and the first
+refinement's pinned index are superseded by these cards.
 
 The layer list supports enable, rename, duplicate, delete and reorder. Removing
 a layer never causes a starter or template to be silently reinserted later.

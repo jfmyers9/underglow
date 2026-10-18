@@ -420,6 +420,7 @@ pub struct TargetSelection {
     error: Option<String>,
     last_mode: Option<CanvasMode>,
     blocked_pointer: bool,
+    pub(crate) options_open: bool,
 }
 
 impl TargetSelection {
@@ -448,39 +449,18 @@ impl TargetSelection {
         }
         let before = (target.clone(), groups.clone());
         let layout = KeyboardLayout::for_device(device);
-        ui.strong("Physical targets · 80HE ANSI");
-        ui.small("Choose Select keys on the shared keyboard to edit direct keys or group members. Zones/groups remain unioned until unchecked.");
-        ui.small("Physical positions, not OS characters/remaps. Fn, Mode, right Meta, numpad and light bar are unsupported. Dots are unnamed engine matrix cells, not invented keys.");
+        ui.small("Select keys on the keyboard above.");
+
         if self.draft.is_none() {
-            if let Target::Selection {
-                keys,
-                zones,
-                groups,
-            } = target
-            {
-                let extras: Vec<_> = zones
-                    .iter()
-                    .map(|zone| {
-                        ZONES
-                            .iter()
-                            .find(|(candidate, _)| candidate == zone)
-                            .map_or("Zone", |(_, label)| *label)
-                            .to_owned()
-                    })
-                    .chain(groups.iter().map(|id| format!("Group: {id}")))
-                    .collect();
-                if !extras.is_empty() {
-                    let caption = format!("Also includes: {}", extras.join(", "));
-                    ui.add(egui::Label::new(&caption).truncate())
-                        .on_hover_text(&caption);
-                    if ui.add_enabled(!keys.is_empty(), egui::Button::new("Use selected keys only"))
-                        .on_hover_text("Remove this layer's zone and group references, keeping its direct keys. Other layers and saved groups are unchanged.")
-                        .clicked() {
-                        zones.clear();
-                        groups.clear();
-                    }
-                }
+            if let Target::Selection { keys, zones, groups } = target
+                && (!zones.is_empty() || !groups.is_empty()) && !keys.is_empty()
+                && ui.button("Use selected keys only")
+                    .on_hover_text("Remove this layer's zone and group references, keeping its direct keys. Other layers and saved groups are unchanged.")
+                    .clicked() {
+                zones.clear();
+                groups.clear();
             }
+            self.options_open = ui.collapsing("Selection options", |ui| {
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .selectable_label(matches!(target, Target::Whole {}), "Whole keyboard")
@@ -493,7 +473,7 @@ impl TargetSelection {
                         edit_keys(target, &ARROWS.map(str::to_owned), Edit::ReplaceDirect).err();
                 }
             });
-            ui.collapsing("Named zones (legacy engine map)", |ui| {
+            ui.collapsing("Saved zones", |ui| {
                 ui.small("Zones use the engine map, including unnamed cells. Legacy Arrows contains right Ctrl and excludes ↑; use Arrow keys for the four physical arrows.");
                 for (zone, label) in ZONES {
                     let mut checked = matches!(target, Target::Selection { zones, .. } if zones.contains(&zone));
@@ -548,6 +528,11 @@ impl TargetSelection {
                     }
                 }
             });
+            ui.small("80HE ANSI physical positions. Saved zones use the legacy engine map; groups and direct keys are combined.");
+            ui.collapsing("Key selection help", |ui| {
+                ui.small("Fn, Mode, right Meta, numpad and light bar are unsupported. Dots are unnamed engine matrix cells, not invented keys.");
+            });
+            }).openness > 0.0;
         }
         if let Some(draft) = &mut self.draft {
             ui.strong("Editing group members (draft) · layer target unchanged until Save");
@@ -586,11 +571,16 @@ impl TargetSelection {
             keys, groups: refs, ..
         } = active
         {
-            ui.label(format!(
-                "Direct: {} · Groups: {}",
-                keys.join(", "),
-                refs.join(", ")
-            ));
+            let mut selected = Vec::new();
+            if !keys.is_empty() {
+                selected.push(format!("Selected keys: {}", keys.join(", ")));
+            }
+            if !refs.is_empty() {
+                selected.push(format!("Groups: {}", refs.join(", ")));
+            }
+            if !selected.is_empty() {
+                ui.small(selected.join(" · "));
+            }
         }
         if let Err(error) = target_mask(active, groups) {
             ui.colored_label(Color32::LIGHT_RED, error);
@@ -598,6 +588,7 @@ impl TargetSelection {
         if let Some(error) = &self.error {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
+
         before != (target.clone(), groups.clone())
     }
 
@@ -1626,16 +1617,10 @@ mod tests {
             let before = h.target.clone();
             h.controls(vec![]);
             let (_, shapes) = h.controls(vec![]);
-            assert!(shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Text(text) if text.galley.text() == "Also includes: Function")));
-            let only = text_center(&shapes, "Use selected keys only");
-            h.controls(vec![
-                egui::Event::PointerMoved(only),
-                button(only, true, egui::Modifiers::NONE),
-            ]);
             assert!(
-                !h.controls(vec![button(only, false, egui::Modifiers::NONE)])
-                    .0
+                !shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "Use selected keys only")),
+                "no meaningless disabled action without direct keys"
             );
             assert_eq!(
                 h.target, before,

@@ -76,57 +76,21 @@ impl Editor {
             ui.label("Empty composition · no hidden layers or Pi behavior. Add a layer to begin.");
             return;
         }
-        if compact {
-            let notices = self.connection_notices.clone();
-            ui.horizontal(|ui| {
-                let reserve = if notices.is_empty() { 116.0 } else { 296.0 };
-                ui.add_sized(
-                    [(ui.available_width() - reserve).max(80.0), 24.0],
-                    egui::Label::new(
-                        egui::RichText::new(format!("Selected layer: {name}")).strong(),
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(&name);
-                self.show_compact_layer_actions(ui);
-                if notices.len() == 1 {
-                    let notice = &notices[0];
-                    if ui
-                        .add_sized(
-                            [170.0, 24.0],
-                            egui::Button::new(format!("Connections: {}", notice.label)).truncate(),
-                        )
-                        .on_hover_text(&notice.message)
-                        .clicked()
-                    {
-                        self.connection_request = Some(notice.source.clone());
-                    }
-                } else if !notices.is_empty() {
-                    ui.menu_button("Connections", |ui| {
-                        for notice in &notices {
-                            if ui
-                                .button(&notice.label)
-                                .on_hover_text(&notice.message)
-                                .clicked()
-                            {
-                                self.connection_request = Some(notice.source.clone());
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                }
-            });
-        } else {
-            ui.add(
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 110.0).max(60.0);
+            ui.add_sized(
+                [width, 26.0],
                 egui::Label::new(egui::RichText::new(format!("Selected layer: {name}")).strong())
                     .truncate(),
             )
             .on_hover_text(&name);
-        }
+            self.show_compact_layer_actions(ui);
+        });
         egui::ScrollArea::vertical()
             .id_salt(("selected-layer-inspector", &self.selected))
             .max_height(ui.available_height())
             .auto_shrink([false, false])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| self.show_selected_inspector(ui, compact));
     }
 }

@@ -36,12 +36,39 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             .iter()
             .find(|t| t.text.starts_with("Selected layer:"))
             .map(|t| t.clip);
+        // Sticky concept summaries are outside the scroll viewport. Measure the
+        // actual form clip so wheel steps cannot jump over controls in a short pane.
+        let scroll = inspector
+            .and_then(|pane| {
+                texts
+                    .iter()
+                    .find(|t| {
+                        t.clip != pane
+                            && pane.contains_rect(t.clip)
+                            && t.clip.width() > pane.width() * 0.8
+                            && t.clip.bottom() >= pane.bottom() - 1.0
+                    })
+                    .map(|t| t.clip)
+            })
+            .or(inspector);
         let tools = texts
             .iter()
             .find(|t| t.text == "Close preview tools")
             .map(|t| t.clip);
         let keyboard = keyboard_region(&frame);
-        let layer_action = matches!(label, "Duplicate layer" | "Delete layer" | "Rename layer");
+        let layer_action = matches!(
+            label,
+            "Duplicate layer"
+                | "Delete layer"
+                | "Rename layer"
+                | "Add behavior appearance"
+                | "Appearance enabled"
+                | "Appearance name"
+                | "Delete appearance"
+                | "Advanced appearance settings"
+                | "Lower priority"
+                | "Higher priority"
+        );
         let region = match label {
             "F1" => Some(keyboard),
             // These controls intentionally live outside scrollable inspectors.
@@ -78,9 +105,44 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             harness.click_at(menu.rect.center(), |ctx| app.show_lighting(ctx));
             continue;
         }
-        let pane = tools.or(inspector).expect("a scrollable workspace pane");
+        if matches!(
+            label,
+            "Whole keyboard"
+                | "Arrow keys (4 physical)"
+                | "Saved zones"
+                | "Reusable custom groups"
+                | "Key selection help"
+        ) && !app.setup_editor.target_options_open_for_test()
+            && let Some(options) = texts
+                .iter()
+                .find(|t| t.text == "Selection options" && t.fully_visible())
+        {
+            harness.click_at(options.rect.center(), |ctx| app.show_lighting(ctx));
+            continue;
+        }
+        if matches!(
+            label,
+            "Add behavior appearance"
+                | "Appearance enabled"
+                | "Appearance name"
+                | "Delete appearance"
+                | "Advanced appearance settings"
+                | "Lower priority"
+                | "Higher priority"
+        ) && let Some(menu) = texts
+            .iter()
+            .find(|t| t.text == "Appearance actions" && t.fully_visible())
+        {
+            harness.click_at(menu.rect.center(), |ctx| app.show_lighting(ctx));
+            continue;
+        }
+        let pane = tools.or(scroll).expect("a scrollable workspace pane");
         harness.wheel(
-            pane.center(),
+            if tools.is_some() {
+                pane.center()
+            } else {
+                egui::pos2(pane.center().x, pane.bottom() - 10.0)
+            },
             egui::vec2(
                 0.0,
                 if step == 34 {
@@ -150,7 +212,7 @@ fn workspace_primary_controls_and_complete_keyboard_are_reachable_at_real_sizes(
             "Editor",
             "Connections",
             "Settings",
-            "Browse setups: Workspace draft",
+            "Change setup...",
             "Unsaved changes",
             "Resume lighting",
             "Save",
@@ -210,7 +272,9 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
         app.setup_editor.preview.mode = setup_preview::Mode::InputDemo;
         // The default Appearance form is intentionally short. Expand real controls
         // to exercise overflow, then scroll back to the top before measuring.
-        click_workspace_control(&mut harness, &mut app, "Advanced layer settings");
+        click_workspace_control(&mut harness, &mut app, "Edit keys");
+        click_workspace_control(&mut harness, &mut app, "Edit condition");
+        click_workspace_control(&mut harness, &mut app, "Layer mixing & transitions");
         let expanded = harness.settle(|ctx| app.show_lighting(ctx));
         let pane = expanded
             .texts()
@@ -218,9 +282,11 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
             .find(|t| t.text.starts_with("Selected layer:"))
             .unwrap()
             .clip;
-        harness.wheel(pane.center(), egui::vec2(0.0, 20000.0), |ctx| {
-            app.show_lighting(ctx)
-        });
+        harness.wheel(
+            egui::pos2(pane.center().x, pane.bottom() - 10.0),
+            egui::vec2(0.0, 20000.0),
+            |ctx| app.show_lighting(ctx),
+        );
         for _ in 0..30 {
             harness.run(vec![], |ctx| app.show_lighting(ctx));
         }
@@ -230,11 +296,7 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
         let save = visible(&frame, "Save");
         let esc = key(&frame, "Esc");
         let arrow = key(&frame, "→");
-        let inspector_label = if size == MINIMUM_SIZE {
-            "Appearance"
-        } else {
-            "Layer name"
-        };
+        let inspector_label = "Where";
         let inspector = visible(&frame, inspector_label);
         for _ in 0..8 {
             harness.wheel(inspector.center(), egui::vec2(0.0, -400.0), |ctx| {
@@ -277,7 +339,7 @@ fn workspace_layer_list_scroll_is_independent_and_topmost_first() {
         }
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         let esc = key(&frame, "Esc");
-        let inspector = visible(&frame, "Layer name");
+        let inspector = visible(&frame, "Looks");
         let doc = app.setup_editor.draft.as_ref().unwrap();
         visible(
             &frame,
@@ -291,7 +353,7 @@ fn workspace_layer_list_scroll_is_independent_and_topmost_first() {
         }
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         assert_eq!(key(&frame, "Esc"), esc);
-        assert_eq!(visible(&frame, "Layer name"), inspector);
+        assert_eq!(visible(&frame, "Looks"), inspector);
         let bottom = format!("1 · {}", original.name);
         visible(&frame, &bottom);
         harness.click(&bottom, None, |ctx| app.show_lighting(ctx));
@@ -368,9 +430,13 @@ fn workspace_pi_appearance_and_color_are_visible_first_and_editable_at_real_size
             .find(|t| t.text.starts_with("Selected layer:"))
             .unwrap()
             .clip;
-        for label in ["Appearance", "Idle / fallback", "Solid", "Color"] {
-            visible_in(&frame, label, Some(pane));
-        }
+        visible_in(&frame, "Where", Some(pane));
+        // Cards scroll as a single form in compact windows; keep the actual
+        // keyboard and layer context pinned while revealing the color control.
+        click_workspace_control(&mut harness, &mut app, "Color");
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        visible_in(&frame, "Solid", Some(pane));
+        visible_in(&frame, "Color", Some(pane));
         if size == MINIMUM_SIZE {
             assert!(!frame.texts().iter().any(|t| t.text == "Layer name"
                 || t.text == "Duplicate layer"
@@ -452,7 +518,7 @@ fn workspace_compact_actions_rename_duplicate_delete_through_the_real_menu() {
                 "Compact renamed"
             );
             // Clicking the tab finishes inline renaming and restores editing-first chrome.
-            click_workspace_control(&mut harness, &mut app, "Appearance");
+            click_workspace_control(&mut harness, &mut app, "Looks");
         }
         click_workspace_control(&mut harness, &mut app, "Duplicate layer");
         let duplicate = app.setup_editor.selected.clone().unwrap();
@@ -495,7 +561,12 @@ fn workspace_compact_connection_notice_remains_visible_in_real_scroll_content() 
         );
         let mut harness = Harness::new(size);
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
-        let message = app.setup_editor.connection_notices[0].message.clone();
+        let message = app.setup_editor.connection_notices[0]
+            .message
+            .split('.')
+            .next()
+            .unwrap()
+            .to_owned();
         let pane = frame
             .texts()
             .into_iter()
@@ -503,9 +574,11 @@ fn workspace_compact_connection_notice_remains_visible_in_real_scroll_content() 
             .unwrap()
             .clip;
         if size == MINIMUM_SIZE {
-            harness.wheel(pane.center(), egui::vec2(0.0, -2000.0), |ctx| {
-                app.show_lighting(ctx)
-            });
+            harness.wheel(
+                egui::pos2(pane.center().x, pane.bottom() - 10.0),
+                egui::vec2(0.0, -2000.0),
+                |ctx| app.show_lighting(ctx),
+            );
             for _ in 0..30 {
                 harness.run(vec![], |ctx| app.show_lighting(ctx));
             }
@@ -545,5 +618,131 @@ fn workspace_preview_badge_explains_source_and_playback_without_open_tools() {
             assert_eq!(app.setup_editor.draft, draft);
             assert!(incoming.try_recv().is_err());
         }
+    }
+}
+
+#[test]
+fn cards_keep_editing_choice_separate_from_preview_input_at_real_sizes() {
+    use underglow::setup_library::{Starter, starter};
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE, WIDE_SIZE] {
+        let (mut app, incoming) = app();
+        let document = starter(Starter::MatrixPi, "concepts".into(), "Concepts".into()).unwrap();
+        app.setup_editor = setup_editor::Editor::default();
+        app.setup_editor.load(Some(document.clone()));
+        let mut harness = Harness::new(size);
+        let first = harness.settle(|ctx| app.show_lighting(ctx));
+        visible(&first, "Current setup: Concepts");
+        visible(&first, "Change setup...");
+        visible(&first, "Function zone");
+        let keyboard = key(&first, "Esc");
+        for section in ["Where", "Looks", "When"] {
+            click_workspace_control(&mut harness, &mut app, section);
+        }
+        click_workspace_control(&mut harness, &mut app, "Idle / fallback");
+        click_workspace_control(&mut harness, &mut app, "Working");
+        click_workspace_control(&mut harness, &mut app, "Shown while pi is working");
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&document));
+        assert!(app.setup_editor.preview.mode == setup_preview::Mode::Live);
+        assert!(!app.setup_editor.preview.quick_active());
+        assert!(app.setup_editor.preview.sample().is_none());
+
+        let editing = harness.settle(|ctx| app.show_lighting(ctx));
+        harness.click("Finished", Some(keyboard_region(&editing)), |ctx| {
+            app.show_lighting(ctx)
+        });
+        let testing = harness.settle(|ctx| app.show_lighting(ctx));
+        assert!(
+            testing
+                .texts()
+                .iter()
+                .any(|t| t.text.contains("Testing: Finished") && t.fully_visible())
+        );
+        assert_eq!(
+            app.setup_editor
+                .preview
+                .runtime()
+                .unwrap()
+                .selected_appearance("pi-status")
+                .unwrap()
+                .variant_id,
+            Some("finished")
+        );
+        click_workspace_control(&mut harness, &mut app, "Editing");
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        let pane = frame
+            .texts()
+            .iter()
+            .find(|t| t.text.starts_with("Selected layer:"))
+            .unwrap()
+            .clip;
+        visible_in(&frame, "Working", Some(pane));
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&document));
+        assert_eq!(key(&frame, "Esc"), keyboard);
+        assert!(app.setup_editor.preview.sample().is_none());
+        assert!(incoming.try_recv().is_err());
+
+        let mut other = document.clone();
+        other.id = "another-concepts-setup".into();
+        app.setup_editor.load(Some(other.clone()));
+        click_workspace_control(&mut harness, &mut app, "Editing");
+        let reopened = harness.settle(|ctx| app.show_lighting(ctx));
+        visible_in(&reopened, "Idle / fallback", Some(pane));
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&other));
+    }
+}
+
+#[test]
+fn cards_retain_independent_editors_without_an_extra_navigation_index() {
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE, WIDE_SIZE] {
+        let (mut app, incoming) = app();
+        let mut harness = Harness::new(size);
+        let original = app.setup_editor.draft.clone();
+        let id = app.setup_editor.selected.clone().unwrap();
+        let first = harness.settle(|ctx| app.show_lighting(ctx));
+        let save = visible(&first, "Save");
+        let keyboard = key(&first, "Esc");
+        click_workspace_control(&mut harness, &mut app, "Edit keys");
+        click_workspace_control(&mut harness, &mut app, "Edit condition");
+        assert_eq!(
+            app.setup_editor.inspector_sections_for_test(&id),
+            (true, true)
+        );
+        // The condition fields are direct, not another hidden Advanced condition.
+        let activation = &original
+            .as_ref()
+            .unwrap()
+            .layers
+            .iter()
+            .find(|layer| layer.id == id)
+            .unwrap()
+            .activation;
+        let mode = match activation {
+            underglow::setup::Activation::Always {} => "Always",
+            underglow::setup::Activation::WhileState { .. } => "While a source matches",
+            underglow::setup::Activation::OnEvent { .. } => "When an event occurs",
+            underglow::setup::Activation::OnTransition { .. } => "When a state changes",
+        };
+        click_workspace_control(&mut harness, &mut app, mode);
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        assert!(!frame.texts().iter().any(|t| {
+            [
+                "Advanced condition",
+                "Edit look",
+                "Edit behavior",
+                "Close behavior",
+                "Done choosing keys",
+            ]
+            .contains(&t.text.as_str())
+        }));
+        // Close the mode picker without making a model change.
+        harness.click("Composition preview", None, |ctx| app.show_lighting(ctx));
+        for section in ["Where", "Looks", "When"] {
+            click_workspace_control(&mut harness, &mut app, section);
+        }
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        assert_eq!(visible(&frame, "Save"), save);
+        assert_eq!(key(&frame, "Esc"), keyboard);
+        assert_eq!(app.setup_editor.draft, original);
+        assert!(incoming.try_recv().is_err());
     }
 }

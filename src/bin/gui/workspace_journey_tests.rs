@@ -77,7 +77,7 @@ fn complete_matrix_pi_edit_test_save_and_delete_journey_at_real_sizes() {
             "Pi is one logical layer, not three overlays"
         );
 
-        click_workspace_control(&mut harness, &mut app, "Keys");
+        click_workspace_control(&mut harness, &mut app, "Edit keys");
         click_workspace_control(&mut harness, &mut app, "F1");
         click_workspace_control(&mut harness, &mut app, "Use selected keys only");
         assert_eq!(
@@ -90,10 +90,10 @@ fn complete_matrix_pi_edit_test_save_and_delete_journey_at_real_sizes() {
         );
         assert_eq!(app.setup_editor.draft.as_ref().unwrap().layers[0], matrix);
 
-        click_workspace_control(&mut harness, &mut app, "Appearance");
+        click_workspace_control(&mut harness, &mut app, "Looks");
         click_workspace_control(&mut harness, &mut app, "Idle / fallback");
         click_workspace_control(&mut harness, &mut app, "Working");
-        click_workspace_control(&mut harness, &mut app, "Inherit layer brightness");
+        click_workspace_control(&mut harness, &mut app, "Use layer brightness");
         assert!(
             app.setup_editor.draft.as_ref().unwrap().layers[1].variants[0]
                 .brightness

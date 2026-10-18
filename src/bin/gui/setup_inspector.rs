@@ -171,7 +171,7 @@ fn color_control(ui: &mut Ui, label: &str, color: &mut [u8; 3]) {
 pub fn show(ui: &mut Ui, layer: &mut Layer) -> bool {
     let before = layer.clone();
     ui.push_id(("layer-appearance", layer.id.clone()), |ui| {
-        show_renderer(ui, &mut layer.renderer);
+        renderer_controls(ui, &mut layer.renderer, false);
         ui.add(egui::Slider::new(&mut layer.brightness, 0..=255).text("Layer brightness"));
         ui.small("Only this layer's visual intensity. Global brightness and safety limits remain independent.");
         show_advanced(ui, layer);
@@ -224,6 +224,26 @@ pub fn show_advanced(ui: &mut Ui, layer: &mut Layer) {
     ui.small("Preview only; saving and lighting activation are separate.");
 }
 
+/// Display percentages while retaining exact saved 0–255 values until edited.
+pub fn brightness_control(ui: &mut Ui, value: &mut u8, label: &str) {
+    ui.add(
+        egui::Slider::new(value, 0..=255)
+            .text(label)
+            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0 / 255.0))
+            .custom_parser(brightness_from_percent),
+    );
+}
+
+fn brightness_from_percent(text: &str) -> Option<f64> {
+    let percent = text
+        .trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    (percent.is_finite() && (0.0..=100.0).contains(&percent)).then_some(percent * 255.0 / 100.0)
+}
+
 fn renderer_description(ui: &mut Ui, renderer: &Renderer) {
     let metadata = entry(renderer);
     if let Some(entry) = metadata {
@@ -251,10 +271,6 @@ fn renderer_description(ui: &mut Ui, renderer: &Renderer) {
     }
 }
 
-pub fn show_renderer(ui: &mut Ui, renderer: &mut Renderer) -> bool {
-    renderer_controls(ui, renderer, false)
-}
-
 pub fn show_renderer_compact(ui: &mut Ui, renderer: &mut Renderer) -> bool {
     renderer_controls(ui, renderer, true)
 }
@@ -266,7 +282,9 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
         let title = entry(renderer).map(|e| e.title)
             .or_else(|| PRIMITIVES.iter().find(|(id, _)| *id == selected).map(|(_, title)| *title))
             .unwrap_or("Unknown renderer");
-        let appearance = egui::ComboBox::from_id_salt("renderer").selected_text(title)
+        let appearance = ui.horizontal(|ui| {
+            ui.label("Effect");
+            egui::ComboBox::from_id_salt("renderer").selected_text(title)
             .height(500.0).show_ui(ui, |ui| {
                 for choice in catalog::presets() {
                     ui.selectable_value(&mut selected, choice.id, choice.title);
@@ -275,7 +293,8 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
                 for (id, title) in PRIMITIVES {
                     ui.selectable_value(&mut selected, id, title);
                 }
-            });
+            })
+        }).inner;
         switch_appearance(renderer, selected);
 
         let metadata = entry(renderer);
@@ -321,7 +340,8 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
             Renderer::Solid { color } => { color_control(ui, "Color", color); }
             Renderer::Pulse { color, period_ms } | Renderer::Sweep { color, period_ms } => {
                 color_control(ui, "Color", color);
-                ui.add(egui::Slider::new(period_ms, 1..=60_000).text("Period (ms)"));
+                ui.add(egui::Slider::new(period_ms, 1..=60_000).text("Cycle duration (ms)"))
+                    .on_hover_text("Time for one animation cycle. A smaller duration makes the animation faster.");
             }
             Renderer::Focus { focus_minutes, break_minutes, cycles, start_paused, meeting_safe, dim } => {
                 ui.add(egui::Slider::new(focus_minutes, 1..=1440).text("Focus minutes"));
@@ -336,14 +356,7 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
         if let Err(error) = renderer.validate() {
             ui.colored_label(egui::Color32::YELLOW, format!("Unsupported settings: {error}. Choose another effect to reset incompatible appearance settings."));
         }
-        if compact {
-            ui.collapsing("Appearance help", |ui| {
-                renderer_description(ui, renderer);
-                ui.small("Preview only; lighting activation is separate.");
-            });
-        } else {
-            ui.small("Preview only; lighting activation is separate.");
-        }
+
     });
     before != *renderer
 }
@@ -376,6 +389,29 @@ mod tests {
                 instance: Some("work".into()),
                 state: Some("working".into()),
             },
+        }
+    }
+
+    #[test]
+    fn percentage_inputs_use_saved_units_and_reject_invalid_values() {
+        assert_eq!(brightness_from_percent("100%"), Some(255.0));
+        assert_eq!(brightness_from_percent("0"), Some(0.0));
+        assert_eq!(brightness_from_percent(" 50 % "), Some(127.5));
+        for invalid in ["NaN", "inf", "-1", "101%", "bad"] {
+            assert_eq!(brightness_from_percent(invalid), None);
+        }
+    }
+
+    #[test]
+    fn reading_percentage_controls_does_not_quantize_saved_brightness() {
+        let ctx = Context::default();
+        for original in [0, 1, 73, 128, 254, 255] {
+            let mut value = original;
+            let _ = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| brightness_control(ui, &mut value, "Brightness"));
+            });
+            assert_eq!(value, original);
         }
     }
 

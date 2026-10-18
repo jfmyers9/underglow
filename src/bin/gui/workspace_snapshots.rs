@@ -257,14 +257,55 @@ fn export_workspace_snapshots() {
     let destination = std::path::PathBuf::from(destination);
     std::fs::create_dir_all(&destination).unwrap();
     for size in [[940, 850], [620, 640], [1280, 800]] {
-        for state in STATES {
+        for state in STATES.iter().chain(["where", "when"].iter()) {
             let mut harness = Harness::new(egui::vec2(size[0] as f32, size[1] as f32));
-            let (mut app, incoming) = state_fixture(state);
+            let section = match *state {
+                "where" => Some("Edit keys"),
+                "when" => Some("Edit condition"),
+                _ => None,
+            };
+            let (mut app, incoming) =
+                state_fixture(if section.is_some() { "normal" } else { state });
             let mut capture = Capture::new(size);
-            for index in 0..3 {
+            if let Some(action) = section {
+                // Use actual UI actions and retain every texture delta while
+                // opening a section. Do not synthesize a second editing model.
+                for _ in 0..2 {
+                    let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+                    capture.update_textures(&frame.output.textures_delta);
+                }
+                let mut pos = None;
+                for _ in 0..40 {
+                    let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+                    capture.update_textures(&frame.output.textures_delta);
+                    if let Some(hit) = frame
+                        .texts()
+                        .iter()
+                        .find(|t| t.text == action && t.fully_visible())
+                    {
+                        pos = Some(hit.rect.center());
+                        break;
+                    }
+                    let frame = harness.wheel(
+                        egui::pos2(size[0] as f32 - 70.0, size[1] as f32 - 30.0),
+                        egui::vec2(0.0, -60.0),
+                        |ctx| app.show_lighting(ctx),
+                    );
+                    capture.update_textures(&frame.output.textures_delta);
+                }
+                let pos = pos.expect("reachable card action through real scrolling");
+                for pressed in [true, false] {
+                    let frame = harness
+                        .run(super::workspace_test_ui::pointer(pos, pressed), |ctx| {
+                            app.show_lighting(ctx)
+                        });
+                    capture.update_textures(&frame.output.textures_delta);
+                }
+            }
+            for index in 0..30 {
                 let frame = harness.run(vec![], |context| app.show_lighting(context));
                 capture.update_textures(&frame.output.textures_delta);
-                if index == 2 {
+                if index == 29 {
                     capture.paint(&harness.context, frame.output);
                 }
             }

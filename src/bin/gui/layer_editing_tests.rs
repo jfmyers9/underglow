@@ -60,6 +60,21 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
             h.click_at(menu.rect.center(), |ctx| app.show_lighting(ctx));
             continue;
         }
+        if matches!(
+            label,
+            "Whole keyboard"
+                | "Arrow keys (4 physical)"
+                | "Saved zones"
+                | "Reusable custom groups"
+                | "Key selection help"
+        ) && !app.setup_editor.target_options_open_for_test()
+            && let Some(options) = texts
+                .iter()
+                .find(|t| t.text == "Selection options" && t.fully_visible())
+        {
+            h.click_at(options.rect.center(), |ctx| app.show_lighting(ctx));
+            continue;
+        }
         let pane = pane.expect("selected-layer pane");
         let menu_item = texts.iter().rev().find(|t| {
             t.fully_visible()
@@ -67,7 +82,9 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
                     || matches!(t.text.as_str(), "Solid" | "Pulse" | "Sweep"))
         });
         h.wheel(
-            menu_item.map_or(pane.center(), |t| t.rect.center()),
+            menu_item.map_or(egui::pos2(pane.center().x, pane.bottom() - 10.0), |t| {
+                t.rect.center()
+            }),
             egui::vec2(0.0, if step == 79 { 20000.0 } else { -60.0 }),
             |ctx| app.show_lighting(ctx),
         );
@@ -93,9 +110,10 @@ fn appearance_is_default_and_matrix_change_preserves_the_other_layer_and_keys() 
         let original = app.setup_editor.draft.clone().unwrap();
         app.setup_editor.selected = Some(original.layers[0].id.clone());
         let text = labels(&mut h, &mut app);
-        for tab in ["Appearance", "Keys", "Behavior"] {
-            assert!(text.iter().any(|s| s == tab));
+        for section in ["Where", "Looks", "When"] {
+            click(&mut h, &mut app, section);
         }
+        click(&mut h, &mut app, "Looks");
         assert!(!text.iter().any(|s| s.contains("Stable ID:")
             || s.contains("Transient appearances outrank")
             || s.contains("Source is present")));
@@ -106,7 +124,7 @@ fn appearance_is_default_and_matrix_change_preserves_the_other_layer_and_keys() 
         let mut expected = original.clone();
         expected.layers[0].renderer = changed.layers[0].renderer.clone();
         assert_eq!(*changed, expected);
-        click(&mut h, &mut app, "Keys");
+        click(&mut h, &mut app, "Edit keys");
         click(&mut h, &mut app, "F1");
         let changed = app.setup_editor.draft.as_ref().unwrap();
         assert_eq!(changed.layers[1], original.layers[1]);
@@ -142,7 +160,7 @@ fn pi_is_one_layer_and_appearance_selection_is_shared_safely_with_behavior() {
         click(&mut h, &mut app, "Working");
         click(&mut h, &mut app, "Sweep");
         click(&mut h, &mut app, "Solid");
-        click(&mut h, &mut app, "Inherit layer brightness");
+        click(&mut h, &mut app, "Use layer brightness");
         let changed = app.setup_editor.draft.clone().unwrap();
         assert!(matches!(
             changed.layers[1].variants[0].renderer,
@@ -155,21 +173,16 @@ fn pi_is_one_layer_and_appearance_selection_is_shared_safely_with_behavior() {
         let mut expected = original.clone();
         expected.layers[1].variants[0] = changed.layers[1].variants[0].clone();
         assert_eq!(changed, expected);
-        click(&mut h, &mut app, "Behavior");
-        click(&mut h, &mut app, "Shown while pi is working");
-        assert!(
-            labels(&mut h, &mut app)
-                .iter()
-                .any(|s| s == "Shown while pi is working")
-        );
-        click(&mut h, &mut app, "Advanced condition");
+        click(&mut h, &mut app, "Edit condition");
+        // Edit condition opens the actual condition controls directly, not another disclosure.
+
         click(&mut h, &mut app, "While a source matches");
         click(&mut h, &mut app, "Always");
         assert_eq!(
             app.setup_editor.draft.as_ref().unwrap().layers[1].variants[0].activation,
             Activation::Always {}
         );
-        click(&mut h, &mut app, "Appearance");
+        click(&mut h, &mut app, "Looks");
         click(&mut h, &mut app, "Working");
         click(&mut h, &mut app, "Finished (settled, not success)");
         assert_eq!(
@@ -196,7 +209,7 @@ fn deleting_pi_stays_deleted_after_selection_save_and_document_restart() {
     click(&mut h, &mut app, "Pi status layer");
     click(&mut h, &mut app, "Delete layer");
     assert_eq!(app.setup_editor.draft.as_ref(), Some(&base));
-    click(&mut h, &mut app, "Appearance");
+    click(&mut h, &mut app, "Looks");
     click(&mut h, &mut app, "Save");
     let Action::SetupReplace { document, revision } = incoming.try_recv().unwrap() else {
         panic!("explicit setup save only");
@@ -237,7 +250,7 @@ fn advanced_blend_transition_and_real_only_observed_choices_remain_reachable() {
     let mut h = Harness::new(DEFAULT_SIZE);
     let (mut app, incoming) = app();
     let before = app.setup_editor.draft.clone().unwrap();
-    click(&mut h, &mut app, "Advanced layer settings");
+    click(&mut h, &mut app, "Layer mixing & transitions");
     click(&mut h, &mut app, "Normal");
     click(&mut h, &mut app, "Add (saturating)");
     click(&mut h, &mut app, "Linear");
@@ -257,8 +270,8 @@ fn advanced_blend_transition_and_real_only_observed_choices_remain_reachable() {
         .scenario
         .publish_state("pi", "private-only", "approval", 1000)
         .unwrap();
-    click(&mut h, &mut app, "Behavior");
-    click(&mut h, &mut app, "Advanced condition");
+    click(&mut h, &mut app, "Edit condition");
+
     click(&mut h, &mut app, "Always");
     click(&mut h, &mut app, "While a source matches");
     click(&mut h, &mut app, "Source is present (any live state)");

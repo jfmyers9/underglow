@@ -1,12 +1,58 @@
-//! Selected-layer tabs and stack actions; the parent Editor owns every draft.
+//! Continuous Where / Looks / When inspector; the parent owns every draft.
 use super::*;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Tab {
-    #[default]
-    Appearance,
-    Keys,
-    Behavior,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Section {
+    Where,
+    Looks,
+    When,
+}
+
+/// Disclosures and scroll intent only, never copies of the layer's data.
+#[derive(Default)]
+pub(super) struct Sections {
+    pub keys_open: bool,
+    pub behavior_open: bool,
+    pub scroll_to: Option<Section>,
+}
+
+impl Sections {
+    pub fn reveal(&mut self, section: Section) {
+        match section {
+            Section::Where => self.keys_open = true,
+            Section::When => self.behavior_open = true,
+            Section::Looks => {}
+        }
+        self.scroll_to = Some(section);
+    }
+}
+
+/// Describe every selector; never pretend zones/groups are replaced by direct keys.
+fn target_summary(target: &Target) -> String {
+    match target {
+        Target::Whole {} => "Whole keyboard".into(),
+        Target::Selection {
+            zones,
+            keys,
+            groups,
+        } => {
+            let mut parts = Vec::new();
+            if !keys.is_empty() {
+                let mut direct = keys.iter().take(4).cloned().collect::<Vec<_>>().join(", ");
+                if keys.len() > 4 {
+                    direct.push_str(&format!(" + {} more keys", keys.len() - 4));
+                }
+                parts.push(direct);
+            }
+            parts.extend(zones.iter().map(|zone| format!("{zone:?} zone")));
+            parts.extend(groups.iter().map(|group| format!("Group: {group}")));
+            if parts.is_empty() {
+                "No keys selected".into()
+            } else {
+                parts.join(" + ")
+            }
+        }
+    }
 }
 
 impl Editor {
@@ -207,104 +253,108 @@ impl Editor {
         };
         let mut edited = layer.clone();
         ui.push_id(&id, |ui| {
-            if !compact || self.rename_editing.as_deref() == Some(id.as_str()) {
+            if self.rename_editing.as_deref() == Some(id.as_str()) {
                 ui.horizontal(|ui| {
                     ui.label("Layer name");
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut edited.name)
-                            .char_limit(256)
-                            .desired_width((ui.available_width() - 6.0).max(50.0)),
-                    );
+                    let field = ui.add(egui::TextEdit::singleline(&mut edited.name)
+                        .char_limit(256).desired_width((ui.available_width() - 6.0).max(50.0)));
                     if self.rename_focus.as_deref() == Some(id.as_str()) {
                         field.request_focus();
                         field.scroll_to_me(Some(egui::Align::Min));
                         self.rename_focus = None;
                     }
-                    if compact && field.lost_focus() {
-                        self.rename_editing = None;
-                    }
+                    if field.lost_focus() { self.rename_editing = None; }
                 });
             }
-            if !compact {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Duplicate layer").clicked() {
-                        let new_id = fresh_id("layer");
-                        let index = doc.layers.iter().position(|l| l.id == id).unwrap() + 1;
-                        self.error = self
-                            .apply(LayerEdit::Duplicate {
-                                id: id.clone(),
-                                new_id: new_id.clone(),
-                                index,
-                            })
-                            .err();
-                        if self.error.is_none() {
-                            self.selected = Some(new_id);
-                        }
-                    }
-                    if ui.button("Delete layer").clicked() {
-                        self.error = self.apply(LayerEdit::Remove { id: id.clone() }).err();
-                    }
-                });
-            }
-            let tab = self.inspector_tabs.entry(id.clone()).or_default();
-            let mut select_keys = false;
-            ui.horizontal(|ui| {
-                ui.selectable_value(tab, Tab::Appearance, "Appearance");
-                select_keys = ui.selectable_value(tab, Tab::Keys, "Keys").clicked();
-                ui.selectable_value(tab, Tab::Behavior, "Behavior");
-            });
-            let tab = *tab;
-            if select_keys {
-                self.select_keys_mode();
-            }
-            if !compact {
-                for notice in &self.connection_notices {
-                    ui.small(&notice.message);
-                    if ui
-                        .button(format!("Connections: {}", notice.label))
-                        .clicked()
-                    {
-                        self.connection_request = Some(notice.source.clone());
-                    }
-                }
-            }
+            let sections = self.inspector_sections.entry(id.clone()).or_default();
+            let focus = sections.scroll_to.take();
+            let mut keys_open = sections.keys_open;
+            let mut behavior_open = sections.behavior_open;
             let mut groups = doc.groups.clone();
-            match tab {
-                Tab::Appearance if compact => {
-                    self.behaviors.show_compact_appearance(ui, &mut edited)
-                }
-                Tab::Appearance => self.behaviors.show_appearance(ui, &mut edited),
-                Tab::Behavior => {
-                    // Only real observations are offered, even while synthetic preview is selected.
-                    let sample = self.preview.sample().filter(|s| !s.is_stale());
-                    self.behaviors.show_behavior(
-                        ui,
-                        &mut edited,
-                        self.capabilities
-                            .get_or_insert_with(CapabilityRegistry::with_builtins),
-                        sample.map(|s| &s.snapshot),
-                        sample.map(|s| &s.events),
-                    );
-                }
-                Tab::Keys => {
-                    let others: Vec<_> = doc
-                        .layers
-                        .iter()
-                        .filter(|l| l.id != id)
-                        .map(|l| l.target.clone())
-                        .collect();
+
+            let card = |ui: &mut egui::Ui| egui::Frame::group(ui.style())
+                .inner_margin(10).corner_radius(8).fill(ui.visuals().faint_bg_color);
+
+            let where_card = card(ui).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Where").strong().size(16.0));
+                    let selecting = self.canvas_mode == setup_targets::CanvasMode::SelectKeys;
+                    if ui.add(egui::Button::new("Edit keys").selected(selecting && keys_open)).on_hover_text("Select keys on the shared keyboard. Click again to finish selection.").clicked() {
+                        keys_open = !keys_open || !selecting;
+                        self.canvas_mode = if keys_open { setup_targets::CanvasMode::SelectKeys } else { setup_targets::CanvasMode::Preview };
+                    }
+                });
+                ui.label(target_summary(&edited.target));
+                if keys_open {
+                    let others: Vec<_> = doc.layers.iter().filter(|l| l.id != id)
+                        .map(|l| l.target.clone()).collect();
                     self.show_target_controls(ui, &id, &mut edited.target, &mut groups, &others);
                 }
-            }
-            if compact {
-                for notice in &self.connection_notices {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&notice.message).small()).truncate(),
-                    )
-                    .on_hover_text(&notice.message);
+            });
+            if focus == Some(Section::Where) { where_card.response.scroll_to_me(Some(egui::Align::Min)); }
+            ui.add_space(8.0);
+
+            let looks_card = card(ui).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Looks").strong().size(16.0));
+                    self.behaviors.show_appearance_menu(ui, &mut edited);
+                });
+                if compact { self.behaviors.show_compact_appearance(ui, &mut edited); }
+                else { self.behaviors.show_appearance(ui, &mut edited); }
+            });
+            if focus == Some(Section::Looks) { looks_card.response.scroll_to_me(Some(egui::Align::Min)); }
+            ui.add_space(8.0);
+
+            let when_card = card(ui).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("When").strong().size(16.0));
+                    if ui.add(egui::Button::new("Edit condition").selected(behavior_open)).clicked() {
+                        behavior_open = !behavior_open;
+                    }
+                });
+                if behavior_open {
+                    // Only real observations may populate condition suggestions.
+                    let sample = self.preview.sample().filter(|s| !s.is_stale());
+                    self.behaviors.show_condition(ui, &mut edited,
+                        self.capabilities.get_or_insert_with(CapabilityRegistry::with_builtins),
+                        sample.map(|s| &s.snapshot), sample.map(|s| &s.events));
+                } else {
+                    let (_, summary) = self.behaviors.summary(&edited);
+                    ui.label(summary);
                 }
+                for notice in &self.connection_notices {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add_sized([(ui.available_width() * 0.55).min(180.0), 22.0],
+                            egui::Button::new(format!("Connections: {}", notice.label)).truncate())
+                            .on_hover_text(format!("{}: {}", notice.label, notice.message)).clicked() {
+                            self.connection_request = Some(notice.source.clone());
+                        }
+                        // Preserve the full diagnostic in the tooltip without
+                        // turning routine source status into a warning paragraph.
+                        ui.small(notice.message.split('.').next().unwrap_or(&notice.message));
+                    });
+                }
+            });
+            if focus == Some(Section::When) { when_card.response.scroll_to_me(Some(egui::Align::Min)); }
+            ui.add_space(8.0);
+            let sections = self.inspector_sections.entry(id.clone()).or_default();
+            sections.keys_open = keys_open;
+            sections.behavior_open = behavior_open;
+
+            ui.collapsing("Layer mixing & transitions", |ui| {
+                setup_inspector::show_advanced(ui, &mut edited)
+            });
+
+            if doc.layers.iter().filter(|l| l.id.starts_with("legacy-rule-")
+                && matches!(&l.activation,
+                    Activation::WhileState { source, .. } | Activation::OnEvent { source, .. }
+                    | Activation::OnTransition { source, .. } if source == "pi")).count() > 1 {
+                ui.small("Older Pi rules remain separate layers to preserve your setup. To use one Pi status layer, save a copy, remove the old rules, then Add layer → Pi status layer.");
             }
-            ui.collapsing("Advanced layer details", |ui| {
+            ui.collapsing("Technical details", |ui| {
                 ui.small(format!("Stable ID: {id}"))
             });
             if edited != *layer || groups != doc.groups {

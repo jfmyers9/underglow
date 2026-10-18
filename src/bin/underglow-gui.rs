@@ -1831,8 +1831,14 @@ impl Controller {
                 let title = self.setup_editor.draft.as_ref().map(|doc| doc.name.as_str())
                     .unwrap_or_else(|| effect_description(&self.preset).0);
                 let width = (ui.available_width() - 410.0).clamp(180.0, 360.0);
-                if ui.add_sized([width, 28.0], egui::Button::new(format!("Browse setups: {title}")).truncate())
-                    .on_hover_text(format!("{title} — open setup browser")).clicked() { self.setup_library.open = true; }
+                ui.allocate_ui_with_layout(egui::vec2(width, 34.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let kind = if self.setup_editor.draft.is_some() { "Current setup" } else { "Legacy profile" };
+                    ui.add(egui::Label::new(egui::RichText::new(format!("{kind}: {title}")).small()).truncate()).on_hover_text(title);
+                    if ui.small_button("Change setup...").on_hover_text("Create, open or manage saved combinations of layers. Browsing does not replace your draft.").clicked() {
+                        self.setup_library.open = true;
+                    }
+                });
                 ui.label(if self.setup_editor.dirty { "Unsaved changes" }
                     else if self.setup_editor.draft.is_some() { "Saved" } else { "Legacy profile" });
                 if self.setup_editor.draft.is_some() {
@@ -2537,14 +2543,14 @@ mod tests {
         };
         // Inspector controls remain mounted and reachable within their own scroll area.
         click(&mut app, "Layer brightness");
-        click(&mut app, "Keys");
-        click(&mut app, "Physical targets · 80HE ANSI");
+        click(&mut app, "Edit keys");
+        click(&mut app, "Selection options");
         assert!(!text.contains("Choose an effect"));
         assert!(!text.contains("Lighting controls"));
-        click(&mut app, "Appearance");
+        click(&mut app, "Looks");
         click(&mut app, "Matrix");
         click(&mut app, "Aurora");
-        click(&mut app, "Keys");
+        click(&mut app, "Edit keys");
         click(&mut app, "Select keys");
         click(&mut app, "F1");
         let draft = app.setup_editor.draft.as_ref().unwrap();

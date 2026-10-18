@@ -273,6 +273,18 @@ impl Preview {
         Ok(())
     }
 
+    pub fn quick_action_label(&self) -> Option<&str> {
+        self.quick
+            .active
+            .then(|| {
+                self.quick
+                    .action
+                    .as_ref()
+                    .map(|action| action.label.as_str())
+            })
+            .flatten()
+    }
+
     /// One compact row or two desktop rows, mounted before drawing the board so a quick action and
     /// the painted RGB/explanation always refer to the same canonical capture.
     pub fn show_quick_controls(

@@ -159,7 +159,7 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
             "Connections",
             "Settings",
             "Diagnostics",
-            "Browse setups: Navigation draft",
+            "Change setup...",
             "Unsaved changes",
             "Keyboard lighting",
             "Resume lighting",
@@ -171,7 +171,7 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
         assert!(visible_rect(&output, "Saved setups").is_none());
         assert!(visible_rect(&output, "Connector diagnostics").is_none());
 
-        click(&ctx, &mut app, size, "Browse setups: Navigation draft");
+        click(&ctx, &mut app, size, "Change setup...");
         assert!(app.setup_library.open);
         assert!(app.page == Page::Editor);
         let output = frame(&ctx, &mut app, size, vec![]);
@@ -195,7 +195,7 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
         assert!(app.page == Page::Connections);
         assert!(matches!(incoming.try_recv(), Ok(Action::ConnectionsShow)));
         app.pending = false; // complete the read-only fixture request
-        click(&ctx, &mut app, size, "Browse setups: Navigation draft");
+        click(&ctx, &mut app, size, "Change setup...");
         assert!(app.setup_library.open);
         assert!(
             app.page == Page::Connections,

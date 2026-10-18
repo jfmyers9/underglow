@@ -40,8 +40,8 @@ Save → explicitly enable lighting**. For hardware-free development, use
 
 - **Editor** is the lighting workspace; **Connections** is a separate destination
   for applications and producers supplying information.
-- **Browse setups** opens the setup browser. Merely browsing or selecting a name
-  does not replace your draft. Open another setup deliberately.
+- **Current setup** identifies the combination you are editing. **Change setup...**
+  opens its browser. Browsing does not replace your draft; opening is explicit.
 - The fixed header shows the setup, **Saved / Unsaved changes**, the one **Save**
   action and keyboard-lighting state. **Start engine / Resume lighting / Pause
   lighting** controls physical output separately.
@@ -52,17 +52,17 @@ Save → explicitly enable lighting**. For hardware-free development, use
 
 ### Create and customize
 
-1. In **Browse setups**, choose Blank or an editable starter such as **Matrix +
+1. In **Change setup...**, choose Blank or an editable starter such as **Matrix +
    Pi**. A starter is a local draft, not a recurring default.
 2. **Add layer** offers Matrix, Aurora, a solid color, Pi status and other
    supported effects. Layers are topmost first. Row **...** menus and compact
    **Layer actions** provide rename, duplicate, reorder and delete.
-3. Select **Appearance**, **Keys**, or **Behavior**. Ordinary appearance/color
-   controls come first; advanced conditions, blending, transitions and IDs remain
-   available in their relevant details.
-   In the compact layout, **Layer actions** owns rename/duplicate/delete so the
-   appearance controls come first. **Appearance help** retains effect guidance.
-4. In **Keys**, select physical keys on the shared keyboard. Zones, direct keys
+3. Three cards explain the layer: **Where** (keys), **Looks** (effect/color/
+   percentage brightness) and **When** (trigger and connection data). The
+   **Editing** picker selects an appearance; **Appearance actions** manages it.
+   **Edit condition** opens its trigger directly. Cards scroll together, without
+   an extra navigation index or competing Done/Close buttons.
+4. Use **Where → Edit keys** on the shared keyboard. Zones, direct keys
    and group references combine as a union. **Also includes** lists the extras;
    **Use selected keys only** removes that layer's zone/group references once
    direct keys exist. Shared groups and other layers are unchanged.
@@ -122,7 +122,7 @@ when needed. Executable review, trust and enablement remain separate explicit
 actions. Selecting visuals never installs or starts a producer. **Diagnostics**
 and **Settings** are secondary windows.
 
-**Browse setups → Share setups** opens import/export. A new imported copy
+**Change setup... → Share setups** opens import/export. A new imported copy
 requires explicit connection rebinding, including disabled appearances, and is
 stored without switching, credentials or executable trust.
 

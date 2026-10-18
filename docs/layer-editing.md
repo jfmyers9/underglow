@@ -1,60 +1,81 @@
 # Editing layers
 
-Choose a layer in the top-first stack (or the compact **Layer** picker), then
-use the **Appearance**, **Keys**, and **Behavior** inspector tabs. These are
-views of the same draft, not independent copies. Editing and testing never
-enable keyboard lighting; save explicitly and enable lighting separately.
+Select a layer. The inspector is three cards in one scrolling form:
 
-## Common changes
+- **Where:** the current physical target and **Edit keys**.
+- **Looks:** effect, color and percentage brightness for the selected appearance.
+- **When:** its readable condition, **Edit condition**, and relevant connections.
 
-- **Appearance** is the default. Choose the layer's effect or color, then adjust
-  supported parameters and layer brightness. Changing Matrix to another effect
-  does not replace the setup, its other layers, keys, or behavior.
-- **Keys** edits the selected logical layer's target and reusable groups. Every
-  appearance of that layer shares these keys. Group changes still protect all
-  other references, including disabled layers.
-- Existing zones/groups combine with direct keys. **Also includes** lists those
-  extras; after selecting direct keys, **Use selected keys only** removes this
-  layer's extra references without modifying shared groups or other layers.
-- **Behavior** explains when the selected appearance is shown. Expand
-  **Advanced condition** for the generic source/state/event/transition builder.
-  Saved missing selectors remain intact with a repair warning. Observed choices
-  come only from real read-only source samples, never private preview scenarios.
+There is no separate navigation index, duplicate heading strip or tab switch.
+The keyboard, layer identity and Save remain fixed while the cards scroll.
+At compact sizes, use the always-visible inspector scrollbar to reach later
+cards rather than squeezing all controls into a small grid.
 
-**Add layer** opens a non-mutating menu: choose **Aurora layer**, **Matrix layer**,
-**Solid color layer**, **Pi status layer**, or another catalog effect. The new
-editable layer is appended above the current stack. To begin a different setup,
-choose **Browse setups**, then **Blank**. Unsaved drafts get Save / Discard /
-Cancel protection before replacement.
+## Where: choose keys
 
-Stack checkboxes enable/mute individual layers. Each row's **...** menu provides
-rename, duplicate, reorder and delete; the compact layout offers **Layer
-actions**. The selected inspector also exposes its name and Duplicate/Delete
-buttons. **Toward top** moves a layer visually upward, giving it precedence on
-overlapping keys; the saved document continues to store bottom-to-top stable IDs.
+Click **Edit keys**, then select keys on the shared keyboard. Click the same
+button again to finish; there is no separate Done control. **Select keys** above
+the keyboard is another entry point to the same editing mode.
 
-## Pi appearances
+The card summary lists direct keys, saved zones and group references. They
+combine as a union. If direct keys coexist with extra references, **Use selected
+keys only** removes this layer's zone/group references explicitly. That action
+appears only when it can do something; shared groups and other layers stay intact.
 
-The explicit Pi template is one logical layer with **Idle / fallback**,
-**Working**, and **Finished (settled, not success)** appearances. Pick an
-appearance in either Appearance or Behavior; the same stable-ID selection is
-shared across both tabs. Customize its renderer and optional brightness override
-without changing the other appearances. **Inherit layer brightness** retains the
-layer-wide value rather than storing a separate override.
+**Selection options** contains whole-keyboard/arrow presets, **Saved zones**,
+reusable groups and physical-map help. Saved zones preserve the legacy engine
+map, including unnamed cells; their meaning is not silently converted. The
+physical arrow preset selects the four named arrows. All appearances of a
+logical layer share its target.
 
-Deleting Pi removes the layer, not just one appearance. Selection, saving and
-reopening do not reinsert it. Add another template only through Add layer.
+## Looks: change an appearance
 
-## Advanced editing
+For a layer with multiple appearances, **Editing** chooses which one to change.
+Pi has **Idle / fallback**, **Working** and **Finished (settled, not success)**.
+Choose an effect and its supported parameters, then adjust brightness.
 
-- **Appearance → Advanced layer settings:** opacity, blending, transition
-  duration and easing, shared by the whole logical layer.
-- **Behavior → Add behavior appearance:** another editable appearance with a
-  stable ID. Its name, enable state and condition remain independently editable.
-- **Behavior → Advanced appearance settings:** stable appearance ID and raw
-  priority ordering. Transient matches outrank persistent matches, then later
-  matches win within a class. These rules are unchanged.
-- **Advanced layer details:** stable layer ID for diagnostics and repair.
+Brightness is displayed/entered as a percentage; existing saved 0–255 values
+are preserved exactly until edited. **Use layer brightness** keeps an appearance
+on the layer-wide setting rather than storing an override. Smaller **Cycle
+duration (ms)** values make Pulse/Sweep animations faster.
 
-Private Scenario facts and physical keyboard output remain separate. The Pi
-connector declares Idle/Working and Finished, not approval or success facts.
+**Appearance actions** owns appearance creation, renaming, enablement, deletion
+and advanced priority. These controls no longer interrupt condition editing.
+Effect descriptions are available on the effect picker's tooltip rather than
+as repeated general-purpose paragraphs.
+
+Selecting Working to edit does not simulate it. Use the separate test buttons
+beneath the keyboard; the preview caption names the tested behavior. You can
+edit Working while testing Finished. **Live** reads actual source facts.
+Private tests never publish source messages, save or enable physical lighting.
+
+## When: change the trigger
+
+The card shows the selected appearance's condition directly. **Edit condition**
+opens the source/state/event/transition controls right there, without another
+Advanced condition disclosure. Click it again to return to the readable summary.
+
+Pi's base uses current state data when no other appearance overrides it; absent
+or expired data is not inferred as idle. Finished is settled, not success.
+Exact session selectors and disabled appearances are included in summaries.
+Suggestions use real observations only, never private test facts.
+
+Connection status belongs in this card. **Connections: …** opens the relevant
+source for repair while preserving the draft. Short status reports describe
+recent data, not inferred process health; hover for the complete diagnostic.
+
+## Layer and setup actions
+
+**Layer actions** (or a stack row's **...**) owns rename, enable, duplicate,
+reorder and delete. **Toward top** raises precedence on overlapping keys.
+**Layer mixing & transitions** owns opacity, blending and crossfades for the
+whole layer. **Technical details** retains stable IDs.
+
+Deleting Pi remains deliberate across saving, reopening and rebuilds. Older
+migrated profiles may retain three independent Pi rules. They are explained,
+not automatically merged. To adopt one Pi layer, save a copy, remove the old
+rules, then add Pi status and configure its target and appearances.
+
+**Current setup** identifies this combination. **Change setup...** opens setup
+creation, saved setups and Save a copy. Save/Discard/Cancel protects dirty drafts;
+Save and physical lighting activation remain separate explicit actions.

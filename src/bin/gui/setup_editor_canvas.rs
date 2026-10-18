@@ -27,18 +27,22 @@ impl Editor {
             );
     }
 
-    /// Keys inspectors use the same explicit mode as the pinned canvas.
+    /// Where and the keyboard are two entry points to the same target editing.
     pub(super) fn select_keys_mode(&mut self) {
         self.canvas_mode = setup_targets::CanvasMode::SelectKeys;
         if let Some(id) = &self.selected {
-            self.inspector_tabs.insert(id.clone(), inspector::Tab::Keys);
+            self.inspector_sections
+                .entry(id.clone())
+                .or_default()
+                .reveal(inspector::Section::Where);
         }
     }
 
     /// Replacing a document must not inherit group drafts or in-flight gestures.
     pub(super) fn reset_canvas_context(&mut self) {
         self.targets.clear();
-        self.inspector_tabs.clear();
+        self.inspector_sections.clear();
+        self.behaviors = setup_behavior::BehaviorEditor::default();
         self.rename_focus = None;
         self.rename_editing = None;
         self.empty_canvas = setup_targets::TargetSelection::default();
@@ -193,6 +197,11 @@ impl Editor {
             setup_preview::Mode::Scenario if self.preview.quick_active() => "Quick test paused",
             setup_preview::Mode::Scenario if self.preview.scenario_playing() => "Scenario running",
             setup_preview::Mode::Scenario => "Scenario paused",
+        };
+        let context = if let Some(label) = self.preview.quick_action_label() {
+            format!("Testing: {label} · {context}")
+        } else {
+            context.into()
         };
         let caption = if self.preview.error.is_some() {
             format!("Preview only · {context} · retained last-valid frame")

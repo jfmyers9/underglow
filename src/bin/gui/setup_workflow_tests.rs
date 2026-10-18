@@ -104,7 +104,7 @@ fn click(harness: &mut Harness, app: &mut Controller, label: &str) {
 }
 
 fn open_other(harness: &mut Harness, app: &mut Controller) {
-    click(harness, app, "Browse setups: Draft setup");
+    click(harness, app, "Change setup...");
     let mut picker = None;
     for _ in 0..12 {
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
@@ -319,7 +319,7 @@ fn workflow_host_copy_stores_current_draft_without_loading_unexpected_setup_enve
         let mut harness = Harness::new(size);
         let draft = app.setup_editor.draft.clone().unwrap();
         let applied = app.setup_editor.applied.clone();
-        click(&mut harness, &mut app, "Browse setups: Draft setup");
+        click(&mut harness, &mut app, "Change setup...");
         click(&mut harness, &mut app, "Save a copy");
         let action = incoming.try_recv().unwrap();
         let Action::LibraryUpdate {
@@ -383,7 +383,7 @@ fn workflow_host_conflict_recovery_reload_is_read_only_and_requires_explicit_dis
         let (mut app, incoming, outgoing) = fixture(false);
         let mut harness = Harness::new(size);
         let draft = app.setup_editor.draft.clone();
-        click(&mut harness, &mut app, "Browse setups: Draft setup");
+        click(&mut harness, &mut app, "Change setup...");
         click(&mut harness, &mut app, "Reload saved version");
         click(&mut harness, &mut app, "Cancel");
         assert_eq!(app.setup_editor.draft, draft);

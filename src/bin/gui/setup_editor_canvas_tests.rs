@@ -60,7 +60,12 @@ fn key(frame: &crate::workspace_test_ui::Frame, label: &str) -> egui::Pos2 {
         .find(|text| text.text == "Composition preview")
         .unwrap()
         .clip;
-    let keys: Vec<_> = texts.iter().filter(|text| text.text == label).collect();
+    let keys: Vec<_> = texts
+        .iter()
+        .filter(|text| {
+            text.text == label && region.contains_rect(text.clip) && region.contains_rect(text.rect)
+        })
+        .collect();
     assert_eq!(
         keys.len(),
         1,
@@ -338,8 +343,10 @@ fn acknowledged_switch_resets_canvas_context_when_setup_ids_change() {
     let id = original.layers[0].id.clone();
     editor.targets.entry(id.clone()).or_default();
     editor
-        .inspector_tabs
-        .insert(id.clone(), inspector::Tab::Keys);
+        .inspector_sections
+        .entry(id.clone())
+        .or_default()
+        .reveal(inspector::Section::Where);
     editor.canvas_selection = Some(id);
     editor.canvas_mode = setup_targets::CanvasMode::Inspect;
     editor.explained_key = canonical_coord("F1");
@@ -354,7 +361,7 @@ fn acknowledged_switch_resets_canvas_context_when_setup_ids_change() {
     assert_eq!(editor.base_revision, replacement.revision);
     assert!(!editor.dirty);
     assert!(editor.targets.is_empty());
-    assert!(editor.inspector_tabs.is_empty());
+    assert!(editor.inspector_sections.is_empty());
     assert!(editor.canvas_selection.is_none());
     assert!(editor.explained_key.is_none());
     assert_eq!(editor.canvas_mode, setup_targets::CanvasMode::Preview);
@@ -366,14 +373,17 @@ fn keys_tab_and_canvas_selection_mode_share_the_same_editing_context() {
         let mut harness = Harness::new(size);
         let (mut app, incoming) = app(document());
         let id = app.setup_editor.selected.clone().unwrap();
-        click_workspace_control(&mut harness, &mut app, "Keys");
+        click_workspace_control(&mut harness, &mut app, "Edit keys");
         assert_eq!(
             app.setup_editor.canvas_mode,
             setup_targets::CanvasMode::SelectKeys
         );
         assert_eq!(
-            app.setup_editor.inspector_tabs.get(&id),
-            Some(&inspector::Tab::Keys)
+            app.setup_editor
+                .inspector_sections
+                .get(&id)
+                .map(|state| state.keys_open),
+            Some(true)
         );
         harness.click("Preview", None, |ctx| app.show_lighting(ctx));
         assert_eq!(
@@ -382,16 +392,19 @@ fn keys_tab_and_canvas_selection_mode_share_the_same_editing_context() {
         );
         // Clicking an already-selected Keys tab is still an explicit request
         // to resume selection; merely repainting it never forces the mode.
-        click_workspace_control(&mut harness, &mut app, "Keys");
+        click_workspace_control(&mut harness, &mut app, "Edit keys");
         assert_eq!(
             app.setup_editor.canvas_mode,
             setup_targets::CanvasMode::SelectKeys
         );
-        click_workspace_control(&mut harness, &mut app, "Appearance");
+        click_workspace_control(&mut harness, &mut app, "Looks");
         harness.click("Select keys", None, |ctx| app.show_lighting(ctx));
         assert_eq!(
-            app.setup_editor.inspector_tabs.get(&id),
-            Some(&inspector::Tab::Keys)
+            app.setup_editor
+                .inspector_sections
+                .get(&id)
+                .map(|state| state.keys_open),
+            Some(true)
         );
         assert!(incoming.try_recv().is_err());
         assert!(!app.setup_editor.dirty);

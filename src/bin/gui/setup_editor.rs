@@ -340,6 +340,33 @@ mod tests {
         if label == "New blank composition" {
             click(ctx, editor, "More", 0);
         }
+        if matches!(
+            label,
+            "Add behavior appearance"
+                | "Appearance enabled"
+                | "Appearance name"
+                | "Delete appearance"
+                | "Advanced appearance settings"
+        ) {
+            let (output, _) = run(ctx, editor, vec![]);
+            if !output
+                .shapes
+                .iter()
+                .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == label))
+            {
+                click(ctx, editor, "Appearance actions", 0);
+            }
+        }
+        if matches!(label, "Duplicate layer" | "Delete layer" | "Rename layer") {
+            let (output, _) = run(ctx, editor, vec![]);
+            if !output
+                .shapes
+                .iter()
+                .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == label))
+            {
+                click(ctx, editor, "Layer actions", 0);
+            }
+        }
         // Reveal the requested control in its real bounded inspector, not a taller window.
         for step in 0..65 {
             run(ctx, editor, vec![]);
@@ -358,6 +385,12 @@ mod tests {
             if let Some(pos) = hit {
                 click_at(ctx, editor, pos);
                 return;
+            }
+            if matches!(label, "Whole keyboard" | "Arrow keys (4 physical)" | "Saved zones" | "Reusable custom groups")
+                && !editor.target_options_open_for_test()
+                && output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "Selection options")) {
+                click(ctx, editor, "Selection options", 0);
+                continue;
             }
             let delta = if step == 32 { 20000.0 } else { -220.0 };
             run(
@@ -436,14 +469,14 @@ mod tests {
             }
         );
         click(&ctx, &mut editor, "Composition preview", 0); // close color popup
-        click(&ctx, &mut editor, "Keys", 0);
+        click(&ctx, &mut editor, "Edit keys", 0);
         click(&ctx, &mut editor, "Arrow keys (4 physical)", 0);
         click(&ctx, &mut editor, "Add layer", 0);
         click(&ctx, &mut editor, "Aurora layer", 0);
         click(&ctx, &mut editor, "Aurora", 0);
         click(&ctx, &mut editor, "Pulse", 0);
-        click(&ctx, &mut editor, "Keys", 0);
-        click(&ctx, &mut editor, "Named zones (legacy engine map)", 0);
+        click(&ctx, &mut editor, "Edit keys", 0);
+        click(&ctx, &mut editor, "Saved zones", 0);
         click(&ctx, &mut editor, "Function", 0);
         let draft = editor.draft.clone().unwrap();
         assert_eq!(draft.layers[0].renderer.catalog_id(), Some("matrix"));
@@ -539,8 +572,8 @@ mod tests {
         let mut registry = CapabilityRegistry::new();
         registry.insert(descriptor).unwrap();
         editor.set_capabilities(registry);
-        click(&ctx, &mut editor, "Behavior", 0);
-        click(&ctx, &mut editor, "Advanced condition", 0);
+        click(&ctx, &mut editor, "Edit condition", 0);
+
         click(&ctx, &mut editor, "Always", 0);
         click(&ctx, &mut editor, "When an event occurs", 0);
         let changed = editor.draft.as_ref().unwrap();
@@ -552,7 +585,7 @@ mod tests {
         assert_eq!(changed, &expected);
         assert_eq!(editor.applied.as_ref(), Some(&original));
         click(&ctx, &mut editor, "Add behavior appearance", 0);
-        click(&ctx, &mut editor, "Advanced condition", 0);
+
         click(&ctx, &mut editor, "Always", 0);
         click(&ctx, &mut editor, "When an event occurs", 0);
         let changed = editor.draft.as_ref().unwrap();
@@ -613,7 +646,7 @@ mod tests {
                 .analog_input
         );
         // Mounted physical-key canvas retargets every appearance together.
-        click(&ctx, &mut editor, "Keys", 0);
+        click(&ctx, &mut editor, "Edit keys", 0);
         click(&ctx, &mut editor, "Whole keyboard", 0);
         click(&ctx, &mut editor, "Select keys", 0);
         click(&ctx, &mut editor, "F1", 0);
@@ -657,7 +690,7 @@ mod tests {
         // Actual mounted appearance inspector and physical-key canvas, not mocks.
         click(&ctx, &mut editor, "Aurora", 0);
         click(&ctx, &mut editor, "Matrix", 0);
-        click(&ctx, &mut editor, "Keys", 0);
+        click(&ctx, &mut editor, "Edit keys", 0);
         click(&ctx, &mut editor, "Select keys", 0);
         click(&ctx, &mut editor, "F1", 0); // One composed RGB canvas, explicit target mode.
         let selected = &editor.draft.as_ref().unwrap().layers[1];
@@ -670,7 +703,8 @@ mod tests {
                 groups: vec![]
             }
         );
-        click(&ctx, &mut editor, "New layer", 0); // TextEdit, list entries include index.
+        click(&ctx, &mut editor, "Rename layer", 0);
+        click(&ctx, &mut editor, "New layer", 0); // Inline rename, not a list row.
         run(
             &ctx,
             &mut editor,
@@ -739,7 +773,7 @@ pub struct Editor {
     error: Option<String>,
     confirm_blank: bool,
     preview_tools_open: bool,
-    inspector_tabs: BTreeMap<String, inspector::Tab>,
+    inspector_sections: BTreeMap<String, inspector::Sections>,
     rename_focus: Option<String>,
     rename_editing: Option<String>,
 }
@@ -758,6 +792,22 @@ fn fresh_id(prefix: &str) -> String {
 }
 
 impl Editor {
+    #[cfg(test)]
+    pub(crate) fn target_options_open_for_test(&self) -> bool {
+        self.selected
+            .as_ref()
+            .and_then(|id| self.targets.get(id))
+            .is_some_and(|state| state.options_open)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inspector_sections_for_test(&self, id: &str) -> (bool, bool) {
+        self.inspector_sections
+            .get(id)
+            .map(|s| (s.keys_open, s.behavior_open))
+            .unwrap_or_default()
+    }
+
     /// Explicit Connections repair changes only a local draft; never saves,
     /// starts a producer, sends real facts, or resumes physical lighting.
     pub fn repair_sources(
@@ -882,7 +932,7 @@ impl Editor {
             .unwrap_or(&[]);
         self.targets
             .retain(|id, _| layers.iter().any(|layer| &layer.id == id));
-        self.inspector_tabs
+        self.inspector_sections
             .retain(|id, _| layers.iter().any(|layer| &layer.id == id));
         if !layers
             .iter()

@@ -17,7 +17,7 @@ connection. Pending requests do not silently discard or acknowledge later edits.
 
 ## Name, copy, create or open
 
-Choose **Browse setups: …** to open the setup browser. Selecting an item only
+Choose **Change setup...** to open the setup browser. Selecting an item only
 browses it; **Open saved setup** is the explicit opening action.
 
 - **Name draft** uses the entered name for the local draft. Persist that change

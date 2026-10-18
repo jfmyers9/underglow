@@ -252,7 +252,7 @@ fn secondary_sharing_is_explicit_and_import_store_does_not_replace_or_activate()
         let registry = app.connections_panel.registry().cloned();
         let mut harness = Harness::new(size);
         assert!(!text(&mut harness, &mut app).contains("Validate pasted setup"));
-        click(&mut harness, &mut app, "Browse setups: Private draft");
+        click(&mut harness, &mut app, "Change setup...");
         click(&mut harness, &mut app, "Share setups");
         assert!(app.sharing_open);
         assert!(!app.setup_library.open);
@@ -290,7 +290,7 @@ fn secondary_offline_browser_can_create_a_local_blank_but_cannot_save_it() {
         app.connected = false;
         let original = app.setup_editor.applied.clone();
         let mut harness = Harness::new(size);
-        click(&mut harness, &mut app, "Browse setups: Daily");
+        click(&mut harness, &mut app, "Change setup...");
         click(&mut harness, &mut app, "Blank");
         assert!(app.setup_editor.draft.as_ref().unwrap().layers.is_empty());
         assert!(app.setup_editor.dirty);
