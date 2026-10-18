@@ -35,10 +35,22 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
             .iter()
             .find(|t| t.text == "Layer actions")
             .map(|t| t.clip);
-        let keyboard = texts
-            .iter()
-            .find(|t| t.text == "Composition preview")
-            .map(|t| t.clip);
+        // Use the inset scroll viewport, not the padded surface/header clip.
+        let scroll = pane
+            .and_then(|pane| {
+                texts
+                    .iter()
+                    .filter(|t| {
+                        t.clip != pane
+                            && pane.contains_rect(t.clip)
+                            && t.clip.width() > pane.width() * 0.75
+                            && t.clip.height() < pane.height() - 4.0
+                    })
+                    .max_by(|a, b| a.clip.area().total_cmp(&b.clip.area()))
+                    .map(|t| t.clip)
+            })
+            .or(pane);
+        let keyboard = texts.iter().find(|t| t.text == "Keyboard").map(|t| t.clip);
         if let Some(t) = texts.iter().find(|t| {
             t.text == label
                 && t.fully_visible()
@@ -46,7 +58,7 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
                 // Quick tests repeat capability labels such as Working. An
                 // inspector choice must come from its pane/popup, not the
                 // independently clipped canonical keyboard's test toolbar.
-                && (matches!(label, "F1" | "Composition preview")
+                && (matches!(label, "F1" | "Keyboard")
                     || keyboard.is_none_or(|r| r != t.clip))
         }) {
             h.click_at(t.rect.center(), |ctx| app.show_lighting(ctx));
@@ -75,7 +87,7 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
             h.click_at(options.rect.center(), |ctx| app.show_lighting(ctx));
             continue;
         }
-        let pane = pane.expect("selected-layer pane");
+        let pane = scroll.expect("selected-layer scroll viewport");
         let menu_item = texts.iter().rev().find(|t| {
             t.fully_visible()
                 && (underglow::catalog::presets().any(|e| e.title == t.text)
@@ -298,7 +310,7 @@ fn compact_stack_overflow_actions_follow_top_first_display_and_stable_ids() {
     click(&mut h, &mut app, "Enabled");
     assert!(!app.setup_editor.draft.as_ref().unwrap().layers[1].enabled);
     assert_eq!(app.setup_editor.draft.as_ref().unwrap().layers[0], bottom);
-    click(&mut h, &mut app, "Composition preview");
+    click(&mut h, &mut app, "Keyboard");
     click(&mut h, &mut app, "...");
     click(&mut h, &mut app, "Toward bottom");
     let doc = app.setup_editor.draft.as_ref().unwrap();
@@ -307,8 +319,15 @@ fn compact_stack_overflow_actions_follow_top_first_display_and_stable_ids() {
     assert_eq!(app.setup_editor.selected.as_deref(), Some(top.as_str()));
     let frame = h.settle(|ctx| app.show_lighting(ctx));
     let texts = frame.texts();
-    let upper = texts.iter().find(|t| t.text == "2 · Background").unwrap();
-    let lower = texts.iter().find(|t| t.text == "1 · New layer").unwrap();
+    let rail = texts.iter().find(|t| t.text == "Layers").unwrap().clip;
+    let upper = texts
+        .iter()
+        .find(|t| t.text == "Background" && rail.contains_rect(t.rect))
+        .unwrap();
+    let lower = texts
+        .iter()
+        .find(|t| t.text == "New layer" && rail.contains_rect(t.rect))
+        .unwrap();
     assert!(upper.fully_visible() && lower.fully_visible());
     assert!(upper.rect.top() < lower.rect.top());
     click(&mut h, &mut app, "...");

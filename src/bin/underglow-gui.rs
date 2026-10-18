@@ -2538,7 +2538,7 @@ mod tests {
             .map(|t| t.text)
             .collect::<Vec<_>>()
             .join("\n");
-        for label in ["Composition preview", "Save", "Preview tools"] {
+        for label in ["Keyboard", "Save", "Preview tools"] {
             assert!(text.contains(label), "missing {label}");
         }
         let mut click = |app: &mut Controller, label: &str| {

@@ -436,7 +436,23 @@ mod tests {
         click(&ctx, &mut editor, "Aurora", 0);
         click(&ctx, &mut editor, "Solid", 0);
         let (output, _) = run(&ctx, &mut editor, vec![]);
-        let swatch = text_position(&output, "Color", 0) - egui::vec2(38.0, 0.0);
+        let color_label = text_position(&output, "Color", 0);
+        let swatch = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == egui::Color32::WHITE
+                        && rect.rect.width() >= 12.0
+                        && rect.rect.width() <= 80.0
+                        && (rect.rect.center().y - color_label.y).abs() < 16.0
+                        && shape.clip_rect.contains_rect(rect.rect) =>
+                {
+                    Some(rect.rect.center())
+                }
+                _ => None,
+            })
+            .expect("the actual visible RGB well, independent of label alignment");
         click_at(&ctx, &mut editor, swatch);
         click(&ctx, &mut editor, "R 255", 0);
         run(
@@ -470,7 +486,7 @@ mod tests {
                 color: [0, 255, 255]
             }
         );
-        click(&ctx, &mut editor, "Composition preview", 0); // close color popup
+        click(&ctx, &mut editor, "Keyboard", 0); // close color popup
         click(&ctx, &mut editor, "Edit keys", 0);
         click(&ctx, &mut editor, "Arrow keys (4 physical)", 0);
         click(&ctx, &mut editor, "Add layer", 0);
@@ -706,7 +722,8 @@ mod tests {
             }
         );
         click(&ctx, &mut editor, "Rename layer", 0);
-        click(&ctx, &mut editor, "New layer", 0); // Inline rename, not a list row.
+        // Rename focuses the real inline field. Flat layer rows now share its
+        // name, so do not click a duplicate name and steal that keyboard focus.
         run(
             &ctx,
             &mut editor,
@@ -743,7 +760,7 @@ mod tests {
         assert_eq!(editor.selected.as_deref(), Some(copy_id.as_str()));
         click(&ctx, &mut editor, "Delete layer", 0);
         assert_eq!(editor.draft.as_ref().unwrap().layers, before.layers[..2]);
-        click(&ctx, &mut editor, "1 · New layer", 0);
+        click(&ctx, &mut editor, "New layer", 0);
         assert_eq!(editor.selected.as_deref(), Some(bottom.as_str()));
         assert_eq!(editor.draft.as_ref().unwrap().layers[0], unrelated);
         assert!(editor.error.is_none(), "{:?}", editor.error);
