@@ -212,16 +212,35 @@ fn fact_picker(
                 .unwrap_or_else(|| format!("{id} (saved; unavailable/undeclared)"))
         })
         .unwrap_or_else(|| any.unwrap_or("Choose a value").into());
-    egui::ComboBox::from_id_salt(salt)
-        .selected_text(label)
-        .show_ui(ui, |ui| {
-            if let Some(label) = any {
-                ui.selectable_value(selected, None, label);
-            }
-            for choice in choices {
-                ui.selectable_value(selected, Some(choice.id.clone()), choice_label(choice));
-            }
-        });
+    setup_inspector::field(
+        ui,
+        match salt {
+            "state" => "State",
+            "event" => "Event",
+            "from" => "From state",
+            _ => "To state",
+        },
+        |ui| {
+            egui::ComboBox::from_id_salt(salt)
+                .width(ui.available_width().min(360.0))
+                .truncate()
+                .selected_text(&label)
+                .show_ui(ui, |ui| {
+                    if let Some(label) = any {
+                        ui.selectable_value(selected, None, label);
+                    }
+                    for choice in choices {
+                        ui.selectable_value(
+                            selected,
+                            Some(choice.id.clone()),
+                            choice_label(choice),
+                        );
+                    }
+                })
+                .response
+                .on_hover_text(&label);
+        },
+    );
 }
 fn choice_label(c: &CapabilityChoice) -> String {
     if c.origin == ChoiceOrigin::UnknownObserved {
@@ -235,17 +254,21 @@ fn condition(ui: &mut Ui, activation: &mut Activation, choices: &Choices<'_>) {
     let mut mode = Mode::of(activation);
     let old_mode = mode;
     let sources = choices.sources();
-    egui::ComboBox::from_id_salt("condition-mode")
-        .selected_text(mode.label())
-        .show_ui(ui, |ui| {
-            for m in [Mode::Always, Mode::State, Mode::Event, Mode::Transition] {
-                let available =
-                    m == Mode::Always || sources.iter().any(|(s, _)| choices.supports(s, m));
-                ui.add_enabled_ui(available, |ui| {
-                    ui.selectable_value(&mut mode, m, m.label());
-                });
-            }
-        });
+    setup_inspector::field(ui, "Condition", |ui| {
+        egui::ComboBox::from_id_salt("condition-mode")
+            .width(ui.available_width().min(360.0))
+            .truncate()
+            .selected_text(mode.label())
+            .show_ui(ui, |ui| {
+                for m in [Mode::Always, Mode::State, Mode::Event, Mode::Transition] {
+                    let available =
+                        m == Mode::Always || sources.iter().any(|(s, _)| choices.supports(s, m));
+                    ui.add_enabled_ui(available, |ui| {
+                        ui.selectable_value(&mut mode, m, m.label());
+                    });
+                }
+            });
+    });
     if mode != old_mode {
         let source = selector(activation)
             .map(|(s, _)| s.to_owned())
@@ -265,21 +288,25 @@ fn condition(ui: &mut Ui, activation: &mut Activation, choices: &Choices<'_>) {
         return;
     };
     let mut source = saved_source.to_string();
-    egui::ComboBox::from_id_salt("source")
-        .selected_text(
-            sources
-                .iter()
-                .find(|(s, _)| s == &source)
-                .map(|(_, l)| l.clone())
-                .unwrap_or_else(|| format!("{source} (saved; descriptor missing)")),
-        )
-        .show_ui(ui, |ui| {
-            for (id, label) in &sources {
-                ui.add_enabled_ui(choices.supports(id, mode), |ui| {
-                    ui.selectable_value(&mut source, id.clone(), label);
-                });
-            }
-        });
+    setup_inspector::field(ui, "Source", |ui| {
+        egui::ComboBox::from_id_salt("source")
+            .width(ui.available_width().min(360.0))
+            .truncate()
+            .selected_text(
+                sources
+                    .iter()
+                    .find(|(s, _)| s == &source)
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_else(|| format!("{source} (saved; descriptor missing)")),
+            )
+            .show_ui(ui, |ui| {
+                for (id, label) in &sources {
+                    ui.add_enabled_ui(choices.supports(id, mode), |ui| {
+                        ui.selectable_value(&mut source, id.clone(), label);
+                    });
+                }
+            });
+    });
     if source != saved_source
         && let Some(next) = choices.activation(activation, mode, &source)
     {
@@ -297,22 +324,26 @@ fn condition(ui: &mut Ui, activation: &mut Activation, choices: &Choices<'_>) {
         .map(|d| &d.instances.selectors);
     let mut exact = instance.is_some();
     let old_exact = exact;
-    egui::ComboBox::from_id_salt("instance-mode")
-        .selected_text(if exact {
-            "Exact instance"
-        } else {
-            "Any instance"
-        })
-        .show_ui(ui, |ui| {
-            for (value, selector, label) in [
-                (false, InstanceSelector::Any, "Any instance"),
-                (true, InstanceSelector::Exact, "Exact instance"),
-            ] {
-                ui.add_enabled_ui(selectors.is_none_or(|s| s.contains(&selector)), |ui| {
-                    ui.selectable_value(&mut exact, value, label);
-                });
-            }
-        });
+    setup_inspector::field(ui, "Instance", |ui| {
+        egui::ComboBox::from_id_salt("instance-mode")
+            .width(ui.available_width().min(360.0))
+            .truncate()
+            .selected_text(if exact {
+                "Exact instance"
+            } else {
+                "Any instance"
+            })
+            .show_ui(ui, |ui| {
+                for (value, selector, label) in [
+                    (false, InstanceSelector::Any, "Any instance"),
+                    (true, InstanceSelector::Exact, "Exact instance"),
+                ] {
+                    ui.add_enabled_ui(selectors.is_none_or(|s| s.contains(&selector)), |ui| {
+                        ui.selectable_value(&mut exact, value, label);
+                    });
+                }
+            });
+    });
     if exact != old_exact {
         *instance = exact.then(|| {
             choices
@@ -323,11 +354,13 @@ fn condition(ui: &mut Ui, activation: &mut Activation, choices: &Choices<'_>) {
         });
     }
     if let Some(id) = instance {
-        ui.add(
-            egui::TextEdit::singleline(id)
-                .char_limit(128)
-                .hint_text("Exact instance ID"),
-        );
+        setup_inspector::field(ui, "Instance ID", |ui| {
+            ui.add(
+                egui::TextEdit::singleline(id)
+                    .char_limit(128)
+                    .hint_text("Exact instance ID"),
+            );
+        });
         egui::ComboBox::from_id_salt("live-instance")
             .selected_text("Observed instances")
             .show_ui(ui, |ui| {
@@ -340,14 +373,6 @@ fn condition(ui: &mut Ui, activation: &mut Activation, choices: &Choices<'_>) {
     let states = choices.facts(&source, FactKind::State);
     match activation {
         Activation::WhileState { state, .. } => {
-            if state.is_none()
-                && choices
-                    .registry
-                    .descriptor(&source)
-                    .is_some_and(|d| d.lifecycle.state_ttl.is_none())
-            {
-                ui.colored_label(egui::Color32::YELLOW, "Saved source-presence selector is unsupported by this descriptor; retained until you change it.");
-            }
             fact_picker(
                 ui,
                 "state",
@@ -383,9 +408,7 @@ fn condition(ui: &mut Ui, activation: &mut Activation, choices: &Choices<'_>) {
             ..
         } => {
             ui.small("Requires two consecutive observed states of the same instance. Initial presence, heartbeats, expiry and removal do not trigger transitions.");
-            ui.label("From state");
             fact_picker(ui, "from", from_state, &states, Some("Any previous state"));
-            ui.label("To state");
             let mut value = Some(state.clone());
             fact_picker(ui, "to", &mut value, &states, None);
             if let Some(value) = value {
@@ -396,22 +419,33 @@ fn condition(ui: &mut Ui, activation: &mut Activation, choices: &Choices<'_>) {
         Activation::Always {} => {}
     }
     ui.small("Unavailable, removed or expired state is not idle/success. Conditional appearances hide when unmatched; transients end after their duration. Events do not establish presence.");
-    match choices.registry.validate_activation(activation) {
+    condition_warnings(ui, activation, choices.registry);
+}
+
+fn condition_warnings(ui: &mut Ui, activation: &Activation, registry: &CapabilityRegistry) {
+    if matches!(activation, Activation::WhileState { source, state: None, .. }
+        if registry.descriptor(source).is_some_and(|d| d.lifecycle.state_ttl.is_none()))
+    {
+        ui.colored_label(super::brand::WARNING, "Saved source-presence selector is unsupported by this descriptor; retained until you change it.");
+    }
+    match registry.validate_activation(activation) {
         Ok(warnings) => {
             for warning in warnings {
                 ui.colored_label(
-                    egui::Color32::YELLOW,
+                    super::brand::WARNING,
                     format!("Repair selector: {warning:?}. Saved value retained."),
                 );
             }
         }
         Err(error) => {
-            ui.colored_label(egui::Color32::YELLOW, format!("Repair condition: {error}"));
+            ui.colored_label(super::brand::WARNING, format!("Repair condition: {error}"));
         }
     }
 }
 fn duration(ui: &mut Ui, ms: &mut u64) {
-    ui.add(egui::Slider::new(ms, 1..=60_000).text("Transient duration (ms)"));
+    setup_inspector::field(ui, "Transient duration (ms)", |ui| {
+        ui.add(egui::Slider::new(ms, 1..=60_000));
+    });
     ui.small("Maximum lifetime: source/event lease expiry or removal can end an appearance sooner. This does not change source TTL or heartbeat settings.");
 }
 
@@ -504,7 +538,7 @@ impl BehaviorEditor {
         selected
     }
 
-    fn appearance_picker(&mut self, ui: &mut Ui, layer: &Layer, _compact: bool) {
+    fn appearance_picker(&mut self, ui: &mut Ui, layer: &Layer, inline: bool) {
         let selected = self.selection(layer);
         if layer.variants.is_empty() {
             return;
@@ -516,10 +550,9 @@ impl BehaviorEditor {
             .find(|v| Some(&v.id) == selected.as_ref())
             .map(|v| v.name.as_str())
             .unwrap_or(base);
-        ui.horizontal(|ui| {
-            ui.label("Editing");
+        let mut picker = |ui: &mut Ui| {
             egui::ComboBox::from_id_salt("selected-appearance")
-                .width((ui.available_width() - 12.0).max(60.0))
+                .width(ui.available_width().min(if inline { 224.0 } else { 360.0 }))
                 .truncate()
                 .selected_text(title)
                 .show_ui(ui, |ui| {
@@ -530,21 +563,37 @@ impl BehaviorEditor {
                 })
                 .response
                 .on_hover_text(title);
-        });
+        };
+        if inline {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Editing").color(super::brand::MUTED));
+                picker(ui);
+            });
+        } else {
+            setup_inspector::field(ui, "Editing", picker);
+        }
     }
 
     /// Shared stable-ID appearance selection, without exposing trigger forms first.
     pub fn show_appearance(&mut self, ui: &mut Ui, layer: &mut Layer) {
-        self.appearance_controls(ui, layer, false);
-    }
-
-    pub fn show_compact_appearance(&mut self, ui: &mut Ui, layer: &mut Layer) {
         self.appearance_controls(ui, layer, true);
     }
 
-    fn appearance_controls(&mut self, ui: &mut Ui, layer: &mut Layer, compact: bool) {
+    pub fn show_inline_editing_picker(&mut self, ui: &mut Ui, layer: &Layer) {
         ui.push_id(("appearance-tab", layer.id.clone()), |ui| {
-            self.appearance_picker(ui, layer, compact);
+            self.appearance_picker(ui, layer, true)
+        });
+    }
+
+    pub fn show_appearance_fields(&mut self, ui: &mut Ui, layer: &mut Layer) {
+        self.appearance_controls(ui, layer, false);
+    }
+
+    fn appearance_controls(&mut self, ui: &mut Ui, layer: &mut Layer, picker: bool) {
+        ui.push_id(("appearance-tab", layer.id.clone()), |ui| {
+            if picker {
+                self.appearance_picker(ui, layer, false);
+            }
             let selected = self.selection(layer).clone();
             ui.push_id(("selected-appearance-editor", selected.clone()), |ui| {
                 if let Some(variant) = layer
@@ -598,6 +647,23 @@ impl BehaviorEditor {
                 },
             );
         });
+    }
+
+    /// Invalid or unavailable selectors remain visible even with the form closed.
+    pub fn show_condition_warnings(
+        &mut self,
+        ui: &mut Ui,
+        layer: &Layer,
+        registry: &CapabilityRegistry,
+    ) {
+        let selected = self.selection(layer).clone();
+        let activation = layer
+            .variants
+            .iter()
+            .find(|v| Some(&v.id) == selected.as_ref())
+            .map(|v| &v.activation)
+            .unwrap_or(&layer.activation);
+        condition_warnings(ui, activation, registry);
     }
 
     pub fn show_appearance_menu(&mut self, ui: &mut Ui, layer: &mut Layer) {

@@ -56,7 +56,7 @@ fn target_summary(target: &Target) -> String {
 }
 
 impl Editor {
-    pub(super) fn show_selected_inspector(&mut self, ui: &mut egui::Ui, compact: bool) {
+    pub(super) fn show_selected_inspector(&mut self, ui: &mut egui::Ui, _compact: bool) {
         let Some(id) = self.selected.clone() else {
             return;
         };
@@ -87,46 +87,47 @@ impl Editor {
             let mut behavior_open = sections.behavior_open;
             let mut groups = doc.groups.clone();
 
-            let card = |ui: &mut egui::Ui| egui::Frame::group(ui.style())
-                .inner_margin(10).corner_radius(8).fill(ui.visuals().faint_bg_color);
-
-            let where_card = card(ui).show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Where").strong().size(16.0));
+            let where_section = ui.vertical(|ui| {
+                setup_inspector::section_heading(ui, "Where", |ui| {
                     let selecting = self.canvas_mode == setup_targets::CanvasMode::SelectKeys;
-                    if ui.add(egui::Button::new("Edit keys").selected(selecting && keys_open)).on_hover_text("Select keys on the shared keyboard. Click again to finish selection.").clicked() {
+                    if ui.add(egui::Button::new("Edit keys").frame(false).selected(selecting && keys_open)).on_hover_text("Select keys on the shared keyboard. Click again to finish selection.").clicked() {
                         keys_open = !keys_open || !selecting;
                         self.canvas_mode = if keys_open { setup_targets::CanvasMode::SelectKeys } else { setup_targets::CanvasMode::Preview };
                     }
                 });
-                ui.label(target_summary(&edited.target));
+                ui.label(egui::RichText::new(target_summary(&edited.target)).color(crate::brand::MUTED));
                 if keys_open {
                     let others: Vec<_> = doc.layers.iter().filter(|l| l.id != id)
                         .map(|l| l.target.clone()).collect();
                     self.show_target_controls(ui, &id, &mut edited.target, &mut groups, &others);
                 }
             });
-            if focus == Some(Section::Where) { where_card.response.scroll_to_me(Some(egui::Align::Min)); }
-            ui.add_space(8.0);
+            if focus == Some(Section::Where) { where_section.response.scroll_to_me(Some(egui::Align::Min)); }
+            setup_inspector::section_divider(ui);
 
-            let looks_card = card(ui).show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Looks").strong().size(16.0));
-                    self.behaviors.show_appearance_menu(ui, &mut edited);
-                });
-                if compact { self.behaviors.show_compact_appearance(ui, &mut edited); }
-                else { self.behaviors.show_appearance(ui, &mut edited); }
+            let looks_section = ui.vertical(|ui| {
+                if ui.available_width() >= 640.0 {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Looks").strong().size(14.0));
+                        self.behaviors.show_inline_editing_picker(ui, &edited);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            self.behaviors.show_appearance_menu(ui, &mut edited);
+                        });
+                    });
+                    self.behaviors.show_appearance_fields(ui, &mut edited);
+                } else {
+                    setup_inspector::section_heading(ui, "Looks", |ui| {
+                        self.behaviors.show_appearance_menu(ui, &mut edited);
+                    });
+                    self.behaviors.show_appearance(ui, &mut edited);
+                }
             });
-            if focus == Some(Section::Looks) { looks_card.response.scroll_to_me(Some(egui::Align::Min)); }
-            ui.add_space(8.0);
+            if focus == Some(Section::Looks) { looks_section.response.scroll_to_me(Some(egui::Align::Min)); }
+            setup_inspector::section_divider(ui);
 
-            let when_card = card(ui).show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("When").strong().size(16.0));
-                    if ui.add(egui::Button::new("Edit condition").selected(behavior_open)).clicked() {
+            let when_section = ui.vertical(|ui| {
+                setup_inspector::section_heading(ui, "When", |ui| {
+                    if ui.add(egui::Button::new("Edit condition").frame(false).selected(behavior_open)).clicked() {
                         behavior_open = !behavior_open;
                     }
                 });
@@ -139,22 +140,22 @@ impl Editor {
                 } else {
                     let (_, summary) = self.behaviors.summary(&edited);
                     ui.label(summary);
+                    self.behaviors.show_condition_warnings(ui, &edited,
+                        self.capabilities.get_or_insert_with(CapabilityRegistry::with_builtins));
                 }
                 for notice in &self.connection_notices {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.add_sized([(ui.available_width() * 0.55).min(180.0), 22.0],
-                            egui::Button::new(format!("Connections: {}", notice.label)).truncate())
+                    ui.vertical(|ui| {
+                        ui.small(notice.message.split('.').next().unwrap_or(&notice.message));
+                        if ui.add_sized([ui.available_width().min(300.0), 28.0],
+                            egui::Button::new(format!("Connections: {}", notice.label)).frame(false).truncate())
                             .on_hover_text(format!("{}: {}", notice.label, notice.message)).clicked() {
                             self.connection_request = Some(notice.source.clone());
                         }
-                        // Preserve the full diagnostic in the tooltip without
-                        // turning routine source status into a warning paragraph.
-                        ui.small(notice.message.split('.').next().unwrap_or(&notice.message));
                     });
                 }
             });
-            if focus == Some(Section::When) { when_card.response.scroll_to_me(Some(egui::Align::Min)); }
-            ui.add_space(8.0);
+            if focus == Some(Section::When) { when_section.response.scroll_to_me(Some(egui::Align::Min)); }
+            setup_inspector::section_divider(ui);
             let sections = self.inspector_sections.entry(id.clone()).or_default();
             sections.keys_open = keys_open;
             sections.behavior_open = behavior_open;

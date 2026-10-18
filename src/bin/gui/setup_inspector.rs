@@ -139,29 +139,69 @@ pub fn switch_appearance(renderer: &mut Renderer, id: &str) -> bool {
     true
 }
 
-fn palette_control(ui: &mut Ui, palette: &mut Option<PaletteName>, entry: &Visualization) {
-    egui::ComboBox::from_id_salt("palette")
-        .selected_text(palette.map_or_else(
-            || format!("Default ({})", entry.defaults.palette),
-            |p| p.to_string(),
-        ))
-        .show_ui(ui, |ui| {
-            ui.selectable_value(
-                palette,
-                None,
-                format!("Default ({})", entry.defaults.palette),
+/// Field layout follows the inspector's real width, not the workspace breakpoint.
+/// This keeps the normal lower pane aligned and the narrow right pane readable.
+pub fn field<R>(ui: &mut Ui, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
+    let text = egui::RichText::new(label).color(super::brand::MUTED);
+    if ui.available_width() >= 440.0 {
+        ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(144.0, 28.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(text);
+                },
             );
-            for &name in PaletteName::value_variants() {
-                ui.selectable_value(palette, Some(name), name.to_string());
-            }
-        });
-    ui.label("Palette");
+            ui.vertical(control).inner
+        })
+        .inner
+    } else {
+        ui.vertical(|ui| {
+            ui.label(text);
+            control(ui)
+        })
+        .inner
+    }
+}
+
+pub fn section_heading(ui: &mut Ui, title: &str, action: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(title).strong().size(14.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), action);
+    });
+}
+
+pub fn section_divider(ui: &mut Ui) {
+    ui.add_space(8.0);
+    super::brand::divider(ui);
+    ui.add_space(8.0);
+}
+
+fn palette_control(ui: &mut Ui, palette: &mut Option<PaletteName>, entry: &Visualization) {
+    field(ui, "Palette", |ui| {
+        egui::ComboBox::from_id_salt("palette")
+            .width(ui.available_width().min(300.0))
+            .truncate()
+            .selected_text(palette.map_or_else(
+                || format!("Default ({})", entry.defaults.palette),
+                |p| p.to_string(),
+            ))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    palette,
+                    None,
+                    format!("Default ({})", entry.defaults.palette),
+                );
+                for &name in PaletteName::value_variants() {
+                    ui.selectable_value(palette, Some(name), name.to_string());
+                }
+            });
+    });
 }
 
 fn color_control(ui: &mut Ui, label: &str, color: &mut [u8; 3]) {
-    ui.horizontal(|ui| {
+    field(ui, label, |ui| {
         ui.color_edit_button_srgb(color);
-        ui.label(label);
     });
 }
 
@@ -184,7 +224,8 @@ pub fn show_advanced(ui: &mut Ui, layer: &mut Layer) {
     ui.add(
         egui::Slider::new(&mut layer.opacity, 0..=255)
             .text("Opacity")
-            .custom_formatter(|v, _| format!("{:.1}%", v * 100.0 / 255.0)),
+            .custom_formatter(|v, _| format!("{:.1}%", v * 100.0 / 255.0))
+            .custom_parser(brightness_from_percent),
     );
     egui::ComboBox::from_id_salt("blend-mode")
         .selected_text(format!("{:?}", layer.blend))
@@ -226,12 +267,13 @@ pub fn show_advanced(ui: &mut Ui, layer: &mut Layer) {
 
 /// Display percentages while retaining exact saved 0–255 values until edited.
 pub fn brightness_control(ui: &mut Ui, value: &mut u8, label: &str) {
-    ui.add(
-        egui::Slider::new(value, 0..=255)
-            .text(label)
-            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0 / 255.0))
-            .custom_parser(brightness_from_percent),
-    );
+    field(ui, label, |ui| {
+        ui.add(
+            egui::Slider::new(value, 0..=255)
+                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0 / 255.0))
+                .custom_parser(brightness_from_percent),
+        );
+    });
 }
 
 fn brightness_from_percent(text: &str) -> Option<f64> {
@@ -282,9 +324,11 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
         let title = entry(renderer).map(|e| e.title)
             .or_else(|| PRIMITIVES.iter().find(|(id, _)| *id == selected).map(|(_, title)| *title))
             .unwrap_or("Unknown renderer");
-        let appearance = ui.horizontal(|ui| {
-            ui.label("Effect");
-            egui::ComboBox::from_id_salt("renderer").selected_text(title)
+        let inline_color = ui.available_width() >= 560.0 && primitive_color(renderer).is_some();
+        let appearance = field(ui, "Effect", |ui| {
+            ui.horizontal(|ui| {
+            let picker = egui::ComboBox::from_id_salt("renderer").selected_text(title)
+            .width(ui.available_width().min(if inline_color { 220.0 } else { 300.0 })).truncate()
             .height(500.0).show_ui(ui, |ui| {
                 for choice in catalog::presets() {
                     ui.selectable_value(&mut selected, choice.id, choice.title);
@@ -293,8 +337,19 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
                 for (id, title) in PRIMITIVES {
                     ui.selectable_value(&mut selected, id, title);
                 }
-            })
-        }).inner;
+            });
+            if inline_color {
+                match renderer {
+                    Renderer::Solid { color } | Renderer::Pulse { color, .. } | Renderer::Sweep { color, .. } => {
+                        ui.label(egui::RichText::new("Color").color(super::brand::MUTED));
+                        ui.color_edit_button_srgb(color);
+                    }
+                    _ => {}
+                }
+            }
+            picker
+            }).inner
+        });
         switch_appearance(renderer, selected);
 
         let metadata = entry(renderer);
@@ -307,13 +362,15 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
             Renderer::Effect { palette, speed, .. } => {
                 if let Some(entry) = metadata {
                     if entry.palette_available(false) { palette_control(ui, palette, entry); }
-                    if entry.supports_speed { ui.add(egui::Slider::new(speed, 10..=400).text("Speed (%)")); }
+                    if entry.supports_speed {
+                        field(ui, "Speed (%)", |ui| { ui.add(egui::Slider::new(speed, 10..=400)); });
+                    }
                 }
-                ui.small("Input: elapsed time only; no live input settings.");
+                if !compact { ui.small("Input: elapsed time only; no live input settings."); }
             }
             Renderer::Reactive { palette, .. } => {
                 if let Some(entry) = metadata.filter(|e| e.palette_available(false)) { palette_control(ui, palette, entry); }
-                ui.small("Input: keyboard activity. Preview uses synthetic input; live input requires separate explicit activation. No permission is requested here.");
+                if !compact { ui.small("Input: keyboard activity. Preview uses synthetic input; live input requires separate explicit activation. No permission is requested here."); }
             }
             Renderer::Ripples { palette, base_color, ripple_color } => {
                 if let Some(entry) = metadata {
@@ -330,31 +387,48 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
                     }
                     if entry.palette_available(two_tone) { palette_control(ui, palette, entry); }
                     if two_tone {
-                        ui.small("Two-tone mode replaces the palette with these two colors.");
+                        if !compact { ui.small("Two-tone mode replaces the palette with these two colors."); }
                         if let Some(color) = base_color { color_control(ui, "Base color", color); }
                         if let Some(color) = ripple_color { color_control(ui, "Ripple color", color); }
                     }
                 }
-                ui.small("Input: key presses. Preview uses synthetic input; live input requires separate explicit activation. No SDK paths or permission toggles belong to this layer.");
+                if !compact { ui.small("Input: key presses. Preview uses synthetic input; live input requires separate explicit activation. No SDK paths or permission toggles belong to this layer."); }
             }
-            Renderer::Solid { color } => { color_control(ui, "Color", color); }
+            Renderer::Solid { color } => { if !inline_color { color_control(ui, "Color", color); } }
             Renderer::Pulse { color, period_ms } | Renderer::Sweep { color, period_ms } => {
-                color_control(ui, "Color", color);
-                ui.add(egui::Slider::new(period_ms, 1..=60_000).text("Cycle duration (ms)"))
-                    .on_hover_text("Time for one animation cycle. A smaller duration makes the animation faster.");
+                if !inline_color { color_control(ui, "Color", color); }
+                field(ui, "Cycle duration (ms)", |ui| {
+                    ui.add(egui::Slider::new(period_ms, 1..=60_000))
+                        .on_hover_text("Time for one animation cycle. A smaller duration makes the animation faster.");
+                });
             }
             Renderer::Focus { focus_minutes, break_minutes, cycles, start_paused, meeting_safe, dim } => {
-                ui.add(egui::Slider::new(focus_minutes, 1..=1440).text("Focus minutes"));
-                ui.add(egui::Slider::new(break_minutes, 0..=1440).text("Break minutes"));
-                ui.add(egui::Slider::new(cycles, 1..=100).text("Cycles"));
+                field(ui, "Focus minutes", |ui| { ui.add(egui::Slider::new(focus_minutes, 1..=1440)); });
+                field(ui, "Break minutes", |ui| { ui.add(egui::Slider::new(break_minutes, 0..=1440)); });
+                field(ui, "Cycles", |ui| { ui.add(egui::Slider::new(cycles, 1..=100)); });
                 ui.checkbox(start_paused, "Start timer paused");
                 ui.checkbox(meeting_safe, "Meeting-safe phase transitions");
                 ui.checkbox(dim, "Dim Focus visuals");
-                ui.small("Input: timer only. Preview simulates its phase, not a live timer. Timer pause is independent of physical lighting Resume.");
+                if !compact { ui.small("Input: timer only. Preview simulates its phase, not a live timer. Timer pause is independent of physical lighting Resume."); }
             }
         }
+        if compact {
+            ui.collapsing("Effect details & input", |ui| {
+                renderer_description(ui, renderer);
+                if matches!(renderer, Renderer::Ripples { base_color: Some(_), ripple_color: Some(_), .. }) {
+                    ui.small("Two-tone mode replaces the palette with these two colors.");
+                }
+                ui.small(match renderer {
+                    Renderer::Effect { .. } => "Input: elapsed time only; no live input settings.",
+                    Renderer::Reactive { .. } => "Input: keyboard activity. Preview uses synthetic input; live input requires separate explicit activation. No permission is requested here.",
+                    Renderer::Ripples { .. } => "Input: key presses. Preview uses synthetic input; live input requires separate explicit activation. No SDK paths or permission toggles belong to this layer.",
+                    Renderer::Focus { .. } => "Input: timer only. Preview simulates its phase, not a live timer. Timer pause is independent of physical lighting Resume.",
+                    _ => "Input: elapsed time only; no live input settings.",
+                });
+            });
+        }
         if let Err(error) = renderer.validate() {
-            ui.colored_label(egui::Color32::YELLOW, format!("Unsupported settings: {error}. Choose another effect to reset incompatible appearance settings."));
+            ui.colored_label(super::brand::WARNING, format!("Unsupported settings: {error}. Choose another effect to reset incompatible appearance settings."));
         }
 
     });
@@ -393,6 +467,38 @@ mod tests {
     }
 
     #[test]
+    fn fields_align_at_lower_pane_widths_and_stack_in_the_right_inspector() {
+        use super::super::workspace_test_ui::Harness;
+        for width in [292.0, 570.0, 688.0] {
+            let mut h = Harness::new(egui::vec2(width + 16.0, 300.0));
+            let frame = h.settle(|ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    field(ui, "Editing", |ui| {
+                        egui::ComboBox::from_id_salt("alignment")
+                            .width(ui.available_width().min(300.0))
+                            .selected_text("Current appearance")
+                            .show_ui(ui, |_| {});
+                    });
+                });
+            });
+            let texts = frame.texts();
+            let label = texts.iter().find(|t| t.text == "Editing").unwrap();
+            let value = texts
+                .iter()
+                .find(|t| t.text == "Current appearance")
+                .unwrap();
+            assert!(label.fully_visible() && value.fully_visible());
+            if width >= 440.0 {
+                assert!((label.rect.center().y - value.rect.center().y).abs() < 2.0);
+                assert!(value.rect.left() > label.rect.right());
+            } else {
+                assert!(value.rect.top() > label.rect.bottom());
+                assert!((value.rect.left() - label.rect.left()).abs() < 16.0);
+            }
+        }
+    }
+
+    #[test]
     fn percentage_inputs_use_saved_units_and_reject_invalid_values() {
         assert_eq!(brightness_from_percent("100%"), Some(255.0));
         assert_eq!(brightness_from_percent("0"), Some(0.0));
@@ -403,15 +509,23 @@ mod tests {
     }
 
     #[test]
-    fn reading_percentage_controls_does_not_quantize_saved_brightness() {
-        let ctx = Context::default();
-        for original in [0, 1, 73, 128, 254, 255] {
-            let mut value = original;
-            let _ = ctx.run(Default::default(), |ctx| {
-                egui::CentralPanel::default()
-                    .show(ctx, |ui| brightness_control(ui, &mut value, "Brightness"));
-            });
-            assert_eq!(value, original);
+    fn reading_percentage_controls_does_not_quantize_saved_brightness_or_opacity() {
+        use super::super::workspace_test_ui::Harness;
+        for width in [292.0, 570.0, 688.0] {
+            let mut h = Harness::new(egui::vec2(width + 16.0, 1000.0));
+            for original in [0, 1, 73, 128, 254, 255] {
+                let mut value = original;
+                let mut layer = layer("exact-percentages");
+                layer.opacity = original;
+                h.settle(|ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        brightness_control(ui, &mut value, "Brightness");
+                        show_advanced(ui, &mut layer);
+                    });
+                });
+                assert_eq!(value, original);
+                assert_eq!(layer.opacity, original);
+            }
         }
     }
 

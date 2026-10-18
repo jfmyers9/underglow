@@ -2,7 +2,7 @@
 use super::super::{Action, Completion, Controller, Status};
 use super::super::{
     tests::{controller_fixture, setup_document},
-    workspace_test_ui::{DEFAULT_SIZE, Harness, MINIMUM_SIZE},
+    workspace_test_ui::{DEFAULT_SIZE, Harness, MINIMUM_SIZE, WIDE_SIZE},
 };
 use super::*;
 use std::sync::mpsc::Receiver;
@@ -33,7 +33,7 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
         let texts = frame.texts();
         let pane = texts
             .iter()
-            .find(|t| t.text.starts_with("Selected layer:"))
+            .find(|t| t.text == "Layer actions")
             .map(|t| t.clip);
         let keyboard = texts
             .iter()
@@ -339,4 +339,86 @@ fn compact_stack_overflow_actions_follow_top_first_display_and_stable_ids() {
         bottom.id
     );
     assert!(incoming.try_recv().is_err());
+}
+
+#[test]
+fn inspector_sections_and_advanced_controls_remain_reachable_without_editing_at_all_sizes() {
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE, WIDE_SIZE] {
+        let mut h = Harness::new(size);
+        let (mut app, incoming) = app();
+        click(&mut h, &mut app, "Add layer");
+        click(&mut h, &mut app, "Pi status layer");
+        let before = app.setup_editor.draft.clone();
+        let id = app.setup_editor.selected.clone().unwrap();
+        for label in [
+            "Edit keys",
+            "Selection options",
+            "Reusable custom groups",
+            "Effect details & input",
+            "Edit condition",
+            "While a source matches",
+        ] {
+            click(&mut h, &mut app, label);
+        }
+        // Escape dismisses the real popup without choosing a new activation.
+        for pressed in [true, false] {
+            h.run(
+                vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+                |ctx| app.show_lighting(ctx),
+            );
+        }
+        assert_eq!(
+            app.setup_editor.inspector_sections_for_test(&id),
+            (true, true)
+        );
+        for label in [
+            "Looks",
+            "Idle / fallback",
+            "Working",
+            "Appearance actions",
+            "Advanced appearance settings",
+        ] {
+            click(&mut h, &mut app, label);
+        }
+        click(&mut h, &mut app, "Looks");
+        click(&mut h, &mut app, "Layer mixing & transitions");
+        click(&mut h, &mut app, "Technical details");
+        assert_eq!(app.setup_editor.draft, before);
+        assert!(!app.setup_editor.preview.quick_active());
+        assert!(app.setup_editor.preview.sample().is_none());
+        assert!(incoming.try_recv().is_err());
+    }
+}
+
+#[test]
+fn unavailable_saved_condition_is_visible_without_opening_its_editor_at_all_sizes() {
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE, WIDE_SIZE] {
+        let mut h = Harness::new(size);
+        let (mut app, incoming) = app();
+        let mut doc = app.setup_editor.draft.clone().unwrap();
+        doc.layers[0].activation = Activation::WhileState {
+            source: "saved-custom-source".into(),
+            instance: Some("saved-session".into()),
+            state: Some("saved-state".into()),
+        };
+        app.setup_editor.load(Some(doc.clone()));
+        let id = app.setup_editor.selected.clone().unwrap();
+        let warnings = CapabilityRegistry::with_builtins()
+            .validate_activation(&doc.layers[0].activation)
+            .unwrap();
+        let warning = format!("Repair selector: {:?}. Saved value retained.", warnings[0]);
+        click(&mut h, &mut app, &warning);
+        assert_eq!(
+            app.setup_editor.inspector_sections_for_test(&id),
+            (false, false)
+        );
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
+        assert!(incoming.try_recv().is_err());
+    }
 }
