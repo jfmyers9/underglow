@@ -90,7 +90,7 @@ impl Editor {
             let where_section = ui.vertical(|ui| {
                 setup_inspector::section_heading(ui, "Where", |ui| {
                     let selecting = self.canvas_mode == setup_targets::CanvasMode::SelectKeys;
-                    if ui.add(egui::Button::new("Edit keys").frame(false).selected(selecting && keys_open)).on_hover_text("Select keys on the shared keyboard. Click again to finish selection.").clicked() {
+                    if ui.add(egui::Button::new("Edit keys").fill(egui::Color32::TRANSPARENT).selected(selecting && keys_open)).on_hover_text("Select keys on the shared keyboard. Click again to finish selection.").clicked() {
                         keys_open = !keys_open || !selecting;
                         self.canvas_mode = if keys_open { setup_targets::CanvasMode::SelectKeys } else { setup_targets::CanvasMode::Preview };
                     }
@@ -127,7 +127,7 @@ impl Editor {
 
             let when_section = ui.vertical(|ui| {
                 setup_inspector::section_heading(ui, "When", |ui| {
-                    if ui.add(egui::Button::new("Edit condition").frame(false).selected(behavior_open)).clicked() {
+                    if ui.add(egui::Button::new("Edit condition").fill(egui::Color32::TRANSPARENT).selected(behavior_open)).clicked() {
                         behavior_open = !behavior_open;
                     }
                 });
@@ -147,7 +147,7 @@ impl Editor {
                     let summary = notice.message.split('.').next().unwrap_or(&notice.message);
                     let mut repair_link = |ui: &mut egui::Ui, width: f32| {
                         if ui.add_sized([width, 28.0],
-                            egui::Button::new(format!("Connections: {}", notice.label)).frame(false).truncate())
+                            egui::Button::new(format!("Connections: {}", notice.label)).fill(egui::Color32::TRANSPARENT).truncate())
                             .on_hover_text(format!("{}: {}", notice.label, notice.message)).clicked() {
                             self.connection_request = Some(notice.source.clone());
                         }

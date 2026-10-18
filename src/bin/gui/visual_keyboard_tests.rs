@@ -148,15 +148,42 @@ fn tab_and_reverse_tab_keep_editor_focus_inside_real_visible_clips() {
         let preview = app.setup_editor.preview.frame().clone();
         let mut order = Vec::new();
         let mut outlined = false;
+        let mut quiet_actions = 0;
         let mut complete = false;
         for _ in 0..128 {
             let frame = key(&mut harness, &mut app, egui::Key::Tab, false);
             let response = focused(&harness, &frame);
-            outlined |= frame
+            let focus_outline = frame
                 .output
                 .shapes
                 .iter()
                 .any(|shape| has_focus_outline(&shape.shape, shape.clip_rect, response.rect));
+            outlined |= focus_outline;
+            if response.sense == egui::Sense::click()
+                && frame.texts().iter().any(|text| {
+                    response.rect.contains_rect(text.rect)
+                        && (matches!(text.text.as_str(), "Edit keys" | "Edit condition")
+                            || text.text.starts_with("Connections: "))
+                })
+            {
+                quiet_actions += 1;
+                assert!(
+                    focus_outline,
+                    "quiet action focus at {size:?} {response:?}; texts={:?}; outlines={:?}",
+                    frame
+                        .texts()
+                        .iter()
+                        .filter(|t| response.rect.intersects(t.rect))
+                        .collect::<Vec<_>>(),
+                    frame
+                        .paint_summary()
+                        .iter()
+                        .filter(|s| s.kind == "rect"
+                            && s.bounds[1] >= (response.rect.top() * 10.0) as i32 - 10
+                            && s.bounds[1] <= (response.rect.bottom() * 10.0) as i32 + 10)
+                        .collect::<Vec<_>>()
+                );
+            }
             if order.first() == Some(&response.id) {
                 complete = true;
                 break;
@@ -183,6 +210,10 @@ fn tab_and_reverse_tab_keep_editor_focus_inside_real_visible_clips() {
         assert!(
             outlined,
             "keyboard focus has an actual visible accent outline"
+        );
+        assert!(
+            quiet_actions >= 2,
+            "exercise quiet inspector actions at {size:?}"
         );
         for expected in order.iter().rev() {
             let frame = key(&mut harness, &mut app, egui::Key::Tab, true);
@@ -374,7 +405,13 @@ fn overflowing_layer_list_tab_and_reverse_tab_reveal_focus_without_moving_pinned
                 layer
             })
             .collect();
+        // This fixture starts dirty; background load deliberately cannot replace
+        // such a draft. A fresh editor makes the many-layer fixture explicit.
+        app.setup_editor = setup_editor::Editor::default();
         app.setup_editor.load(Some(document));
+        app.setup_editor
+            .preview
+            .set_mode(setup_preview::Mode::Scenario);
         app.setup_editor
             .name_draft("Overflow focus draft".into())
             .unwrap();
@@ -387,7 +424,16 @@ fn overflowing_layer_list_tab_and_reverse_tab_reveal_focus_without_moving_pinned
             .find(|text| {
                 text.text.starts_with("Layer ") && text.text.len() == 8 && text.fully_visible()
             })
-            .expect("visible layer row")
+            .unwrap_or_else(|| {
+                panic!(
+                    "visible layer row at {size:?}: {:?}",
+                    first
+                        .texts()
+                        .iter()
+                        .filter(|t| t.rect.left() < 200.0)
+                        .collect::<Vec<_>>()
+                )
+            })
             .clip;
         let style = harness.context.style();
         let spacing = &style.spacing;
@@ -427,7 +473,8 @@ fn overflowing_layer_list_tab_and_reverse_tab_reveal_focus_without_moving_pinned
                 "no partial keyboard focus cycle"
             );
             order.push(response.id);
-            if list_clip.contains_rect(response.rect) {
+            // Count actual row buttons, not the focusable drag area or scrollbar.
+            if response.sense == egui::Sense::click() && list_clip.contains_rect(response.rect) {
                 list_focus.push(response.id);
                 for text in frame.texts().into_iter().filter(|text| {
                     text.text.starts_with("Layer ")
