@@ -144,14 +144,29 @@ impl Editor {
                         self.capabilities.get_or_insert_with(CapabilityRegistry::with_builtins));
                 }
                 for notice in &self.connection_notices {
-                    ui.vertical(|ui| {
-                        ui.small(notice.message.split('.').next().unwrap_or(&notice.message));
-                        if ui.add_sized([ui.available_width().min(300.0), 28.0],
+                    let summary = notice.message.split('.').next().unwrap_or(&notice.message);
+                    let mut repair_link = |ui: &mut egui::Ui, width: f32| {
+                        if ui.add_sized([width, 28.0],
                             egui::Button::new(format!("Connections: {}", notice.label)).frame(false).truncate())
                             .on_hover_text(format!("{}: {}", notice.label, notice.message)).clicked() {
                             self.connection_request = Some(notice.source.clone());
                         }
-                    });
+                    };
+                    if ui.available_width() >= 600.0 {
+                        let link_width = (ui.available_width() * 0.4).min(260.0);
+                        ui.horizontal(|ui| {
+                            let status_width = (ui.available_width() - link_width - ui.spacing().item_spacing.x).max(0.0);
+                            ui.add_sized([status_width, 28.0], egui::Label::new(
+                                egui::RichText::new(summary).small().color(crate::brand::MUTED))
+                                .halign(egui::Align::Min).truncate()).on_hover_text(&notice.message);
+                            repair_link(ui, link_width);
+                        });
+                    } else {
+                        ui.vertical(|ui| {
+                            ui.small(summary).on_hover_text(&notice.message);
+                            repair_link(ui, ui.available_width().min(300.0));
+                        });
+                    }
                 }
             });
             if focus == Some(Section::When) { when_section.response.scroll_to_me(Some(egui::Align::Min)); }

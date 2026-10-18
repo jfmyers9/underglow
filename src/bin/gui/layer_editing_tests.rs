@@ -441,3 +441,55 @@ fn unavailable_saved_condition_is_visible_without_opening_its_editor_at_all_size
         assert!(incoming.try_recv().is_err());
     }
 }
+
+#[test]
+fn default_lower_inspector_keeps_all_section_summaries_and_source_repair_visible() {
+    let mut h = Harness::new(DEFAULT_SIZE);
+    let (mut app, incoming) = app();
+    let doc = underglow::setup_library::starter(
+        underglow::setup_library::Starter::MatrixPi,
+        "default-inspector".into(),
+        "Matrix + Pi".into(),
+    )
+    .unwrap();
+    app.setup_editor.load(Some(doc.clone()));
+    app.setup_editor.selected = Some("pi-status".into());
+    let frame = h.settle(|ctx| app.show_lighting(ctx));
+    let texts = frame.texts();
+    for label in ["Where", "Looks", "When", "Edit keys", "Edit condition"] {
+        assert!(
+            texts.iter().any(|t| t.text == label && t.fully_visible()),
+            "default 940px inspector keeps {label} visible without scrolling"
+        );
+    }
+    assert!(!app.setup_editor.connection_notices.is_empty());
+    for notice in &app.setup_editor.connection_notices {
+        let link = format!("Connections: {}", notice.label);
+        let status = notice.message.split('.').next().unwrap_or(&notice.message);
+        let link = texts
+            .iter()
+            .find(|t| t.text == link)
+            .expect("source repair link");
+        let status = texts
+            .iter()
+            .find(|t| t.text == status)
+            .expect("truthful source status");
+        assert!(
+            link.fully_visible() && status.fully_visible(),
+            "source footer is not half clipped"
+        );
+        assert!(
+            link.clip.contains_rect(egui::Rect::from_center_size(
+                link.rect.center(),
+                egui::vec2(link.rect.width(), 28.0)
+            )),
+            "the repair control's full height remains inside the scroll viewport"
+        );
+        assert!(
+            (link.rect.center().y - status.rect.center().y).abs() < 2.0,
+            "the normal lower inspector uses one source footer row"
+        );
+    }
+    assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
+    assert!(incoming.try_recv().is_err());
+}
