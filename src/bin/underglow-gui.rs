@@ -1833,11 +1833,22 @@ impl Controller {
                 let output_width = if self.dev_simulation { 140.0 } else { 158.0 };
                 let width = (ui.available_width() - output_width - 200.0).max(100.0);
                 let kind = if self.setup_editor.draft.is_some() { "Current setup" } else { "Legacy profile" };
-                let switcher = ui.scope(|ui| {
+                let switcher = ui.allocate_ui_with_layout(egui::vec2(width, 32.0),
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min), |ui| {
                     ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-                    ui.add_sized([width, 32.0], egui::Button::new(
-                        egui::RichText::new(format!("{title} ▾")).size(20.0).strong()).truncate())
+                    // Bound text independently of the caret, while retaining a
+                    // normal labelled Button for focus, accessibility and activation.
+                    let text: egui::WidgetText = egui::RichText::new(title).size(20.0).strong().into();
+                    let galley = text.into_galley(ui, Some(egui::TextWrapMode::Truncate),
+                        (width - 40.0).max(1.0), egui::TextStyle::Button);
+                    ui.add(egui::Button::new(galley).min_size(egui::vec2(width, 32.0)))
                 }).inner;
+                let caret = switcher.rect.right_center() + egui::vec2(-15.0, 0.0);
+                for (start, end) in [((-4.0, -2.0), (0.0, 2.0)), ((0.0, 2.0), (4.0, -2.0))] {
+                    ui.painter().line_segment([
+                        caret + egui::vec2(start.0, start.1), caret + egui::vec2(end.0, end.1),
+                    ], egui::Stroke::new(1.5, MUTED));
+                }
                 if switcher.on_hover_text(format!("{kind}: {title}\nChange setup: browse, create or open a setup. Browsing never replaces this draft.")).clicked() {
                     self.setup_library.open = true;
                 }

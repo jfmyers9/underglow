@@ -82,14 +82,13 @@ fn text(harness: &mut Harness, app: &mut Controller) -> String {
 }
 
 fn click(harness: &mut Harness, app: &mut Controller, label: &str) {
-    let switcher = format!(
-        "{} ▾",
-        app.setup_editor
-            .draft
-            .as_ref()
-            .map(|doc| doc.name.as_str())
-            .unwrap_or_else(|| effect_description(&app.preset).0)
-    );
+    let switcher = app
+        .setup_editor
+        .draft
+        .as_ref()
+        .map(|doc| doc.name.as_str())
+        .unwrap_or_else(|| effect_description(&app.preset).0)
+        .to_owned();
     let label = if label == "Change setup..." {
         switcher.as_str()
     } else {

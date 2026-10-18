@@ -36,14 +36,13 @@ fn visible_rect(output: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
 
 #[track_caller]
 fn click(ctx: &egui::Context, app: &mut Controller, size: egui::Vec2, label: &str) {
-    let switcher = format!(
-        "{} ▾",
-        app.setup_editor
-            .draft
-            .as_ref()
-            .map(|doc| doc.name.as_str())
-            .unwrap_or_else(|| effect_description(&app.preset).0)
-    );
+    let switcher = app
+        .setup_editor
+        .draft
+        .as_ref()
+        .map(|doc| doc.name.as_str())
+        .unwrap_or_else(|| effect_description(&app.preset).0)
+        .to_owned();
     let label = if label == "Change setup..." {
         switcher.as_str()
     } else {
@@ -176,7 +175,7 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
             "Connections",
             "Settings",
             "Diagnostics",
-            "Navigation draft ▾",
+            "Navigation draft",
             "Unsaved changes",
             "Resume lighting",
         ] {
@@ -185,6 +184,11 @@ fn navigation_browser_preserves_dirty_draft_selection_and_preview_at_real_window
             assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(rect));
         }
         assert!(visible_rect(&output, "Saved setups").is_none());
+        let title = visible_rect(&output, "Navigation draft").expect("setup switcher title");
+        assert!(
+            title.left() <= 24.0,
+            "short setup names must align left: {title:?}"
+        );
         assert!(visible_rect(&output, "Connector diagnostics").is_none());
 
         click(&ctx, &mut app, size, "Change setup...");
@@ -261,11 +265,24 @@ fn navigation_header_separates_setup_save_and_output_states_with_long_names() {
             );
             let mut document = setup_document();
             document.name = "A deliberately long setup title with many words to exercise truncation rather than pushing navigation off screen".into();
+            let title = document.name.clone();
             app.setup_editor.load(Some(document));
             for dirty in [false, true] {
                 app.setup_editor.dirty = dirty;
                 let _ = frame(&ctx, &mut app, size, vec![]);
                 let output = frame(&ctx, &mut app, size, vec![]);
+                let title_rect =
+                    visible_rect(&output, &title).expect("truncated setup switcher title");
+                assert!(
+                    title_rect.left() <= 24.0,
+                    "long setup names must align left: {title_rect:?}"
+                );
+                assert!(title_rect.bottom() < 100.0);
+                let save = visible_rect(&output, "Save").expect("Save remains in header");
+                assert!(
+                    title_rect.right() < save.left(),
+                    "setup title must not overlap Save"
+                );
                 for text in [
                     "Editor",
                     "Connections",
