@@ -24,6 +24,18 @@ fn app() -> (Controller, Receiver<Action>) {
 
 /// Navigate the actual bounded pane to a control; never click an offscreen galley.
 pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controller, label: &str) {
+    // A semantic test intent resolves to the actual dynamic setup switcher.
+    // Do not retain obsolete compatibility labels in the production UI.
+    let switcher = (label == "Change setup...").then(|| {
+        let title = app
+            .setup_editor
+            .draft
+            .as_ref()
+            .map(|doc| doc.name.as_str())
+            .unwrap_or_else(|| effect_description(&app.preset).0);
+        format!("{title} ▾")
+    });
+    let label = switcher.as_deref().unwrap_or(label);
     for step in 0..70 {
         // Choose the hit only after scrolling/layout has actually settled.
         // A short compact inspector can move controls out of an earlier clip.
@@ -34,20 +46,21 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
         let texts = frame.texts();
         let inspector = texts
             .iter()
-            .find(|t| t.text.starts_with("Selected layer:"))
+            .find(|t| t.text == "Layer actions")
             .map(|t| t.clip);
-        // Sticky concept summaries are outside the scroll viewport. Measure the
-        // actual form clip so wheel steps cannot jump over controls in a short pane.
+        // Measure the actual scroll viewport inside the continuous inspector.
+        // Its inset surface can end above the pane edge; do not assume equal bottoms.
         let scroll = inspector
             .and_then(|pane| {
                 texts
                     .iter()
-                    .find(|t| {
+                    .filter(|t| {
                         t.clip != pane
                             && pane.contains_rect(t.clip)
-                            && t.clip.width() > pane.width() * 0.8
-                            && t.clip.bottom() >= pane.bottom() - 1.0
+                            && t.clip.width() > pane.width() * 0.75
+                            && t.clip.height() < pane.height() - 4.0
                     })
+                    .max_by(|a, b| a.clip.area().total_cmp(&b.clip.area()))
                     .map(|t| t.clip)
             })
             .or(inspector);
@@ -56,7 +69,7 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             .find(|t| t.text == "Close preview tools")
             .map(|t| t.clip);
         let keyboard = keyboard_region(&frame);
-        let layer_action = matches!(
+        let popup_action = matches!(
             label,
             "Duplicate layer"
                 | "Delete layer"
@@ -74,7 +87,7 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             // These controls intentionally live outside scrollable inspectors.
             "Preview tools" | "Preview" | "Select keys" | "Inspect" | "Save composition"
             | "Save" | "Cancel" | "Add layer" => None,
-            _ if layer_action => None, // Layer-actions popup is an explicit overlay.
+            _ if popup_action => None, // Management popup is an explicit overlay.
             _ => tools.or(inspector),
         };
         if let Some(hit) = texts.iter().find(|t| {
@@ -97,7 +110,7 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             harness.click_at(hit.rect.center(), |ctx| app.show_lighting(ctx));
             return;
         }
-        if layer_action
+        if matches!(label, "Duplicate layer" | "Delete layer" | "Rename layer")
             && let Some(menu) = texts
                 .iter()
                 .find(|t| t.text == "Layer actions" && t.fully_visible())
@@ -162,12 +175,18 @@ fn visible(frame: &workspace_test_ui::Frame, label: &str) -> egui::Rect {
 }
 
 fn keyboard_region(frame: &workspace_test_ui::Frame) -> egui::Rect {
-    frame
-        .texts()
-        .into_iter()
-        .find(|t| t.text == "Composition preview")
-        .unwrap()
-        .clip
+    let texts = frame.texts();
+    let key = texts
+        .iter()
+        .find(|t| t.text == "F1" && t.rect.height() <= 14.0)
+        .expect("the actual named keyboard remains mounted");
+    // The board may have a tighter clip than its pinned mode/test controls.
+    // Resolve the containing canvas from an actual mode control, not its title.
+    texts
+        .iter()
+        .find(|t| t.text == "Preview" && t.clip.contains_rect(key.rect))
+        .map(|t| t.clip)
+        .unwrap_or(key.clip)
 }
 
 fn key(frame: &workspace_test_ui::Frame, label: &str) -> egui::Rect {
@@ -279,7 +298,7 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
         let pane = expanded
             .texts()
             .into_iter()
-            .find(|t| t.text.starts_with("Selected layer:"))
+            .find(|t| t.text == "Layer actions")
             .unwrap()
             .clip;
         harness.wheel(
@@ -427,7 +446,7 @@ fn workspace_pi_appearance_and_color_are_visible_first_and_editable_at_real_size
         let pane = frame
             .texts()
             .into_iter()
-            .find(|t| t.text.starts_with("Selected layer:"))
+            .find(|t| t.text == "Layer actions")
             .unwrap()
             .clip;
         visible_in(&frame, "Where", Some(pane));
@@ -570,7 +589,7 @@ fn workspace_compact_connection_notice_remains_visible_in_real_scroll_content() 
         let pane = frame
             .texts()
             .into_iter()
-            .find(|t| t.text.starts_with("Selected layer:"))
+            .find(|t| t.text == "Layer actions")
             .unwrap()
             .clip;
         if size == MINIMUM_SIZE {
@@ -672,7 +691,7 @@ fn cards_keep_editing_choice_separate_from_preview_input_at_real_sizes() {
         let pane = frame
             .texts()
             .iter()
-            .find(|t| t.text.starts_with("Selected layer:"))
+            .find(|t| t.text == "Layer actions")
             .unwrap()
             .clip;
         visible_in(&frame, "Working", Some(pane));

@@ -175,7 +175,7 @@ impl Frame {
             .into_iter()
             .filter(|text| {
                 text.text == label
-                    && text.clip.contains(text.rect.center())
+                    && text.fully_visible()
                     && region.is_none_or(|region| region.contains(text.rect.center()))
             })
             .collect();
@@ -319,6 +319,40 @@ mod tests {
         let frame = harness.wheel(egui::pos2(100.0, 100.0), egui::vec2(0.0, -240.0), show);
         assert!(offset > 0.0);
         assert_eq!(frame.screen.size(), MINIMUM_SIZE);
+    }
+
+    #[test]
+    fn partially_clipped_labels_are_not_accepted_as_visible_hits() {
+        let mut harness = Harness::new(DEFAULT_SIZE);
+        let frame = harness.settle(|ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.painter()
+                    .with_clip_rect(Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 40.0)))
+                    .text(
+                        egui::pos2(20.0, 10.0),
+                        egui::Align2::LEFT_TOP,
+                        "Partially visible",
+                        egui::FontId::monospace(12.0),
+                        egui::Color32::WHITE,
+                    );
+            });
+        });
+        let text = frame
+            .texts()
+            .into_iter()
+            .find(|t| t.text == "Partially visible")
+            .unwrap();
+        assert!(
+            text.clip.contains(text.rect.center()),
+            "center-only lookup would accept this label"
+        );
+        assert!(!text.fully_visible());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                frame.text_hit("Partially visible", None);
+            }))
+            .is_err()
+        );
     }
 
     #[test]
