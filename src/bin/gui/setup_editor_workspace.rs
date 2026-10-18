@@ -95,10 +95,21 @@ impl Editor {
         }
         ui.horizontal(|ui| {
             let width = (ui.available_width() - 114.0).max(40.0);
-            ui.add_sized(
-                [width, 28.0],
-                egui::Label::new(egui::RichText::new(&name).size(18.0).strong()).truncate(),
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, 28.0),
+                egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min),
+                |ui| {
+                    // add_sized centers its inner allocation even when the
+                    // Label's galley is left-aligned. Reserve a real left slot.
+                    ui.set_min_size(egui::vec2(width, 28.0));
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&name).size(18.0).strong())
+                            .halign(egui::Align::Min)
+                            .truncate(),
+                    )
+                },
             )
+            .inner
             .on_hover_text(format!("Selected layer: {name}"));
             self.show_compact_layer_actions(ui);
         });
@@ -107,6 +118,22 @@ impl Editor {
             .max_height(ui.available_height())
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-            .show(ui, |ui| self.show_selected_inspector(ui, compact));
+            .show(ui, |ui| {
+                self.show_selected_inspector(ui, compact);
+                if let Some(response) = ui
+                    .memory(|memory| memory.focused())
+                    .and_then(|id| ui.ctx().read_response(id))
+                    && response.gained_focus()
+                    && response.layer_id == ui.layer_id()
+                    && ui.min_rect().contains_rect(response.rect)
+                    && response.interact_rect != response.rect
+                    && response.interact_rect == response.rect.intersect(ui.clip_rect())
+                {
+                    // Generic egui controls do not reveal themselves on Tab.
+                    // Match this scroll clip, not just content bounds: scrolled
+                    // content can geometrically overlap pinned toolbar controls.
+                    response.scroll_to_me(None);
+                }
+            });
     }
 }

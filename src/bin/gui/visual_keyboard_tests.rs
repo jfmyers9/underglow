@@ -116,7 +116,32 @@ fn tab_and_reverse_tab_keep_editor_focus_inside_real_visible_clips() {
     for size in [MINIMUM_SIZE, DEFAULT_SIZE, WIDE_SIZE] {
         let (mut app, incoming) = app();
         let mut harness = Harness::new(size);
-        harness.settle(|ctx| app.show_lighting(ctx));
+        let first = harness.settle(|ctx| app.show_lighting(ctx));
+        let texts = first.texts();
+        let pane = texts
+            .iter()
+            .find(|text| text.text == "Layer actions")
+            .unwrap()
+            .clip;
+        let name = &app
+            .setup_editor
+            .draft
+            .as_ref()
+            .unwrap()
+            .layers
+            .iter()
+            .find(|layer| Some(&layer.id) == app.setup_editor.selected.as_ref())
+            .unwrap()
+            .name;
+        let heading = texts
+            .iter()
+            .find(|text| text.text == *name && pane.contains_rect(text.rect))
+            .unwrap();
+        assert!(
+            (heading.rect.left() - pane.left() - 13.0).abs() < 1.0,
+            "selected layer name is left-aligned with the inspector inset at {size:?}: heading={:?}, pane={pane:?}",
+            heading.rect
+        );
         let draft = app.setup_editor.draft.clone();
         let applied = app.setup_editor.applied.clone();
         let selected = app.setup_editor.selected.clone();
@@ -234,5 +259,92 @@ fn keyboard_save_sends_only_the_exact_paused_draft_cas_request() {
                 "only an acknowledged Save may clean the draft"
             );
         }
+    }
+}
+
+#[test]
+fn pinned_save_focus_does_not_move_a_scrolled_inspector() {
+    use super::workspace_tests::click_workspace_control;
+    fn inspector_text(frame: &Frame) -> Vec<(String, egui::Rect, egui::Rect)> {
+        let pane = frame
+            .texts()
+            .into_iter()
+            .find(|text| text.text == "Layer actions")
+            .unwrap()
+            .clip;
+        frame
+            .texts()
+            .into_iter()
+            .filter(|text| text.clip != pane && pane.contains_rect(text.clip))
+            .map(|text| (text.text, text.rect, text.clip))
+            .collect()
+    }
+    for size in [MINIMUM_SIZE, DEFAULT_SIZE, WIDE_SIZE] {
+        let (mut app, incoming) = app();
+        let mut harness = Harness::new(size);
+        // Expand real controls so the wide inspector overflows too. These are
+        // disclosure/view operations, not edits or a fabricated long test UI.
+        for label in [
+            "Edit keys",
+            "Selection options",
+            "Saved zones",
+            "Reusable custom groups",
+            "Layer mixing & transitions",
+        ] {
+            click_workspace_control(&mut harness, &mut app, label);
+        }
+        let draft = app.setup_editor.draft.clone();
+        let preview = app.setup_editor.preview.frame().clone();
+        let mut save = None;
+        for _ in 0..128 {
+            let frame = key(&mut harness, &mut app, egui::Key::Tab, false);
+            let response = focused(&harness, &frame);
+            if is_save(&frame, &response) {
+                save = Some(response.id);
+                break;
+            }
+        }
+        let save = save.expect("Save remains in the actual focus order");
+        let before = harness.settle(|ctx| app.show_lighting(ctx));
+        let pane = before
+            .texts()
+            .into_iter()
+            .find(|text| text.text == "Layer actions")
+            .unwrap()
+            .clip;
+        let before_text = inspector_text(&before);
+        harness.wheel(
+            egui::pos2(pane.center().x, pane.bottom() - 20.0),
+            egui::vec2(0.0, 240.0),
+            |ctx| app.show_lighting(ctx),
+        );
+        for _ in 0..60 {
+            harness.run(vec![], |ctx| app.show_lighting(ctx));
+        }
+        let scrolled = harness.settle(|ctx| app.show_lighting(ctx));
+        assert_eq!(focused(&harness, &scrolled).id, save);
+        let scrolled_text = inspector_text(&scrolled);
+        assert!(!scrolled_text.is_empty());
+        assert_ne!(
+            scrolled_text, before_text,
+            "real wheel movement is required at {size:?}"
+        );
+        let previous = key(&mut harness, &mut app, egui::Key::Tab, true);
+        assert_ne!(focused(&harness, &previous).id, save);
+        assert_eq!(
+            inspector_text(&previous),
+            scrolled_text,
+            "pinned setup-switcher focus cannot scroll inspector"
+        );
+        let returned = key(&mut harness, &mut app, egui::Key::Tab, false);
+        assert_eq!(focused(&harness, &returned).id, save);
+        assert_eq!(
+            inspector_text(&returned),
+            scrolled_text,
+            "pinned Save focus cannot scroll inspector"
+        );
+        assert_eq!(app.setup_editor.draft, draft);
+        assert_eq!(app.setup_editor.preview.frame(), &preview);
+        assert!(incoming.try_recv().is_err());
     }
 }
