@@ -53,7 +53,6 @@ pub struct Session {
     pub scenario: Scenario,
     pub layer_id: Option<String>,
     pub action: Option<Action>,
-    pub picked: usize,
     pub error: Option<String>,
 }
 
@@ -285,15 +284,14 @@ impl Preview {
             .flatten()
     }
 
-    /// One compact row or two desktop rows, mounted before drawing the board so a quick action and
-    /// the painted RGB/explanation always refer to the same canonical capture.
+    /// Evaluate controls before painting the board: test identity, RGB and key
+    /// explanations must all describe the same canonical capture.
     pub fn show_quick_controls(
         &mut self,
         ui: &mut egui::Ui,
         document: &SetupDocument,
         layer: Option<&Layer>,
         brightness: u8,
-        compact: bool,
     ) -> bool {
         if self.quick.active
             && self.quick.layer_id.as_deref() != layer.map(|layer| layer.id.as_str())
@@ -305,137 +303,106 @@ impl Preview {
             .map(|layer| choices(layer, &self.controls.capabilities))
             .unwrap_or_default();
         let mut advanced = false;
-        let mut picked = None;
-        if compact {
-            ui.horizontal(|ui| {
-                ui.set_min_height(28.0);
-                self.show_quick_context(ui, document, layer, brightness, &choices);
-                picked = self.show_quick_actions(ui, &choices, layer.is_some());
-            });
-        } else {
-            ui.horizontal(|ui| {
-                ui.set_min_height(28.0);
-                self.show_quick_context(ui, document, layer, brightness, &choices);
-                advanced = ui.button("Preview tools").on_hover_text("Advanced simultaneous sources, leases, input demo and deterministic clock steps; key inspection.").clicked();
-            });
-            ui.horizontal(|ui| {
-                ui.set_min_height(28.0);
-                picked = self.show_quick_actions(ui, &choices, layer.is_some());
-            });
-        }
-        if let (Some(layer), Some(action)) = (layer, picked) {
-            self.quick.error = self.run_quick(document, layer, &action, brightness).err();
-        }
-        advanced
-    }
-
-    fn show_quick_context(
-        &mut self,
-        ui: &mut egui::Ui,
-        document: &SetupDocument,
-        layer: Option<&Layer>,
-        brightness: u8,
-        choices: &Choices,
-    ) {
-        if ui
-            .selectable_label(self.mode == Mode::Live, "Live")
-            .on_hover_text(
-                "Read-only live connection facts. Never sends source messages or enables lighting.",
-            )
-            .clicked()
-        {
-            self.set_mode(Mode::Live);
-            self.update(Some(document), brightness);
-        }
-        if ui.selectable_label(self.quick.active, "Try behavior")
-                .on_hover_text(format!("Start a private selected-layer test. Advanced scenario channels are retained and paused; no facts are published to real sources.\n{}", choices.warnings.join("\n"))).clicked() {
-                self.begin_quick(document, layer, brightness);
-                self.set_scenario_playing(true);
-            }
-    }
-
-    fn show_quick_actions(
-        &mut self,
-        ui: &mut egui::Ui,
-        choices: &Choices,
-        has_layer: bool,
-    ) -> Option<Action> {
-        let mut picked = None;
-        // SelectableLabel and Button both use Button text style plus the same
-        // horizontal padding in egui 0.31. Measure the actual configured fonts,
-        // including a larger Play/Pause label, before choosing inline actions.
-        let button_width = |label: &str| {
-            egui::WidgetText::from(label)
-                .into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button)
-                .size()
-                .x
-                + ui.spacing().button_padding.x * 2.0
-        };
-        let actions_width = choices
-            .actions
-            .iter()
-            .map(|action| button_width(&action.label))
-            .sum::<f32>()
-            + button_width("Play test").max(button_width("Pause test"))
-            + ui.spacing().item_spacing.x * choices.actions.len() as f32
-            + 2.0;
-        let short = choices.actions.len() <= 3
-            && actions_width <= ui.available_width()
-            && choices.actions.iter().enumerate().all(|(index, action)| {
-                !choices.actions[..index]
-                    .iter()
-                    .any(|other| other.label == action.label)
-            });
-        if choices.actions.is_empty() {
-            let message = if !has_layer {
-                "Select a layer to test"
-            } else if choices.warnings.is_empty() {
-                "Always shown · no source test needed"
-            } else {
-                "No declared quick tests · see tools"
+        ui.horizontal(|ui| {
+            ui.set_min_height(28.0);
+            let context = match self.mode {
+                Mode::Live => "Live data",
+                Mode::InputDemo => "Input demo",
+                Mode::Scenario if self.quick_active() => "Private test",
+                Mode::Scenario => "Advanced scenario",
             };
-            ui.add(egui::Label::new(egui::RichText::new(message).small()).truncate())
-                .on_hover_text(choices.warnings.join("\n"));
-        } else if short {
-            for action in &choices.actions {
-                if ui
-                    .selectable_label(
-                        self.quick.active && self.quick.action.as_ref() == Some(action),
-                        &action.label,
-                    )
-                    .on_hover_text(action.help())
-                    .clicked()
-                {
-                    picked = Some(action.clone());
-                }
-            }
-        } else {
-            self.quick.picked = self.quick.picked.min(choices.actions.len() - 1);
-            egui::ComboBox::from_id_salt("quick-test-choice")
-                .width((ui.available_width() - 140.0).max(80.0))
+            egui::ComboBox::from_id_salt("quick-preview-context")
+                .width(118.0)
                 .truncate()
-                .selected_text(&choices.actions[self.quick.picked].detail)
+                .selected_text(context)
                 .show_ui(ui, |ui| {
-                    for (index, action) in choices.actions.iter().enumerate() {
-                        ui.selectable_value(
-                            &mut self.quick.picked,
-                            index,
-                            format!("{} · {}", action.source_label, action.detail),
-                        )
-                        .on_hover_text(action.help());
+                    if ui.selectable_label(self.mode == Mode::Live, "Live data")
+                        .on_hover_text("Read-only live connection observations. Missing or expired observations are not idle. Never publishes facts or enables lighting.")
+                        .clicked() {
+                        self.set_mode(Mode::Live);
+                        self.update(Some(document), brightness);
+                    }
+                    if ui.selectable_label(self.quick.active, "Private test")
+                        .on_hover_text("Start a fresh private selected-layer test. Retains and pauses advanced channels; never publishes real source facts.")
+                        .clicked() {
+                        self.begin_quick(document, layer, brightness);
+                        self.set_scenario_playing(true);
                     }
                 })
                 .response
-                .on_hover_text(choices.actions[self.quick.picked].help());
-            if ui.button("Try").clicked() {
-                picked = Some(choices.actions[self.quick.picked].clone());
+                .on_hover_text(format!("{context}. Preview input only, independent of editing appearance and physical lighting."));
+
+            // Budget using the configured fonts. The choice is always bounded;
+            // custom source labels cannot push playback or tools offscreen.
+            let button_width = |label: &str| {
+                egui::WidgetText::from(label)
+                    .into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button)
+                    .size().x + ui.spacing().button_padding.x * 2.0
+            };
+            // Reserve playback even before the first action: starting a test
+            // must not push Tools offscreen for its first painted frame.
+            let playback_width = button_width("Pause test").max(button_width("Play test"))
+                + ui.spacing().item_spacing.x;
+            let reserved = button_width("Preview tools") + playback_width
+                + ui.spacing().item_spacing.x * 2.0 + 4.0;
+            let width = (ui.available_width() - reserved).clamp(100.0, 300.0);
+            let playback = if self.scenario_playing() { "playing" } else { "paused" };
+            let title = match self.quick_action_label() {
+                Some(label) => format!("Testing: {label} · {playback}"),
+                None if self.quick.active => format!("No test facts · {playback}"),
+                _ if self.mode == Mode::Scenario => format!("Advanced scenario · {playback}"),
+                _ => "Test behavior…".into(),
+            };
+            let mut picked = None;
+            egui::ComboBox::from_id_salt("quick-test-choice")
+                .width(width)
+                .truncate()
+                .selected_text(&title)
+                .show_ui(ui, |ui| {
+                    if choices.actions.is_empty() {
+                        ui.small(if layer.is_none() {
+                            "Select a layer to test"
+                        } else if choices.warnings.is_empty() {
+                            "Always shown · no source test needed"
+                        } else {
+                            "No declared quick tests"
+                        });
+                    }
+                    for warning in &choices.warnings {
+                        ui.colored_label(crate::brand::WARNING, warning);
+                    }
+                    for action in &choices.actions {
+                        let duplicate = choices.actions.iter()
+                            .filter(|other| other.label == action.label).count() > 1;
+                        let label = if duplicate {
+                            format!("{} · {}", action.source_label, action.detail)
+                        } else { action.label.clone() };
+                        if ui.add_sized([ui.available_width().min(420.0), 28.0],
+                            egui::Button::new(label)
+                                .selected(self.quick.active && self.quick.action.as_ref() == Some(action))
+                                .truncate()
+                        ).on_hover_text(action.help()).clicked() {
+                            picked = Some(action.clone());
+                        }
+                    }
+                    if let Some(error) = &self.quick.error {
+                        ui.colored_label(crate::brand::ERROR, error);
+                    }
+                })
+                .response
+                .on_hover_text(format!("{title}\nPrivate selected-layer tests, never real producer facts or hardware output.\n{}", choices.warnings.join("\n")));
+            if let (Some(layer), Some(action)) = (layer, picked) {
+                self.quick.error = self.run_quick(document, layer, &action, brightness).err();
             }
-        }
-        if !choices.actions.is_empty() && ui.add_enabled(self.quick.active,
-                egui::Button::new(if self.scenario_playing() && self.quick.active { "Pause test" } else { "Play test" }))
-                .on_hover_text("Paused freezes animations and finite leases. Play advances private test time without renewing facts.").clicked() {
+            if self.quick.active && ui.button(
+                if self.scenario_playing() { "Pause test" } else { "Play test" }
+            ).on_hover_text("Pause freezes animations and finite leases. Play advances private time without renewing facts. Return to Live data to end the test.").clicked() {
                 self.set_scenario_playing(!self.scenario_playing());
             }
-        picked
+            advanced = ui.button("Preview tools")
+                .on_hover_text("Advanced simultaneous sources, finite leases, input demo, clock steps, key explanations and coverage.")
+                .clicked();
+        });
+        advanced
     }
 }

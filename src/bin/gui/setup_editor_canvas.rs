@@ -71,40 +71,42 @@ impl Editor {
         }
     }
 
-    pub(super) fn show_workspace_canvas(&mut self, ui: &mut egui::Ui, compact: bool) {
+    pub(super) fn show_workspace_canvas(&mut self, ui: &mut egui::Ui) {
         self.sync_canvas_selection();
         ui.horizontal(|ui| {
             ui.strong("Keyboard");
             self.show_canvas_modes(ui);
-            if compact && ui.button("Preview tools").clicked() {
-                self.preview_tools_open = true;
-            }
+            let (caption, ink) = if self.preview.error.is_some() {
+                ("Preview issue · retained frame", crate::brand::WARNING)
+            } else {
+                ("Preview only", crate::brand::MUTED)
+            };
+            ui.add(egui::Label::new(egui::RichText::new(caption).small().color(ink)).truncate())
+                .on_hover_text(self.preview.error.as_deref().unwrap_or(
+                    "Canonical draft preview only. No hardware output; never device feedback.",
+                ));
         });
-        // Reserve the mode caption, two compact test rows and the facts badge. At the
-        // minimum viewport this scales the board, never scrolls it out of reach.
+        // One mode row and one private-test strip stay pinned. The board uses
+        // the remaining height without sacrificing the inspector viewport.
         let width = ui
             .available_width()
-            .min(
-                (ui.available_height() - if compact { 54.0 } else { 122.0 }).max(40.0) * 18.5 / 6.4,
-            )
+            .min((ui.available_height() - 40.0).max(40.0) * 18.5 / 6.4)
             .min(700.0);
         let content = egui::Rect::from_min_size(
             ui.cursor().min + egui::vec2((ui.available_width() - width) * 0.5, 0.0),
-            egui::vec2(width, width / 18.5 * 6.4 + if compact { 0.0 } else { 24.0 }),
+            egui::vec2(width, width / 18.5 * 6.4),
         );
         let mut board_ui = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("composed-keyboard")
                 .max_rect(content),
         );
-        if compact {
-            // Mode buttons already expose the mapping/help. Crop the duplicate
-            // component caption, not RGB geometry or physical-name tooltips.
-            board_ui.shrink_clip_rect(content);
-        }
+        // The header already exposes the component's mode/help. Clip only the
+        // duplicate caption below the component, never RGB or key tooltips.
+        board_ui.shrink_clip_rect(content);
         let controls = egui::Rect::from_min_size(
-            egui::pos2(ui.max_rect().left(), content.bottom() + 6.0),
-            egui::vec2(ui.available_width(), if compact { 28.0 } else { 66.0 }),
+            egui::pos2(ui.max_rect().left(), content.bottom() + 8.0),
+            egui::vec2(ui.available_width(), 28.0),
         );
         let mut controls_ui = ui.new_child(
             egui::UiBuilder::new()
@@ -121,7 +123,6 @@ impl Editor {
                 doc,
                 layer,
                 self.preview_brightness.unwrap_or(255),
-                compact,
             );
         }
         let highlighted = self.preview.coverage().and_then(|report| {
@@ -181,35 +182,6 @@ impl Editor {
                 .err();
         }
         ui.advance_cursor_after_rect(controls);
-        let context = match self.preview.mode {
-            setup_preview::Mode::Live => "Live facts",
-            setup_preview::Mode::InputDemo => "Isolated input demo",
-            setup_preview::Mode::Scenario
-                if self.preview.quick_active() && self.preview.scenario_playing() =>
-            {
-                "Quick test playing"
-            }
-            setup_preview::Mode::Scenario if self.preview.quick_active() => "Quick test paused",
-            setup_preview::Mode::Scenario if self.preview.scenario_playing() => "Scenario running",
-            setup_preview::Mode::Scenario => "Scenario paused",
-        };
-        let context = if let Some(label) = self.preview.quick_action_label() {
-            format!("Testing: {label} · {context}")
-        } else {
-            context.into()
-        };
-        let caption = if self.preview.error.is_some() {
-            format!("Preview only · {context} · retained last-valid frame")
-        } else {
-            format!("Preview only · {context} · no hardware output")
-        };
-        ui.add(egui::Label::new(egui::RichText::new(caption).small()).truncate())
-            .on_hover_text(
-                self.preview
-                    .error
-                    .as_deref()
-                    .unwrap_or("Canonical draft preview, never device feedback."),
-            );
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
     }

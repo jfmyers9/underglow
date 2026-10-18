@@ -52,7 +52,7 @@ impl Editor {
         } else {
             // Give the keyboard its natural aspect ratio first, but never take
             // away the compact inspector's independently scrolling viewport.
-            let chrome = if compact { 88.0 } else { 158.0 };
+            let chrome = 78.0;
             let preferred = (main.width() - 2.0).min(700.0) / 18.5 * 6.4 + chrome;
             let height = preferred.min((main.height() - MIN_INSPECTOR - 12.0).max(0.0));
             let canvas = egui::Rect::from_min_size(main.min, egui::vec2(main.width(), height));
@@ -61,7 +61,7 @@ impl Editor {
             (canvas, inspector)
         };
         pane(ui, "workspace-canvas", canvas, |ui| {
-            self.show_workspace_canvas(ui, compact)
+            self.show_workspace_canvas(ui)
         });
         pane(ui, "workspace-inspector", inspector, |ui| {
             self.show_inspector_pane(ui, compact);

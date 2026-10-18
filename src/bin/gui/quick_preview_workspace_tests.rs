@@ -1,7 +1,7 @@
 //! Actual branded workspace, with no native windows or producer workers.
 use super::*;
 use crate::tests::controller_fixture;
-use crate::workspace_test_ui::{DEFAULT_SIZE, Frame, Harness, MINIMUM_SIZE};
+use crate::workspace_test_ui::{DEFAULT_SIZE, Frame, Harness, MINIMUM_SIZE, WIDE_SIZE};
 
 fn app() -> (
     crate::Controller,
@@ -52,9 +52,26 @@ fn visible(frame: &Frame, label: &str) -> egui::Rect {
     matches[0].rect
 }
 
+fn choose_test(harness: &mut Harness, app: &mut crate::Controller, label: &str) -> Frame {
+    let frame = harness.settle(|ctx| app.show_lighting(ctx));
+    let picker = frame
+        .texts()
+        .into_iter()
+        .find(|text| {
+            text.fully_visible()
+                && canvas(&frame).contains_rect(text.rect)
+                && (text.text == "Test behavior…"
+                    || text.text.starts_with("Testing:")
+                    || text.text.starts_with("No test facts"))
+        })
+        .expect("one pinned test picker");
+    harness.click_at(picker.rect.center(), |ctx| app.show_lighting(ctx));
+    harness.click(label, None, |ctx| app.show_lighting(ctx))
+}
+
 #[test]
 fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_canvas() {
-    for size in [DEFAULT_SIZE, MINIMUM_SIZE] {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
         let (mut app, incoming, doc) = app();
         let mut harness = Harness::new(size);
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
@@ -78,21 +95,28 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
             );
         }
         for label in [
-            "Live",
-            "Try behavior",
-            "Idle",
-            "Working",
-            "Finished",
+            "Live data",
+            "Test behavior…",
+            "Preview only",
             "Preview tools",
         ] {
             visible(&frame, label);
         }
+        assert!(
+            !frame
+                .texts()
+                .iter()
+                .any(|t| ["Idle", "Working", "Finished"].contains(&t.text.as_str())),
+            "common choices are deliberately disclosed, not another toolbar wall"
+        );
         for (label, variant, state) in [
             ("Finished", Some("finished"), None),
             ("Idle", None, Some("idle")),
             ("Working", Some("working"), Some("working")),
         ] {
-            harness.click(label, Some(region), |ctx| app.show_lighting(ctx));
+            let started = choose_test(&mut harness, &mut app, label);
+            visible(&started, "Pause test");
+            visible(&started, "Preview tools");
             let frame = harness.settle(|ctx| app.show_lighting(ctx));
             assert!(app.setup_editor.preview.quick_active());
             assert_eq!(
@@ -102,12 +126,9 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
             );
             visible(&frame, "→");
             visible(&frame, "Pause test");
-            visible(
-                &frame,
-                &format!(
-                    "Preview only · Testing: {label} · Quick test playing · no hardware output"
-                ),
-            );
+            visible(&frame, "Private test");
+            visible(&frame, &format!("Testing: {label} · playing"));
+            visible(&frame, "Preview only");
             let inspector = frame
                 .texts()
                 .into_iter()
@@ -134,7 +155,7 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
                     _ => None,
                 })
                 .expect("RGB face under the key legend");
-            let minimum_face = if size == MINIMUM_SIZE { 18.0 } else { 12.0 };
+            let minimum_face = 18.0;
             assert!(
                 face.width() >= minimum_face && region.contains_rect(face),
                 "readable RGB faces at {size:?}: face={face:?}, canvas={region:?}"
@@ -183,11 +204,9 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
         assert_eq!(app.setup_editor.preview.frame(), &frozen);
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         visible(&frame, "Play test");
-        visible(
-            &frame,
-            "Preview only · Testing: Working · Quick test paused · no hardware output",
-        );
-        harness.click("Live", Some(region), |ctx| app.show_lighting(ctx));
+        visible(&frame, "Testing: Working · paused");
+        harness.click("Private test", Some(region), |ctx| app.show_lighting(ctx));
+        harness.click("Live data", None, |ctx| app.show_lighting(ctx));
         assert!(!app.setup_editor.preview.quick_active());
         assert!(app.setup_editor.preview.mode == Mode::Live);
         assert!(
@@ -209,7 +228,7 @@ fn inspect_click_reveals_the_canonical_report_before_advanced_controls() {
         let mut harness = Harness::new(size);
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         let region = canvas(&frame);
-        harness.click("Working", Some(region), |ctx| app.show_lighting(ctx));
+        choose_test(&mut harness, &mut app, "Working");
         harness.click("Inspect", Some(region), |ctx| app.show_lighting(ctx));
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         harness.click_at(visible(&frame, "F1").center(), |ctx| app.show_lighting(ctx));
@@ -269,17 +288,14 @@ fn many_custom_choices_use_a_contextual_picker_instead_of_a_toolbar_wall() {
     let mut harness = Harness::new(MINIMUM_SIZE);
     let frame = harness.settle(|ctx| app.show_lighting(ctx));
     let region = canvas(&frame);
-    visible(&frame, "State 0");
-    visible(&frame, "Try");
+    visible(&frame, "Test behavior…");
     assert!(
         !frame
             .texts()
             .iter()
             .any(|text| text.text == "State 5" && region.contains_rect(text.rect))
     );
-    harness.click("State 0", Some(region), |ctx| app.show_lighting(ctx));
-    harness.click("Custom · State 3", None, |ctx| app.show_lighting(ctx));
-    harness.click("Try", Some(region), |ctx| app.show_lighting(ctx));
+    choose_test(&mut harness, &mut app, "State 3");
     let facts = app.setup_editor.preview.evaluation_facts().0;
     assert_eq!(facts.states[0].identity.source, "custom");
     assert_eq!(facts.states[0].identity.instance, "exact");
@@ -314,7 +330,12 @@ fn three_long_quick_labels_use_measured_picker_budget_in_compact_workspace() {
     let mut harness = Harness::new(MINIMUM_SIZE);
     let frame = harness.settle(|ctx| app.show_lighting(ctx));
     let region = canvas(&frame);
-    for label in ["Live", "Try behavior", "Try", "Play test", "Preview tools"] {
+    for label in [
+        "Live data",
+        "Test behavior…",
+        "Preview only",
+        "Preview tools",
+    ] {
         visible(&frame, label);
     }
     assert!(
@@ -324,7 +345,7 @@ fn three_long_quick_labels_use_measured_picker_budget_in_compact_workspace() {
             .any(|text| text.text == "WWWWWWWWWWWWWWW2" && region.contains_rect(text.rect)),
         "three nominally short labels must not overflow the actual font budget"
     );
-    harness.click("Try", Some(region), |ctx| app.show_lighting(ctx));
+    choose_test(&mut harness, &mut app, "WWWWWWWWWWWWWWW0");
     let frame = harness.settle(|ctx| app.show_lighting(ctx));
     visible(&frame, "Pause test");
     let facts = app.setup_editor.preview.evaluation_facts().0;
@@ -332,4 +353,31 @@ fn three_long_quick_labels_use_measured_picker_budget_in_compact_workspace() {
     assert_eq!(facts.states[0].identity.instance, "exact");
     assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
     assert!(incoming.try_recv().is_err());
+}
+
+#[test]
+fn explicitly_beginning_a_private_test_does_not_invent_idle_or_publish_facts() {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
+        let (mut app, incoming, doc) = app();
+        let mut harness = Harness::new(size);
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        harness.click("Live data", Some(canvas(&frame)), |ctx| {
+            app.show_lighting(ctx)
+        });
+        harness.click("Private test", None, |ctx| app.show_lighting(ctx));
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        visible(&frame, "Private test");
+        visible(&frame, "No test facts · playing");
+        visible(&frame, "Pause test");
+        visible(&frame, "Preview tools");
+        assert!(app.setup_editor.preview.quick_active());
+        let (facts, events) = app.setup_editor.preview.evaluation_facts();
+        assert!(facts.states.is_empty());
+        assert!(events.events.is_empty());
+        assert!(app.setup_editor.preview.sample().is_none());
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
+        assert!(!app.setup_editor.dirty);
+        assert!(!app.status.as_ref().unwrap().enabled);
+        assert!(incoming.try_recv().is_err());
+    }
 }
