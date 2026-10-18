@@ -783,16 +783,24 @@ impl TargetSelection {
                 let luminance = u32::from(color.red) * 299
                     + u32::from(color.green) * 587
                     + u32::from(color.blue) * 114;
+                let ink = if luminance > 140_000 {
+                    Color32::BLACK
+                } else {
+                    Color32::WHITE
+                };
+                let mut size = (unit * 0.29).clamp(8.0, 11.0);
+                let measured =
+                    ui.painter()
+                        .layout_no_wrap(legend(name).into(), FontId::monospace(size), ink);
+                // Longer physical legends fit their actual key face, without
+                // reducing every short legend to the old six-pixel minimum.
+                size *= ((key.rect.width() - 3.0) / measured.size().x).min(1.0);
                 ui.painter().text(
                     key.rect.center(),
                     Align2::CENTER_CENTER,
                     legend(name),
-                    FontId::monospace((unit * 0.21).clamp(6.0, 12.0)),
-                    if luminance > 140_000 {
-                        Color32::BLACK
-                    } else {
-                        Color32::WHITE
-                    },
+                    FontId::monospace(size),
+                    ink,
                 );
             } else {
                 // A hollow marker identifies an unnamed position without inventing

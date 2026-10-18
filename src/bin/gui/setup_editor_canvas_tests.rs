@@ -1,7 +1,7 @@
 //! Mounted workspace interactions; no native windows, workers, or SDK.
 use super::*;
 use crate::tests::controller_fixture;
-use crate::workspace_test_ui::{DEFAULT_SIZE, Harness, MINIMUM_SIZE, pointer};
+use crate::workspace_test_ui::{DEFAULT_SIZE, Harness, MINIMUM_SIZE, WIDE_SIZE, pointer};
 use crate::workspace_tests::click_workspace_control;
 use underglow::device::DeviceInfo;
 use underglow::key_targets::canonical_coord;
@@ -57,7 +57,7 @@ fn key(frame: &crate::workspace_test_ui::Frame, label: &str) -> egui::Pos2 {
     let texts = frame.texts();
     let region = texts
         .iter()
-        .find(|text| text.text == "Composition preview")
+        .find(|text| text.text == "Keyboard")
         .unwrap()
         .clip;
     let keys: Vec<_> = texts
@@ -80,7 +80,7 @@ fn rgb_keys(frame: &crate::workspace_test_ui::Frame) -> Vec<(egui::Rect, egui::C
     let region = frame
         .texts()
         .into_iter()
-        .find(|text| text.text == "Composition preview")
+        .find(|text| text.text == "Keyboard")
         .unwrap()
         .clip;
     let result: Vec<_> = frame
@@ -113,7 +113,7 @@ fn rgb_keys(frame: &crate::workspace_test_ui::Frame) -> Vec<(egui::Rect, egui::C
 
 #[test]
 fn mounted_modes_keep_one_readable_rgb_capture_and_usable_inspector_at_real_sizes() {
-    for size in [DEFAULT_SIZE, MINIMUM_SIZE] {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
         let mut harness = Harness::new(size);
         let doc = document();
         let (mut app, incoming) = app(doc.clone());
@@ -140,7 +140,7 @@ fn mounted_modes_keep_one_readable_rgb_capture_and_usable_inspector_at_real_size
             let inspector = frame
                 .texts()
                 .into_iter()
-                .find(|text| text.text.starts_with("Selected layer:"))
+                .find(|text| text.text == "Layer actions")
                 .unwrap();
             assert!(inspector.fully_visible());
             assert!(
@@ -148,7 +148,11 @@ fn mounted_modes_keep_one_readable_rgb_capture_and_usable_inspector_at_real_size
                 "inspector retains usable height"
             );
             let keys = rgb_keys(&frame);
-            assert!(keys[0].0.width() >= 12.0, "key faces remain readable");
+            assert!(
+                keys[0].0.width() >= 18.0,
+                "key faces remain readable at {size:?}: {:?}",
+                keys[0].0
+            );
             let rects: Vec<_> = keys.iter().map(|(rect, _)| *rect).collect();
             if let Some(previous) = &geometry {
                 assert_eq!(&rects, previous, "explicit modes retain board geometry");
@@ -466,4 +470,77 @@ fn replacing_setups_with_reused_pi_ids_clears_pending_rename_context() {
     editor.rename_editing = editor.rename_focus.clone();
     editor.discard();
     assert!(editor.rename_focus.is_none() && editor.rename_editing.is_none());
+}
+
+#[test]
+fn responsive_geometry_keeps_a_large_keyboard_pinned_above_the_scrolling_inspector() {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
+        let mut harness = Harness::new(size);
+        let original = document();
+        let (mut app, incoming) = app(original.clone());
+        let mut show = |ctx: &egui::Context| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().inner_margin(12))
+                .show(ctx, |ui| {
+                    // The approved shell budgets at most 100px. Exercise this
+                    // component independently of concurrent shell changes.
+                    ui.add_space(88.0);
+                    app.setup_editor.preview.update(Some(&original), 255);
+                    app.setup_editor.show_workspace(ui);
+                });
+        };
+        let frame = harness.settle(&mut show);
+        let keys = rgb_keys(&frame);
+        let inspector = frame
+            .texts()
+            .into_iter()
+            .find(|t| t.text == "Layer actions")
+            .unwrap();
+        assert!(inspector.fully_visible());
+        assert!(
+            inspector.clip.height() >= 175.0,
+            "{size:?}: {:?}",
+            inspector.clip
+        );
+        let face = keys[0].0.width();
+        assert!(face >= 18.0, "{size:?}: {face}");
+        if size != MINIMUM_SIZE {
+            assert!(
+                face >= 32.0,
+                "normal and wide keyboards use their canvas: {face}"
+            );
+        }
+        if size == WIDE_SIZE {
+            assert!(inspector.clip.left() > keys.last().unwrap().0.right());
+        } else {
+            assert!(inspector.clip.top() > keys.last().unwrap().0.bottom());
+        }
+        for text in frame.texts().iter().filter(|t| {
+            ["Esc", "F1", "Shift", "Enter"].contains(&t.text.as_str())
+                && !inspector.clip.contains(t.rect.center())
+        }) {
+            assert!(text.fully_visible());
+            let key = keys
+                .iter()
+                .find(|(rect, _)| rect.contains(text.rect.center()))
+                .unwrap();
+            assert!(
+                key.0.contains_rect(text.rect),
+                "legend fits actual key: {text:?}"
+            );
+            assert!(text.rect.height() >= 7.0, "legends are not six-pixel text");
+        }
+        let scrolled = harness.wheel(
+            egui::pos2(inspector.clip.center().x, inspector.clip.bottom() - 18.0),
+            egui::vec2(0.0, -240.0),
+            &mut show,
+        );
+        assert_eq!(
+            rgb_keys(&scrolled),
+            keys,
+            "inspector scrolling cannot move/recolor keyboard"
+        );
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&original));
+        assert!(incoming.try_recv().is_err());
+    }
 }

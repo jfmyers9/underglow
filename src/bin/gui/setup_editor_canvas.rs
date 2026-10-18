@@ -73,18 +73,13 @@ impl Editor {
 
     pub(super) fn show_workspace_canvas(&mut self, ui: &mut egui::Ui, compact: bool) {
         self.sync_canvas_selection();
-        if compact {
-            ui.horizontal(|ui| {
-                ui.strong("Composition preview");
-                self.show_canvas_modes(ui);
-                if ui.button("Preview tools").clicked() {
-                    self.preview_tools_open = true;
-                }
-            });
-        } else {
-            ui.strong("Composition preview");
-            ui.horizontal(|ui| self.show_canvas_modes(ui));
-        }
+        ui.horizontal(|ui| {
+            ui.strong("Keyboard");
+            self.show_canvas_modes(ui);
+            if compact && ui.button("Preview tools").clicked() {
+                self.preview_tools_open = true;
+            }
+        });
         // Reserve the mode caption, two compact test rows and the facts badge. At the
         // minimum viewport this scales the board, never scrolls it out of reach.
         let width = ui

@@ -30,7 +30,7 @@ fn canvas(frame: &Frame) -> egui::Rect {
     frame
         .texts()
         .into_iter()
-        .find(|text| text.text == "Composition preview")
+        .find(|text| text.text == "Keyboard")
         .unwrap()
         .clip
 }
@@ -70,7 +70,7 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
             );
         }
         if size == MINIMUM_SIZE {
-            let title = visible(&frame, "Composition preview");
+            let title = visible(&frame, "Keyboard");
             let mode = visible(&frame, "Preview");
             assert!(
                 title.top() < mode.bottom() && mode.top() < title.bottom(),
@@ -111,7 +111,7 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
             let inspector = frame
                 .texts()
                 .into_iter()
-                .find(|text| text.text.starts_with("Selected layer:"))
+                .find(|text| text.text == "Layer actions")
                 .unwrap();
             assert!(inspector.fully_visible());
             assert!(
