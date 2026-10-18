@@ -57,6 +57,9 @@ editing tasks at 620×640 and resize to a wider window.
 - What did you expect to click or happen?
 - What did the interface actually do, or fail to explain?
 - Was the needed control visible, reachable and clearly named?
+- Did the hierarchy feel calm, with readable layer names, aligned fields and a
+  clear keyboard centerpiece rather than competing chrome?
+- Were keyboard focus, contrast and text readable at your actual display scaling?
 - Did the layout preserve your keyboard/layer context while scrolling?
 - Did animation/playback, preview-only status and saved/draft state make sense?
 - Was there an unexpected lighting, producer or persistence side effect?
@@ -64,7 +67,8 @@ editing tasks at 620×640 and resize to a wider window.
 Screenshots of the editor can help explain a finding. Avoid including private
 connection configuration, environment values, credentials or command arguments.
 
-Record findings in the UX validation issue (JIM-47). Automated interaction,
+Record new visual-design findings in JIM-58; JIM-47 retains the earlier UX
+history. Automated interaction,
 geometry and paint-summary tests are useful evidence, but they are not native
 screenshots or proof of visual hierarchy, readability, animation feel, trackpad
 behavior, display scaling or desktop integration. Do not mark the usability
@@ -91,6 +95,8 @@ or hardware acceptance. The normal suite tests the small in-memory capture path
 without exporting files.
 
 Each size includes normal, empty, dirty, pending, disconnected, stale-data,
-error-message and legacy-entry fixtures. Pending/error messages are illustrative
+error-message, legacy-entry, long-content and many-layer fixtures, plus expanded
+key/condition editors and independent appearance-editing/private-testing views.
+Pending/error messages are illustrative
 fixtures, not evidence that an actual save failed; workflow acknowledgement,
 conflict and recovery tests exercise those paths separately.

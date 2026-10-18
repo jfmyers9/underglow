@@ -41,6 +41,9 @@ mod setup_workflow_tests;
 #[path = "gui/sharing_panel.rs"]
 mod sharing_panel;
 #[cfg(test)]
+#[path = "gui/visual_keyboard_tests.rs"]
+mod visual_keyboard_tests;
+#[cfg(test)]
 #[path = "gui/workspace_journey_tests.rs"]
 mod workspace_journey_tests;
 #[cfg(test)]
@@ -52,9 +55,6 @@ mod workspace_test_ui;
 #[cfg(test)]
 #[path = "gui/workspace_tests.rs"]
 mod workspace_tests;
-#[cfg(test)]
-#[path = "gui/visual_keyboard_tests.rs"]
-mod visual_keyboard_tests;
 use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
 use serde::Deserialize;
 use std::{
@@ -2634,7 +2634,7 @@ mod tests {
             .map(|t| t.text)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Composition preview"));
+        assert!(text.contains("Keyboard"));
         assert!(text.contains("Resume lighting"));
         assert!(!text.contains("Choose an effect"));
     }

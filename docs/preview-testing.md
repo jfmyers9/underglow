@@ -6,10 +6,11 @@ producer configuration, lighting activation or keyboard output.
 
 ## Quick tests
 
-Select a layer and use **Try behavior**, or click one of its quick-test choices
-below the keyboard. **Live** returns to read-only connection facts. The badge
-distinguishes Live, private quick tests, isolated input demos and advanced
-scenarios; it is not device feedback.
+Select a layer, open **Test behavior…** below the keyboard and choose a
+capability-derived test. The selected label names the active test and playback
+state. The separate preview-input picker distinguishes **Live data**, **Private
+test**, isolated input demos and advanced scenarios. To end a private test,
+open **Private test** and choose **Live data**. This is not device feedback.
 
 Choices come from the selected layer's conditions and registered source
 capabilities. Presence conditions offer that source's declared states; specific
@@ -54,6 +55,7 @@ In **Inspect** mode, click a key to open its explanation before the advanced
 forms. The report uses the same captured frame, facts and evaluation clock as
 the RGB canvas. Target/coverage/inspection annotations never replace RGB fills.
 
-Headless interaction tests cover the branded 940×850 and 620×640 workspaces.
+Headless interaction tests cover the production-styled 940×850, 620×640 and
+1280×800 workspaces.
 They are not native-window, physical-keyboard or whole-product usability
 acceptance.

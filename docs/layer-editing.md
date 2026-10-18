@@ -1,15 +1,15 @@
 # Editing layers
 
-Select a layer. The inspector is three cards in one scrolling form:
+Select a layer. One continuous inspector has three clearly separated sections:
 
 - **Where:** the current physical target and **Edit keys**.
 - **Looks:** effect, color and percentage brightness for the selected appearance.
 - **When:** its readable condition, **Edit condition**, and relevant connections.
 
 There is no separate navigation index, duplicate heading strip or tab switch.
-The keyboard, layer identity and Save remain fixed while the cards scroll.
-At compact sizes, use the always-visible inspector scrollbar to reach later
-cards rather than squeezing all controls into a small grid.
+The keyboard, layer identity and Save remain fixed while the inspector scrolls.
+At compact sizes, use its scrollbar to reach later sections rather than
+squeezing all controls into a small grid.
 
 ## Where: choose keys
 
@@ -17,7 +17,7 @@ Click **Edit keys**, then select keys on the shared keyboard. Click the same
 button again to finish; there is no separate Done control. **Select keys** above
 the keyboard is another entry point to the same editing mode.
 
-The card summary lists direct keys, saved zones and group references. They
+The target summary lists direct keys, saved zones and group references. They
 combine as a union. If direct keys coexist with extra references, **Use selected
 keys only** removes this layer's zone/group references explicitly. That action
 appears only when it can do something; shared groups and other layers stay intact.
@@ -41,17 +41,19 @@ duration (ms)** values make Pulse/Sweep animations faster.
 
 **Appearance actions** owns appearance creation, renaming, enablement, deletion
 and advanced priority. These controls no longer interrupt condition editing.
-Effect descriptions are available on the effect picker's tooltip rather than
-as repeated general-purpose paragraphs.
+Effect descriptions and full input guidance are available through contextual
+help rather than repeated general-purpose paragraphs.
 
-Selecting Working to edit does not simulate it. Use the separate test buttons
-beneath the keyboard; the preview caption names the tested behavior. You can
-edit Working while testing Finished. **Live** reads actual source facts.
+Selecting Working to edit does not simulate it. Open **Test behavior…** beneath
+the keyboard and choose a private test; its selected label names the tested
+behavior and playback state. You can edit Working while testing Finished.
+The preview-input picker offers **Live data** for actual source observations
+and **Private test** for isolated facts.
 Private tests never publish source messages, save or enable physical lighting.
 
 ## When: change the trigger
 
-The card shows the selected appearance's condition directly. **Edit condition**
+The section shows the selected appearance's condition directly. **Edit condition**
 opens the source/state/event/transition controls right there, without another
 Advanced condition disclosure. Click it again to return to the readable summary.
 
@@ -60,7 +62,7 @@ or expired data is not inferred as idle. Finished is settled, not success.
 Exact session selectors and disabled appearances are included in summaries.
 Suggestions use real observations only, never private test facts.
 
-Connection status belongs in this card. **Connections: …** opens the relevant
+Connection status belongs in When. **Connections: …** opens the relevant
 source for repair while preserving the draft. Short status reports describe
 recent data, not inferred process health; hover for the complete diagnostic.
 
@@ -76,6 +78,6 @@ migrated profiles may retain three independent Pi rules. They are explained,
 not automatically merged. To adopt one Pi layer, save a copy, remove the old
 rules, then add Pi status and configure its target and appearances.
 
-**Current setup** identifies this combination. **Change setup...** opens setup
-creation, saved setups and Save a copy. Save/Discard/Cancel protects dirty drafts;
+The setup-name switcher in the toolbar opens setup creation, saved setups and
+Save a copy. Save/Discard/Cancel protects dirty drafts;
 Save and physical lighting activation remain separate explicit actions.

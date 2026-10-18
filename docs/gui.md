@@ -40,28 +40,28 @@ Save → explicitly enable lighting**. For hardware-free development, use
 
 - **Editor** is the lighting workspace; **Connections** is a separate destination
   for applications and producers supplying information.
-- **Current setup** identifies the combination you are editing. **Change setup...**
+- The **setup-name switcher** identifies the combination you are editing and
   opens its browser. Browsing does not replace your draft; opening is explicit.
 - The fixed header shows the setup, **Saved / Unsaved changes**, the one **Save**
   action and keyboard-lighting state. **Start engine / Resume lighting / Pause
   lighting** controls physical output separately.
-- At 940×850, layers sit beside one keyboard and the selected-layer inspector.
-  Lists and inspector content scroll independently. At 620×640, use the **Layer**
-  picker and inspector below the pinned keyboard. Resizing or visiting
-  Connections preserves the draft and selected layer.
+- At 940×850, layers sit beside a larger keyboard with the inspector below it.
+  At 1280×800, the inspector moves to the right; at 620×640, use the **Layer**
+  picker and scrolling inspector below the pinned keyboard/testing strip.
+  Resizing or visiting Connections preserves the draft and selected layer.
 
 ### Create and customize
 
-1. In **Change setup...**, choose Blank or an editable starter such as **Matrix +
-   Pi**. A starter is a local draft, not a recurring default.
+1. Open the setup-name switcher and choose Blank or an editable starter such as
+   **Matrix + Pi**. A starter is a local draft, not a recurring default.
 2. **Add layer** offers Matrix, Aurora, a solid color, Pi status and other
    supported effects. Layers are topmost first. Row **...** menus and compact
    **Layer actions** provide rename, duplicate, reorder and delete.
-3. Three cards explain the layer: **Where** (keys), **Looks** (effect/color/
+3. One continuous inspector explains **Where** (keys), **Looks** (effect/color/
    percentage brightness) and **When** (trigger and connection data). The
    **Editing** picker selects an appearance; **Appearance actions** manages it.
-   **Edit condition** opens its trigger directly. Cards scroll together, without
-   an extra navigation index or competing Done/Close buttons.
+   **Edit condition** opens its trigger directly. Sections scroll together,
+   without an extra navigation index, nested cards or competing Done/Close buttons.
 4. Use **Where → Edit keys** on the shared keyboard. Zones, direct keys
    and group references combine as a union. **Also includes** lists the extras;
    **Use selected keys only** removes that layer's zone/group references once
@@ -77,9 +77,11 @@ you explicitly add another template. See [Editing layers](layer-editing.md).
 The keyboard previews the complete draft through the shared composition runtime.
 It is not device feedback.
 
-- **Live** uses real read-only connection data.
-- **Try behavior** and contextual **Idle / Working / Finished** choices use
-  private test facts. They do not edit the setup or publish to real connections.
+- The preview-input picker distinguishes **Live data** (real read-only
+  observations) from **Private test**, advanced scenarios and isolated demos.
+- **Test behavior…** offers contextual choices such as **Idle / Working /
+  Finished**. Its selected label names the active test and playback state.
+  Private facts do not edit the setup or publish to real connections.
   Finished is a transient settled event, never a success fact.
 - **Play test / Pause test** controls private time. Facts have finite lifetimes;
   pausing freezes leases and animations.
@@ -122,7 +124,7 @@ when needed. Executable review, trust and enablement remain separate explicit
 actions. Selecting visuals never installs or starts a producer. **Diagnostics**
 and **Settings** are secondary windows.
 
-**Change setup... → Share setups** opens import/export. A new imported copy
+**Setup-name switcher → Share setups** opens import/export. A new imported copy
 requires explicit connection rebinding, including disabled appearances, and is
 stored without switching, credentials or executable trust.
 

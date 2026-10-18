@@ -1,8 +1,9 @@
 # Editor workflow
 
-The M7 restructure uses the existing setup, layer, preview, library and
-connection models. Its purpose is to make a complete editing task understandable,
-not introduce another renderer or a second copy of editor state.
+The M8 visual refinement preserves the existing setup, layer, preview, library
+and connection models. Its purpose is a calm, coherent editing surface, not a
+second renderer, configuration model or copy of editor state. See the
+[approved visual design](visual-design.md) for the visual-system reference.
 
 ## Primary journey
 
@@ -19,55 +20,29 @@ being displayed by the keyboard.
 
 ## Workspace
 
-Normal window, 940 by 850 logical pixels:
+Use real production fonts and three responsive compositions:
 
-```text
-Underglow         Editor | Connections                    Settings
-[Matrix + Pi v]   Unsaved changes   [Save]   Lighting off [Enable]
------------------------------------------------------------------
-Layers             Keyboard preview            Pi status
-----------------   -------------------------   ------------------
-Pi status          [Preview][Select keys]       Where · targets
-Matrix             [Inspect]                   Looks · appearance
-[+ Add layer]      +-----------------------+   ------------------
-                   | one composed keyboard |   Selected appearance
-                   | with target overlays  |   Color / effect
-                   +-----------------------+   Brightness
-                   Preview only                Advanced settings
-                   [Live][Try behavior]        (scrolls separately)
-                   [Idle][Working][Finished]
------------------------------------------------------------------
-Saved setup / unsaved draft / keyboard-output state, when relevant
-```
+| Window | Layout |
+| --- | --- |
+| 1280×800 | Readable layer rail, generous keyboard canvas, right inspector |
+| 940×850 | Layer rail beside a larger keyboard with the inspector below |
+| 620×640 | Layer picker, pinned keyboard/testing strip, scrolling inspector |
 
-The topmost layer is displayed first. The document continues to store layers
-bottom-to-top; presentation does not change composition semantics or stable IDs.
-Long layer lists and inspectors scroll independently. The keyboard, setup
-identity, save state and lighting controls must not scroll away with them.
+The quiet header owns setup identity/switching, save state and the one Save
+action. Output status and explicit activation are separate from Save and private
+preview. Add layer belongs in the layer rail or compact picker, not another
+global toolbar.
 
-At 620 by 640 logical pixels, collapse the layer list into an explicit picker
-and keep the inspector below the keyboard:
+The topmost layer is displayed first; canonical document order remains
+bottom-to-top. Layer lists and inspector content scroll independently. Setup
+identity, Save, layer context, keyboard and essential preview input/playback
+context stay pinned.
 
-```text
-Editor | Connections                    Settings
-[Matrix + Pi v]   Unsaved changes   [Save]
-Lighting off                            [Enable]
-------------------------------------------------
-[Layer: Pi status v]               [+ Add layer]
-[Preview][Select keys][Inspect]
-+----------------------------------------------+
-| one composed keyboard with target overlays   |
-+----------------------------------------------+
-Preview only   [Live][Try behavior]
-Pi status     Where / Looks / When · persistent summaries
-+----------------------------------------------+
-| inspector content scrolls here                |
-+----------------------------------------------+
-```
-
-Pane widths and breakpoint are implementation details to validate using the
-actual application font, padding and spacing. Both documented sizes must keep
-the primary controls reachable; a taller virtual window is not a substitute.
+Where / Looks / When are sections of one continuous inspector surface with
+aligned fields, restrained dividers and contextual actions. The exact pane
+budgets and breakpoints follow actual control/font fit, not a fixed three-column
+layout forced into the normal window. Expanded controls and long content must
+use genuine scrolling. A taller virtual viewport is not a substitute.
 
 ## Navigation and setup browser
 
@@ -96,32 +71,32 @@ Target, coverage and inspection overlays do not replace or modify rendered RGB
 colors. Named groups retain reference-safe operations. Unsupported positions
 are identified honestly; no new keyboard layout is implied by the restructure.
 
-## Selected-layer inspector (refined after the user walkthrough)
+## Selected-layer inspector
 
-The first refinement added a pinned navigation index, but the user found that
-it still presented the old form with duplicated headings. The replacement is
-three consistently styled cards in one scroll area:
+The original M7 tabs and later navigation-index/three-card refinements are
+superseded by one continuous, quiet inspector:
 
-- **Where:** target summary; one Edit keys toggle; optional Selection options.
-- **Looks:** Editing picker, effect/color/percentage brightness; Appearance actions.
-- **When:** readable condition, direct Edit condition toggle, source status.
+- **Where:** effective target summary, one Edit keys toggle, Selection options.
+- **Looks:** explicit Editing choice, effect/color/percentage brightness,
+  Appearance actions and capability-appropriate parameters.
+- **When:** readable actual condition, direct Edit condition and concise truthful
+  source status with contextual repair/details.
 
-There is no index above the cards and no duplicate Done/Close controls. All
-three cards fit in the normal workspace; at compact sizes they scroll together
-with an always-visible scrollbar while the keyboard, layer identity and Save
-stay fixed. Key and condition editors can be open independently.
+All sections remain mounted; key and condition editors can be open independently.
+Their content scrolls without moving the keyboard, selected-layer context or
+Save. Advanced mixing/transitions, technical details and complete effect/help
+information remain available; blocking warnings are not hidden for appearance.
 
 Appearance selection is stable-ID view state and never changes test input.
-Test captions name the simulated behavior separately. Pi remains one logical
-layer with Idle/fallback, Working and Finished appearances. Missing data never
-means idle or success. Saved brightness bytes are not quantized by percentage
-display. Original setups, source trust, save acknowledgements and lighting
+The separate testing strip names its active test and playback state. Pi remains
+one logical layer with Idle/fallback, Working and Finished appearances. Missing
+data never means idle or success. Percentage display does not quantize saved
+brightness. Original setups, executable trust, save acknowledgements and lighting
 ownership semantics are unchanged.
 
-Layer actions own layer management. Appearance actions own appearance management.
-Layer mixing & transitions and Technical details retain infrequent controls.
-The original M7 wireframes above are historical; their tab strip and the first
-refinement's pinned index are superseded by these cards.
+Layer actions own layer management; Appearance actions own appearance management.
+The setup-name switcher owns browser navigation. There is no extra section index,
+tab strip, duplicate heading row or competing Done/Close control.
 
 The layer list supports enable, rename, duplicate, delete and reorder. Removing
 a layer never causes a starter or template to be silently reinserted later.

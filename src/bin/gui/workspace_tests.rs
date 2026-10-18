@@ -33,7 +33,7 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             .as_ref()
             .map(|doc| doc.name.as_str())
             .unwrap_or_else(|| effect_description(&app.preset).0);
-        format!("{title} ▾")
+        title.to_owned()
     });
     let label = switcher.as_deref().unwrap_or(label);
     for step in 0..70 {
@@ -86,7 +86,8 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             "F1" => Some(keyboard),
             // These controls intentionally live outside scrollable inspectors.
             "Preview tools" | "Preview" | "Select keys" | "Inspect" | "Save composition"
-            | "Save" | "Cancel" | "Add layer" => None,
+            | "Save" | "Cancel" | "Add layer" | "Test behavior…" | "Live data" | "Private test"
+            | "Play test" | "Pause test" => None,
             _ if popup_action => None, // Management popup is an explicit overlay.
             _ => tools.or(inspector),
         };
@@ -170,6 +171,40 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
     panic!("unreachable {label} in {:?}", harness.screen());
 }
 
+/// Select a private test through the actual picker, whose title changes after
+/// the first run; its identity is separate from the appearance edit picker.
+pub(super) fn choose_private_test(harness: &mut Harness, app: &mut Controller, label: &str) {
+    let frame = harness.settle(|ctx| app.show_lighting(ctx));
+    let canvas = keyboard_region(&frame);
+    let chooser = frame
+        .texts()
+        .into_iter()
+        .find(|t| {
+            t.fully_visible()
+                && canvas.contains_rect(t.rect)
+                && (t.text == "Test behavior…"
+                    || t.text.starts_with("Testing:")
+                    || t.text.starts_with("No test facts")
+                    || t.text.starts_with("Advanced scenario ·"))
+        })
+        .expect("a real visible contextual private-test picker");
+    harness.click_at(chooser.rect.center(), |ctx| app.show_lighting(ctx));
+    let menu = harness.settle(|ctx| app.show_lighting(ctx));
+    let option = menu
+        .texts()
+        .into_iter()
+        .find(|t| {
+            t.text == label
+                && t.fully_visible()
+                && harness
+                    .context
+                    .layer_id_at(t.rect.center())
+                    .is_some_and(|layer| layer.order == egui::Order::Foreground)
+        })
+        .expect("a real visible foreground test option, not the editing appearance");
+    harness.click_at(option.rect.center(), |ctx| app.show_lighting(ctx));
+}
+
 fn visible(frame: &workspace_test_ui::Frame, label: &str) -> egui::Rect {
     visible_in(frame, label, None)
 }
@@ -231,7 +266,7 @@ fn workspace_primary_controls_and_complete_keyboard_are_reachable_at_real_sizes(
             "Editor",
             "Connections",
             "Settings",
-            "Change setup...",
+            "Workspace draft",
             "Unsaved changes",
             "Resume lighting",
             "Save",
@@ -252,22 +287,36 @@ fn workspace_primary_controls_and_complete_keyboard_are_reachable_at_real_sizes(
             .iter()
             .find(|l| Some(&l.id) == app.setup_editor.selected.as_ref())
             .unwrap();
-        let heading = visible(&frame, &format!("Selected layer: {}", selected.name));
+        let heading = visible_in(
+            &frame,
+            &selected.name,
+            Some(
+                frame
+                    .texts()
+                    .iter()
+                    .find(|t| t.text == "Layer actions")
+                    .unwrap()
+                    .clip,
+            ),
+        );
         let canvas_top = key(&frame, "Esc");
         let canvas_bottom = key(&frame, "→");
         assert!(canvas_bottom.bottom() > canvas_top.bottom());
         if size == MINIMUM_SIZE {
             visible(&frame, "Layer:");
-            assert!(
-                heading.top() > canvas_bottom.bottom(),
-                "compact inspector below keyboard"
-            );
         } else {
             let layers = visible(&frame, "Layers");
             assert!(layers.left() < canvas_top.left());
+        }
+        if size == WIDE_SIZE {
             assert!(
                 heading.left() > canvas_bottom.right(),
-                "desktop inspector alongside keyboard"
+                "wide inspector alongside keyboard"
+            );
+        } else {
+            assert!(
+                heading.top() > canvas_bottom.bottom(),
+                "normal and compact inspector below keyboard"
             );
         }
         let draft = app.setup_editor.draft.clone().unwrap();
@@ -301,11 +350,9 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
             .find(|t| t.text == "Layer actions")
             .unwrap()
             .clip;
-        harness.wheel(
-            egui::pos2(pane.center().x, pane.bottom() - 10.0),
-            egui::vec2(0.0, 20000.0),
-            |ctx| app.show_lighting(ctx),
-        );
+        harness.wheel(pane.center(), egui::vec2(0.0, 20000.0), |ctx| {
+            app.show_lighting(ctx)
+        });
         for _ in 0..30 {
             harness.run(vec![], |ctx| app.show_lighting(ctx));
         }
@@ -355,15 +402,21 @@ fn workspace_layer_list_scroll_is_independent_and_topmost_first() {
                     index,
                 })
                 .unwrap();
+            app.setup_editor
+                .apply(underglow::setup_edits::LayerEdit::Update {
+                    id: format!("copy-{i}"),
+                    patch: underglow::setup_edits::LayerPatch {
+                        name: Some(format!("Ambient copy {i:02}")),
+                        ..Default::default()
+                    },
+                })
+                .unwrap();
         }
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         let esc = key(&frame, "Esc");
         let inspector = visible(&frame, "Looks");
         let doc = app.setup_editor.draft.as_ref().unwrap();
-        visible(
-            &frame,
-            &format!("{} · {}", doc.layers.len(), doc.layers.last().unwrap().name),
-        );
+        visible(&frame, &doc.layers.last().unwrap().name);
         let list_pos = visible(&frame, "Topmost first").center() + egui::vec2(0.0, 55.0);
         for _ in 0..16 {
             harness.wheel(list_pos, egui::vec2(0.0, -500.0), |ctx| {
@@ -373,7 +426,7 @@ fn workspace_layer_list_scroll_is_independent_and_topmost_first() {
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         assert_eq!(key(&frame, "Esc"), esc);
         assert_eq!(visible(&frame, "Looks"), inspector);
-        let bottom = format!("1 · {}", original.name);
+        let bottom = original.name.clone();
         visible(&frame, &bottom);
         harness.click(&bottom, None, |ctx| app.show_lighting(ctx));
         assert_eq!(
@@ -442,7 +495,7 @@ fn workspace_pi_appearance_and_color_are_visible_first_and_editable_at_real_size
         app.setup_editor.selected = Some("pi-status".into());
         let mut harness = Harness::new(size);
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
-        let inspector = visible(&frame, "Selected layer: Pi status");
+        let inspector = visible(&frame, "Layer actions");
         let pane = frame
             .texts()
             .into_iter()
@@ -464,8 +517,33 @@ fn workspace_pi_appearance_and_color_are_visible_first_and_editable_at_real_size
         }
         let color = visible_in(&frame, "Color", Some(pane));
         assert!(color.top() > inspector.top());
-        // The real color well immediately precedes its Color label.
-        let well = egui::pos2(color.left() - 15.0, color.center().y);
+        // Find the actual RGB well, not a coordinate assumed from old label order.
+        let saved_color = match &document.layers[1].renderer {
+            Renderer::Solid { color } => *color,
+            _ => unreachable!(),
+        };
+        let well = frame
+            .output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill
+                        == egui::Color32::from_rgb(
+                            saved_color[0],
+                            saved_color[1],
+                            saved_color[2],
+                        )
+                        && rect.rect.width() >= 12.0
+                        && rect.rect.width() <= 80.0
+                        && pane.contains_rect(rect.rect)
+                        && (rect.rect.center().y - color.center().y).abs() < 16.0 =>
+                {
+                    Some(rect.rect.center())
+                }
+                _ => None,
+            })
+            .expect("a real visible color well in the Color row");
         assert!(pane.contains(well));
         harness.click_at(well, |ctx| app.show_lighting(ctx));
         let popup = harness.settle(|ctx| app.show_lighting(ctx));
@@ -570,7 +648,7 @@ fn workspace_compact_actions_rename_duplicate_delete_through_the_real_menu() {
 }
 
 #[test]
-fn workspace_compact_connection_notice_remains_visible_in_real_scroll_content() {
+fn workspace_connection_notice_is_reachable_in_real_scroll_content() {
     for size in [MINIMUM_SIZE, DEFAULT_SIZE] {
         let (mut app, incoming) = app();
         app.setup_editor.selected = Some(
@@ -592,24 +670,19 @@ fn workspace_compact_connection_notice_remains_visible_in_real_scroll_content() 
             .find(|t| t.text == "Layer actions")
             .unwrap()
             .clip;
-        if size == MINIMUM_SIZE {
-            harness.wheel(
-                egui::pos2(pane.center().x, pane.bottom() - 10.0),
-                egui::vec2(0.0, -2000.0),
-                |ctx| app.show_lighting(ctx),
-            );
-            for _ in 0..30 {
-                harness.run(vec![], |ctx| app.show_lighting(ctx));
-            }
-        }
+        // In a short viewport the note can lie above the very bottom offset.
+        // Reveal its actual text through bounded scrolling, not a max-offset assumption.
+        let draft = app.setup_editor.draft.clone();
+        click_workspace_control(&mut harness, &mut app, &message);
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         assert!(
             frame
                 .texts()
                 .iter()
                 .any(|t| t.text == message && t.fully_visible() && pane.contains(t.rect.center())),
-            "a real connection note remains readable, not only a hover tooltip"
+            "a real connection note is readable through scrolling, not only a hover tooltip"
         );
+        assert_eq!(app.setup_editor.draft, draft);
         assert!(incoming.try_recv().is_err());
     }
 }
@@ -620,19 +693,30 @@ fn workspace_preview_badge_explains_source_and_playback_without_open_tools() {
         let mut harness = Harness::new(size);
         let (mut app, incoming) = app();
         let draft = app.setup_editor.draft.clone();
-        for (mode, playing, context) in [
-            (setup_preview::Mode::Live, false, "Live facts"),
-            (setup_preview::Mode::InputDemo, false, "Isolated input demo"),
-            (setup_preview::Mode::Scenario, false, "Scenario paused"),
-            (setup_preview::Mode::Scenario, true, "Scenario running"),
+        for (mode, playing, context, playback) in [
+            (setup_preview::Mode::Live, false, "Live data", None),
+            (setup_preview::Mode::InputDemo, false, "Input demo", None),
+            (
+                setup_preview::Mode::Scenario,
+                false,
+                "Advanced scenario",
+                Some("paused"),
+            ),
+            (
+                setup_preview::Mode::Scenario,
+                true,
+                "Advanced scenario",
+                Some("playing"),
+            ),
         ] {
             app.setup_editor.preview.set_mode(mode);
             app.setup_editor.preview.set_scenario_playing(playing);
             let frame = harness.settle(|ctx| app.show_lighting(ctx));
-            visible(
-                &frame,
-                &format!("Preview only · {context} · no hardware output"),
-            );
+            visible(&frame, "Preview only");
+            visible(&frame, context);
+            if let Some(playback) = playback {
+                visible(&frame, &format!("Advanced scenario · {playback}"));
+            }
             key(&frame, "Esc");
             assert_eq!(app.setup_editor.draft, draft);
             assert!(incoming.try_recv().is_err());
@@ -641,7 +725,7 @@ fn workspace_preview_badge_explains_source_and_playback_without_open_tools() {
 }
 
 #[test]
-fn cards_keep_editing_choice_separate_from_preview_input_at_real_sizes() {
+fn inspector_keeps_editing_choice_separate_from_preview_input_at_real_sizes() {
     use underglow::setup_library::{Starter, starter};
     for size in [MINIMUM_SIZE, DEFAULT_SIZE, WIDE_SIZE] {
         let (mut app, incoming) = app();
@@ -650,8 +734,7 @@ fn cards_keep_editing_choice_separate_from_preview_input_at_real_sizes() {
         app.setup_editor.load(Some(document.clone()));
         let mut harness = Harness::new(size);
         let first = harness.settle(|ctx| app.show_lighting(ctx));
-        visible(&first, "Current setup: Concepts");
-        visible(&first, "Change setup...");
+        visible(&first, "Concepts");
         visible(&first, "Function zone");
         let keyboard = key(&first, "Esc");
         for section in ["Where", "Looks", "When"] {
@@ -666,9 +749,10 @@ fn cards_keep_editing_choice_separate_from_preview_input_at_real_sizes() {
         assert!(app.setup_editor.preview.sample().is_none());
 
         let editing = harness.settle(|ctx| app.show_lighting(ctx));
-        harness.click("Finished", Some(keyboard_region(&editing)), |ctx| {
+        harness.click("Test behavior…", Some(keyboard_region(&editing)), |ctx| {
             app.show_lighting(ctx)
         });
+        harness.click("Finished", None, |ctx| app.show_lighting(ctx));
         let testing = harness.settle(|ctx| app.show_lighting(ctx));
         assert!(
             testing
@@ -711,7 +795,7 @@ fn cards_keep_editing_choice_separate_from_preview_input_at_real_sizes() {
 }
 
 #[test]
-fn cards_retain_independent_editors_without_an_extra_navigation_index() {
+fn inspector_retains_independent_editors_without_an_extra_navigation_index() {
     for size in [MINIMUM_SIZE, DEFAULT_SIZE, WIDE_SIZE] {
         let (mut app, incoming) = app();
         let mut harness = Harness::new(size);
@@ -754,7 +838,7 @@ fn cards_retain_independent_editors_without_an_extra_navigation_index() {
             .contains(&t.text.as_str())
         }));
         // Close the mode picker without making a model change.
-        harness.click("Composition preview", None, |ctx| app.show_lighting(ctx));
+        harness.click("Keyboard", None, |ctx| app.show_lighting(ctx));
         for section in ["Where", "Looks", "When"] {
             click_workspace_control(&mut harness, &mut app, section);
         }

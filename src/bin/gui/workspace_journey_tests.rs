@@ -1,8 +1,8 @@
 //! Whole editing journeys through the production shell, without workers/SDKs.
 use super::*;
 use crate::tests::controller_fixture;
-use crate::workspace_test_ui::{DEFAULT_SIZE, Harness, MINIMUM_SIZE};
-use crate::workspace_tests::click_workspace_control;
+use crate::workspace_test_ui::{DEFAULT_SIZE, Harness, MINIMUM_SIZE, WIDE_SIZE};
+use crate::workspace_tests::{choose_private_test, click_workspace_control};
 use underglow::setup::{SetupDocument, Target};
 
 fn paused() -> serde_json::Value {
@@ -51,7 +51,7 @@ fn save_and_acknowledge(
 
 #[test]
 fn complete_matrix_pi_edit_test_save_and_delete_journey_at_real_sizes() {
-    for size in [DEFAULT_SIZE, MINIMUM_SIZE] {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
         let mut harness = Harness::new(size);
         let (mut app, incoming) = controller_fixture();
         let (outgoing, replies) = mpsc::channel();
@@ -105,14 +105,7 @@ fn complete_matrix_pi_edit_test_save_and_delete_journey_at_real_sizes() {
             ("Idle", None),
             ("Working", Some("working")),
         ] {
-            let frame = harness.settle(|ctx| app.show_lighting(ctx));
-            let canvas = frame
-                .texts()
-                .into_iter()
-                .find(|t| t.text == "Composition preview")
-                .unwrap()
-                .clip;
-            harness.click(label, Some(canvas), |ctx| app.show_lighting(ctx));
+            choose_private_test(&mut harness, &mut app, label);
             harness.settle(|ctx| app.show_lighting(ctx));
             assert_eq!(
                 app.setup_editor

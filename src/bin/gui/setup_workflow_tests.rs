@@ -71,6 +71,16 @@ fn complete(
 }
 
 fn click(harness: &mut Harness, app: &mut Controller, label: &str) {
+    let switcher = (label == "Change setup...").then(|| {
+        let title = app
+            .setup_editor
+            .draft
+            .as_ref()
+            .map(|doc| doc.name.as_str())
+            .unwrap_or_else(|| effect_description(&app.preset).0);
+        title.to_owned()
+    });
+    let label = switcher.as_deref().unwrap_or(label);
     for _ in 0..18 {
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         if frame

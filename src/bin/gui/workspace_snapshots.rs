@@ -257,15 +257,23 @@ fn export_workspace_snapshots() {
     let destination = std::path::PathBuf::from(destination);
     std::fs::create_dir_all(&destination).unwrap();
     for size in [[940, 850], [620, 640], [1280, 800]] {
-        for state in STATES.iter().chain(["where", "when"].iter()) {
+        for state in STATES.iter().chain(["where", "when", "testing"].iter()) {
             let mut harness = Harness::new(egui::vec2(size[0] as f32, size[1] as f32));
             let section = match *state {
                 "where" => Some("Edit keys"),
                 "when" => Some("Edit condition"),
                 _ => None,
             };
-            let (mut app, incoming) =
-                state_fixture(if section.is_some() { "normal" } else { state });
+            let (mut app, incoming) = state_fixture(if section.is_some() || *state == "testing" {
+                "normal"
+            } else {
+                state
+            });
+            if *state == "testing" {
+                app.setup_editor
+                    .preview
+                    .set_mode(super::setup_preview::Mode::Live);
+            }
             let mut capture = Capture::new(size);
             if let Some(action) = section {
                 // Use actual UI actions and retain every texture delta while
@@ -302,6 +310,16 @@ fn export_workspace_snapshots() {
                     capture.update_textures(&frame.output.textures_delta);
                 }
             }
+            if *state == "testing" {
+                // These are independent actual UI selections, not injected
+                // appearance state or fabricated live connection observations.
+                for label in ["Idle / fallback", "Working", "Test behavior…", "Finished"] {
+                    capture_click_label(&mut capture, &mut harness, &mut app, label);
+                }
+                assert!(app.setup_editor.preview.quick_active());
+                assert!(app.setup_editor.preview.sample().is_none());
+                assert!(!app.setup_editor.dirty);
+            }
             for index in 0..30 {
                 let frame = harness.run(vec![], |context| app.show_lighting(context));
                 capture.update_textures(&frame.output.textures_delta);
@@ -325,6 +343,63 @@ fn export_workspace_snapshots() {
     }
 }
 
+/// Capture actual input frames as well as settled frames so font-atlas patches
+/// introduced by popups are never dropped from software screenshots.
+fn capture_click_label(
+    capture: &mut Capture,
+    harness: &mut super::workspace_test_ui::Harness,
+    app: &mut super::Controller,
+    label: &str,
+) {
+    for step in 0..80 {
+        for _ in 0..30 {
+            let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+            capture.update_textures(&frame.output.textures_delta);
+        }
+        let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+        capture.update_textures(&frame.output.textures_delta);
+        let hits: Vec<_> = frame
+            .texts()
+            .into_iter()
+            .filter(|t| t.text == label && t.fully_visible())
+            .collect();
+        if hits.len() == 1 {
+            for pressed in [true, false] {
+                let frame = harness.run(
+                    super::workspace_test_ui::pointer(hits[0].rect.center(), pressed),
+                    |ctx| app.show_lighting(ctx),
+                );
+                capture.update_textures(&frame.output.textures_delta);
+            }
+            return;
+        }
+        assert!(
+            hits.is_empty(),
+            "ambiguous actual capture action {label}: {hits:?}"
+        );
+        let pane = frame
+            .texts()
+            .into_iter()
+            .find(|t| t.text == "Layer actions")
+            .expect("pinned inspector context")
+            .clip;
+        let frame = harness.wheel(
+            egui::pos2(pane.center().x, pane.bottom() - 20.0),
+            egui::vec2(
+                0.0,
+                if step == 39 {
+                    20_000.0
+                } else {
+                    -(pane.height() * 0.45).min(100.0)
+                },
+            ),
+            |ctx| app.show_lighting(ctx),
+        );
+        capture.update_textures(&frame.output.textures_delta);
+    }
+    panic!("unreachable actual capture action {label}");
+}
+
 const STATES: &[&str] = &[
     "normal",
     "empty",
@@ -334,6 +409,8 @@ const STATES: &[&str] = &[
     "stale",
     "error",
     "legacy",
+    "long-content",
+    "many-layers",
 ];
 
 /// Explicit fixtures, not captured user configuration or real transport errors.
@@ -364,6 +441,26 @@ fn state_fixture(state: &str) -> (super::Controller, super::Receiver<super::Acti
     app.message.clear();
     match state {
         "normal" => {}
+        "long-content" => {
+            let mut long = doc.clone();
+            long.name = "A deliberately long development setup name that must not hide Save".into();
+            long.layers[1].name =
+                "A deliberately long status-layer name with useful context".into();
+            long.layers[1].variants[0].name =
+                "Working across a deliberately long custom appearance name".into();
+            app.setup_editor.load(Some(long));
+        }
+        "many-layers" => {
+            let mut many = doc.clone();
+            for index in 0..24 {
+                let mut layer = doc.layers[0].clone();
+                layer.id = format!("snapshot-ambient-{index}");
+                layer.name = format!("Ambient layer {index:02}");
+                many.layers.insert(0, layer);
+            }
+            app.setup_editor.load(Some(many));
+            app.setup_editor.selected = Some("pi-status".into());
+        }
         "empty" => app.setup_editor.load(Some(
             starter(Starter::Blank, "empty".into(), "Blank".into()).unwrap(),
         )),

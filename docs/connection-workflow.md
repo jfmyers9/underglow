@@ -37,7 +37,7 @@ Diagnostics remain available from the header; engine settings remain separate.
 
 ## Share without switching
 
-Choose **Change setup...**, then **Share setups**. The explicit import/export
+Open the **setup-name switcher**, then **Share setups**. The explicit import/export
 window preserves the strict existing setup format and local-file/paste routes.
 An imported source role still requires a local connection and an explicit
 instance choice, including disabled layers and appearances.

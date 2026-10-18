@@ -10,14 +10,14 @@ The header shows the current draft's name and whether it has **Unsaved changes**
 4. After saving, lighting stays paused. **Resume lighting** is a separate,
    explicit action. In development simulation, physical lighting is disabled.
 
-While editing with lighting active, **Uses saved: …** identifies the version the
-keyboard uses. The preview shows the draft, not physical-device feedback.
+The output control's details identify the saved version the keyboard uses,
+separately from the draft. The preview is not physical-device feedback.
 Offline, editing and preview testing remain available; saving requires an engine
 connection. Pending requests do not silently discard or acknowledge later edits.
 
 ## Name, copy, create or open
 
-Choose **Change setup...** to open the setup browser. Selecting an item only
+Choose the **setup-name switcher** to open its browser. Selecting an item only
 browses it; **Open saved setup** is the explicit opening action.
 
 - **Name draft** uses the entered name for the local draft. Persist that change
