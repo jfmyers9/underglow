@@ -52,6 +52,9 @@ mod workspace_test_ui;
 #[cfg(test)]
 #[path = "gui/workspace_tests.rs"]
 mod workspace_tests;
+#[cfg(test)]
+#[path = "gui/visual_keyboard_tests.rs"]
+mod visual_keyboard_tests;
 use brand::{ACCENT, BG, BORDER, INK, MUTED, SURFACE, card, configure_style};
 use serde::Deserialize;
 use std::{
