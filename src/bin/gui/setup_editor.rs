@@ -1064,9 +1064,8 @@ impl Editor {
 
     fn show_body(&mut self, ui: &mut egui::Ui, standalone: bool) -> Option<Intent> {
         let mut intent = None;
-        // Workspace-specific density uses the production fonts/colors, not a test-only style.
-        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-        ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
+        // Use the shared production metrics; bounded panes own scrolling,
+        // rather than shrinking controls through a second density theme.
         ui.horizontal_wrapped(|ui| {
             if standalone {
                 intent = self.show_save_controls(ui);

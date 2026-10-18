@@ -257,7 +257,7 @@ mod tests {
             let mut second = Harness::new(size);
             assert_eq!(
                 first.context.style().spacing.item_spacing,
-                egui::vec2(12.0, 12.0)
+                egui::vec2(8.0, 8.0)
             );
             let mut times = Vec::new();
             let mut record = |harness: &mut Harness| {

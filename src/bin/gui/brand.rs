@@ -1,17 +1,17 @@
 //! Shared application chrome. Effect colors remain owned by the renderer.
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind};
 
-pub const BG: Color32 = Color32::from_rgb(10, 11, 17);
-pub const SURFACE: Color32 = Color32::from_rgb(19, 21, 31);
-pub const RAISED: Color32 = Color32::from_rgb(29, 32, 46);
-pub const BORDER: Color32 = Color32::from_rgb(53, 58, 77);
-pub const GLINT: Color32 = Color32::from_rgb(83, 90, 113);
-pub const INK: Color32 = Color32::from_rgb(239, 242, 250);
-pub const MUTED: Color32 = Color32::from_rgb(165, 173, 194);
-pub const ACCENT: Color32 = Color32::from_rgb(104, 218, 255);
-pub const SUCCESS: Color32 = Color32::from_rgb(110, 230, 170);
-pub const WARNING: Color32 = Color32::from_rgb(255, 201, 116);
-pub const ERROR: Color32 = Color32::from_rgb(255, 143, 161);
+pub const BG: Color32 = Color32::from_rgb(21, 24, 27);
+pub const SURFACE: Color32 = Color32::from_rgb(27, 31, 35);
+pub const RAISED: Color32 = Color32::from_rgb(39, 45, 51);
+pub const BORDER: Color32 = Color32::from_rgb(52, 60, 68);
+pub const GLINT: Color32 = Color32::from_rgb(119, 129, 139);
+pub const INK: Color32 = Color32::from_rgb(240, 243, 246);
+pub const MUTED: Color32 = Color32::from_rgb(174, 184, 194);
+pub const ACCENT: Color32 = Color32::from_rgb(137, 206, 230);
+pub const SUCCESS: Color32 = Color32::from_rgb(136, 211, 170);
+pub const WARNING: Color32 = Color32::from_rgb(239, 193, 124);
+pub const ERROR: Color32 = Color32::from_rgb(240, 153, 163);
 const SPECTRUM: [Color32; 6] = [
     Color32::from_rgb(52, 132, 255),
     Color32::from_rgb(149, 87, 255),
@@ -89,23 +89,15 @@ pub fn spectrum(painter: &egui::Painter, rect: Rect, opacity: f32) {
 
 pub fn divider(ui: &mut egui::Ui) {
     let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 7.0), egui::Sense::hover());
-    spectrum(ui.painter(), rect.shrink2(egui::vec2(0.0, 1.0)), 0.06);
-    spectrum(ui.painter(), rect.shrink2(egui::vec2(0.0, 3.0)), 0.65);
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0, BORDER);
 }
 
 pub fn card() -> egui::Frame {
     egui::Frame::new()
         .fill(SURFACE)
-        .stroke(Stroke::new(1.0, BORDER))
-        .corner_radius(16)
-        .inner_margin(20)
-        .shadow(egui::epaint::Shadow {
-            offset: [0, 4],
-            blur: 16,
-            spread: 0,
-            color: Color32::from_black_alpha(45),
-        })
+        .corner_radius(6)
+        .inner_margin(16)
 }
 
 pub fn keyboard_shell(painter: &egui::Painter, rect: Rect, inset: f32) {
@@ -144,16 +136,16 @@ pub fn configure_style(context: &egui::Context) {
     style.visuals = egui::Visuals::dark();
     style.visuals.panel_fill = BG;
     style.visuals.window_fill = SURFACE;
-    style.visuals.extreme_bg_color = BG;
+    style.visuals.extreme_bg_color = RAISED;
     style.visuals.faint_bg_color = RAISED;
     style.visuals.window_stroke = Stroke::new(1.0, BORDER);
-    style.visuals.window_corner_radius = 16.into();
-    style.visuals.menu_corner_radius = 10.into();
+    style.visuals.window_corner_radius = 8.into();
+    style.visuals.menu_corner_radius = 6.into();
     style.visuals.override_text_color = Some(INK);
     style.visuals.warn_fg_color = WARNING;
     style.visuals.error_fg_color = ERROR;
     style.visuals.hyperlink_color = ACCENT;
-    style.visuals.selection.bg_fill = Color32::from_rgb(29, 64, 83);
+    style.visuals.selection.bg_fill = Color32::from_rgb(36, 62, 72);
     style.visuals.selection.stroke = Stroke::new(1.0, ACCENT);
     let widgets = &mut style.visuals.widgets;
     for visual in [
@@ -163,28 +155,34 @@ pub fn configure_style(context: &egui::Context) {
         &mut widgets.active,
         &mut widgets.open,
     ] {
-        visual.corner_radius = 8.into();
+        visual.corner_radius = 5.into();
         visual.bg_stroke = Stroke::new(1.0, BORDER);
         visual.fg_stroke.color = INK;
         visual.expansion = 0.0;
     }
     widgets.noninteractive.bg_fill = SURFACE;
     widgets.noninteractive.weak_bg_fill = SURFACE;
+    // Idle controls use a quiet field surface; keyboard focus has an explicit
+    // high-contrast outline via the active visual instead of outlining everything.
+    widgets.inactive.bg_stroke = Stroke::NONE;
     widgets.inactive.bg_fill = RAISED;
     widgets.inactive.weak_bg_fill = RAISED;
-    widgets.hovered.bg_fill = Color32::from_rgb(39, 45, 64);
+    widgets.hovered.bg_fill = Color32::from_rgb(49, 58, 66);
     widgets.hovered.weak_bg_fill = widgets.hovered.bg_fill;
     widgets.hovered.bg_stroke.color = ACCENT;
-    widgets.active.bg_fill = Color32::from_rgb(35, 57, 76);
+    widgets.active.bg_fill = Color32::from_rgb(36, 62, 72);
     widgets.active.weak_bg_fill = widgets.active.bg_fill;
-    widgets.active.bg_stroke.color = ACCENT;
-    widgets.open.bg_fill = RAISED;
+    widgets.active.bg_stroke = Stroke::new(2.0, ACCENT);
+    widgets.open.bg_fill = Color32::from_rgb(36, 62, 72);
+    widgets.open.bg_stroke = Stroke::new(1.0, ACCENT);
     widgets.open.weak_bg_fill = RAISED;
     style.visuals.slider_trailing_fill = true;
-    style.spacing.item_spacing = egui::vec2(12.0, 12.0);
-    style.spacing.button_padding = egui::vec2(16.0, 10.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.interact_size.y = 28.0;
     for (text, size) in [
-        (egui::TextStyle::Body, 15.0),
+        (egui::TextStyle::Body, 14.0),
+        (egui::TextStyle::Heading, 18.0),
         (egui::TextStyle::Button, 14.0),
         (egui::TextStyle::Small, 12.0),
     ] {
@@ -198,6 +196,26 @@ pub fn configure_style(context: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_style_has_quiet_idle_controls_and_visible_focus() {
+        let context = egui::Context::default();
+        configure_style(&context);
+        let style = context.style();
+        assert_eq!(style.spacing.item_spacing, egui::vec2(8.0, 8.0));
+        assert_eq!(style.spacing.interact_size.y, 28.0);
+        assert_eq!(style.text_styles[&egui::TextStyle::Body].size, 14.0);
+        assert_eq!(style.text_styles[&egui::TextStyle::Heading].size, 18.0);
+        assert_eq!(style.visuals.widgets.inactive.bg_stroke, Stroke::NONE);
+        assert_eq!(
+            style.visuals.widgets.active.bg_stroke,
+            Stroke::new(2.0, ACCENT)
+        );
+        assert_ne!(
+            style.visuals.widgets.hovered.bg_fill,
+            style.visuals.widgets.inactive.bg_fill
+        );
+    }
 
     #[test]
     fn main_page_and_settings_share_one_cached_icon_texture() {
