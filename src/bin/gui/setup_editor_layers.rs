@@ -187,6 +187,19 @@ impl Editor {
                         });
                     });
                 }
+                if let Some(response) = ui
+                    .memory(|memory| memory.focused())
+                    .and_then(|id| ui.ctx().read_response(id))
+                    && response.gained_focus()
+                    && response.layer_id == ui.layer_id()
+                    && ui.min_rect().contains_rect(response.rect)
+                    && response.interact_rect != response.rect
+                    && response.interact_rect == response.rect.intersect(ui.clip_rect())
+                {
+                    // Reveal real list focus without letting scrolled content
+                    // geometrically capture pinned toolbar or canvas controls.
+                    response.scroll_to_me(None);
+                }
             });
     }
 }

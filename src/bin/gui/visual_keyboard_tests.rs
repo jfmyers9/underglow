@@ -348,3 +348,127 @@ fn pinned_save_focus_does_not_move_a_scrolled_inspector() {
         assert!(incoming.try_recv().is_err());
     }
 }
+
+#[test]
+fn overflowing_layer_list_tab_and_reverse_tab_reveal_focus_without_moving_pinned_controls() {
+    fn pinned(frame: &Frame) -> [egui::Rect; 2] {
+        let texts = frame.texts();
+        ["Save", "F1"].map(|label| {
+            let text = texts
+                .iter()
+                .find(|text| text.text == label && text.fully_visible())
+                .unwrap_or_else(|| panic!("pinned {label} must remain visible"));
+            text.rect
+        })
+    }
+    const LAYERS: usize = 24;
+    for size in [DEFAULT_SIZE, WIDE_SIZE] {
+        let (mut app, incoming) = app();
+        let mut document = app.setup_editor.draft.clone().unwrap();
+        let original = document.layers[0].clone();
+        document.layers = (0..LAYERS)
+            .map(|index| {
+                let mut layer = original.clone();
+                layer.id = format!("focus-layer-{index:02}");
+                layer.name = format!("Layer {index:02}");
+                layer
+            })
+            .collect();
+        app.setup_editor.load(Some(document));
+        app.setup_editor
+            .name_draft("Overflow focus draft".into())
+            .unwrap();
+        let mut harness = Harness::new(size);
+        let first = harness.settle(|ctx| app.show_lighting(ctx));
+        let fixed = pinned(&first);
+        let list_clip = first
+            .texts()
+            .into_iter()
+            .find(|text| {
+                text.text.starts_with("Layer ") && text.text.len() == 8 && text.fully_visible()
+            })
+            .expect("visible layer row")
+            .clip;
+        let style = harness.context.style();
+        let spacing = &style.spacing;
+        let content_height = LAYERS as f32 * (spacing.interact_size.y + spacing.item_spacing.y)
+            - spacing.item_spacing.y;
+        assert!(
+            content_height > list_clip.height(),
+            "exercise an overflowing list"
+        );
+        let draft = app.setup_editor.draft.clone();
+        let applied = app.setup_editor.applied.clone();
+        let selected = app.setup_editor.selected.clone();
+        let preview = app.setup_editor.preview.frame().clone();
+        let mut order = Vec::new();
+        let mut list_focus = Vec::new();
+        let mut names = Vec::new();
+        let mut complete = false;
+        for _ in 0..256 {
+            let frame = key(&mut harness, &mut app, egui::Key::Tab, false);
+            let response = focused(&harness, &frame);
+            assert_eq!(
+                pinned(&frame),
+                fixed,
+                "list focus cannot move Save or keyboard"
+            );
+            assert_eq!(app.setup_editor.draft, draft);
+            assert_eq!(app.setup_editor.applied, applied);
+            assert_eq!(app.setup_editor.selected, selected);
+            assert_eq!(app.setup_editor.preview.frame(), &preview);
+            assert!(incoming.try_recv().is_err());
+            if order.first() == Some(&response.id) {
+                complete = true;
+                break;
+            }
+            assert!(
+                !order.contains(&response.id),
+                "no partial keyboard focus cycle"
+            );
+            order.push(response.id);
+            if list_clip.contains_rect(response.rect) {
+                list_focus.push(response.id);
+                for text in frame.texts().into_iter().filter(|text| {
+                    text.text.starts_with("Layer ")
+                        && text.text.len() == 8
+                        && response.rect.contains_rect(text.rect)
+                }) {
+                    assert!(text.fully_visible());
+                    if !names.contains(&text.text) {
+                        names.push(text.text);
+                    }
+                }
+            }
+        }
+        assert!(complete, "complete the actual Tab order at {size:?}");
+        assert_eq!(
+            names.len(),
+            LAYERS,
+            "Tab reaches every layer name at {size:?}"
+        );
+        assert_eq!(
+            list_focus.len(),
+            LAYERS * 3,
+            "each enable control, layer button and overflow menu participates"
+        );
+        for expected in order.iter().rev() {
+            let frame = key(&mut harness, &mut app, egui::Key::Tab, true);
+            let response = focused(&harness, &frame);
+            assert_eq!(
+                response.id, *expected,
+                "Shift-Tab reverses the actual focus order"
+            );
+            assert_eq!(
+                pinned(&frame),
+                fixed,
+                "reverse list focus cannot move pinned controls"
+            );
+            assert_eq!(app.setup_editor.draft, draft);
+            assert_eq!(app.setup_editor.applied, applied);
+            assert_eq!(app.setup_editor.selected, selected);
+            assert_eq!(app.setup_editor.preview.frame(), &preview);
+            assert!(incoming.try_recv().is_err());
+        }
+    }
+}
