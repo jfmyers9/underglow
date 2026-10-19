@@ -30,8 +30,10 @@ For the editable Pi status template:
 No session IDs or TTLs need to be entered. Exact conditions use their configured
 identity only inside the private test; any-instance conditions use a synthetic
 identity. Lease lengths respect the declared source TTL range (up to 15 seconds
-when that range permits it). Events and transitions retain their actual runtime
-duration and source-deadline caps. Facts are never automatically renewed.
+when that range permits it). A fresh event starts the appearance's configured
+display duration, even after its event lease expires; this never creates
+persistent source state. State-transition windows remain source-lease-capped.
+Facts are never automatically renewed.
 
 Tests start playing so Matrix and other animations keep advancing. **Pause test**
 freezes animation, leases and transient time; **Play test** resumes without

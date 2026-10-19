@@ -33,6 +33,12 @@ logical layer share its target.
 For a layer with multiple appearances, **Editing** chooses which one to change.
 Pi has **Idle / fallback**, **Working** and **Finished (settled, not success)**.
 Choose an effect and its supported parameters, then adjust brightness.
+Event appearances such as Finished also show **Show for** under Looks. Enter
+the display duration in seconds (up to 60, with millisecond precision); the Pi
+default remains 2 seconds. This differs from the sweep's cycle speed. Save
+persists the value for that appearance without changing the plugin or enabling
+lighting. Fresh-event acceptance, session expiry/removal and no-replay guards
+still apply.
 
 Brightness is displayed/entered as a percentage; existing saved 0–255 values
 are preserved exactly until edited. **Use layer brightness** keeps an appearance

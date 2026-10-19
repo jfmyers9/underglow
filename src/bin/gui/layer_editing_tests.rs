@@ -493,3 +493,79 @@ fn default_lower_inspector_keeps_all_section_summaries_and_source_repair_visible
     assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
     assert!(incoming.try_recv().is_err());
 }
+
+#[test]
+fn finished_duration_is_edited_in_looks_in_seconds_and_saves_only_that_appearance() {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
+        let (mut app, incoming) = app();
+        let doc = underglow::setup_library::starter(
+            underglow::setup_library::Starter::MatrixPi,
+            "duration-ui".into(),
+            "Duration UI".into(),
+        )
+        .unwrap();
+        app.setup_editor.load(Some(doc.clone()));
+        app.setup_editor.selected = Some("pi-status".into());
+        let mut h = Harness::new(size);
+        click(&mut h, &mut app, "Idle / fallback");
+        click(&mut h, &mut app, "Finished (settled, not success)");
+        // Reach the real value through the inset inspector's own scrolling.
+        click(&mut h, &mut app, "Show for");
+        let frame = h.settle(|ctx| app.show_lighting(ctx));
+        let value = frame
+            .texts()
+            .into_iter()
+            .find(|t| t.text.ends_with(" s") && t.fully_visible())
+            .expect("seconds control");
+        h.click_at(value.rect.center(), |ctx| app.show_lighting(ctx));
+        h.run(
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        command: true,
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                },
+                egui::Event::Text("5.25".into()),
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            |ctx| app.show_lighting(ctx),
+        );
+        h.settle(|ctx| app.show_lighting(ctx));
+        let mut expected = doc.clone();
+        if let Activation::OnEvent { duration_ms, .. } =
+            &mut expected.layers[1].variants[1].activation
+        {
+            *duration_ms = 5250;
+        }
+        assert_eq!(
+            app.setup_editor.draft.as_ref(),
+            Some(&expected),
+            "only duration changes at {size:?}"
+        );
+        assert_eq!(app.setup_editor.applied.as_ref(), Some(&doc));
+        assert!(app.setup_editor.dirty);
+        assert!(
+            incoming.try_recv().is_err(),
+            "editing must never activate or publish"
+        );
+        click(&mut h, &mut app, "Save");
+        let Action::SetupReplace { document, .. } = incoming.try_recv().expect("explicit save")
+        else {
+            panic!("duration must use the ordinary canonical Save");
+        };
+        assert_eq!(document, expected);
+        assert!(incoming.try_recv().is_err());
+    }
+}

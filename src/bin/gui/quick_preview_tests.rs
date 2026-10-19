@@ -314,3 +314,40 @@ fn configured_unknown_facts_are_not_promoted_and_custom_transitions_keep_exact_i
     );
     assert_eq!(preview.evaluation_facts().0, &before);
 }
+
+#[test]
+fn finished_test_uses_edited_display_duration_beyond_event_freshness_without_creating_presence() {
+    let mut doc = document();
+    if let Activation::OnEvent { duration_ms, .. } = &mut doc.layers[1].variants[1].activation {
+        *duration_ms = 5000;
+    }
+    let registry = CapabilityRegistry::with_builtins();
+    let finished = action(&doc, &registry, "Finished");
+    assert_eq!(finished.ttl_ms, 2000, "transport freshness remains short");
+    let mut preview = Preview::default();
+    preview
+        .run_quick(&doc, &doc.layers[1], &finished, 255)
+        .unwrap();
+    preview.set_scenario_playing(false);
+    for now in [1999, 2000, 4999] {
+        preview
+            .quick
+            .scenario
+            .advance_to(Duration::from_millis(now))
+            .unwrap();
+        preview.update_at(Some(&doc), 255, Duration::ZERO);
+        assert_eq!(key(&preview), Color::new(0, 255, 0), "at {now}ms");
+        assert!(preview.evaluation_facts().0.states.is_empty());
+        assert!(
+            preview.sample().is_none(),
+            "private tests must not become live facts"
+        );
+    }
+    preview
+        .quick
+        .scenario
+        .advance_to(Duration::from_millis(5000))
+        .unwrap();
+    preview.update_at(Some(&doc), 255, Duration::ZERO);
+    assert_eq!(key(&preview), Color::new(8, 8, 16));
+}

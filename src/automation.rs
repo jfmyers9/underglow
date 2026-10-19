@@ -274,6 +274,7 @@ pub struct AutomationRuntime {
     now: Duration,
     initialized: bool,
     follow_state_leases: bool,
+    configured_event_durations: bool,
     leased_identities: Vec<Option<Identity>>,
 }
 
@@ -296,13 +297,21 @@ impl AutomationRuntime {
             now: Duration::ZERO,
             initialized: false,
             follow_state_leases: false,
+            configured_event_durations: false,
         })
     }
 
     /// Logical behaviors additionally hide state-backed transients on removal.
-    /// Event-only producers continue to use the event's own bounded lease.
+    /// Configured event windows still stop if their emitting session disappears.
     pub(crate) fn follow_state_leases(mut self) -> Self {
         self.follow_state_leases = true;
+        self
+    }
+
+    /// Canonical appearances own the display window of a freshly accepted event.
+    /// Keep the legacy standalone automation evaluator lease-capped.
+    pub(crate) fn configured_event_durations(mut self) -> Self {
+        self.configured_event_durations = true;
         self
     }
 
@@ -419,13 +428,17 @@ impl AutomationRuntime {
     ) {
         self.now = now;
         for (index, rule) in self.config.rules.iter().enumerate() {
+            let configured_event =
+                self.configured_event_durations && rule.mode == RuleMode::OnEvent;
             if self.leased_identities[index]
                 .as_ref()
                 .is_some_and(|identity| {
-                    !snapshot
-                        .states
-                        .iter()
-                        .any(|state| state.identity == *identity && state.expires_at > now)
+                    !snapshot.states.iter().any(|state| {
+                        state.identity == *identity && state.expires_at > now
+                        // A later renewal must not bridge an unobserved expiry gap.
+                        && (!configured_event || self.previous.get(identity)
+                            .is_none_or(|old| state.updated_at < old.expires_at))
+                    })
                 })
             {
                 self.activations[index] = None;
@@ -484,8 +497,7 @@ impl AutomationRuntime {
                     });
                 }
             } else if let Some((started, lease)) = occurrence {
-                let state_lease = self
-                    .follow_state_leases
+                let state_lease = (self.follow_state_leases || configured_event)
                     .then(|| {
                         snapshot
                             .states
@@ -494,11 +506,19 @@ impl AutomationRuntime {
                     })
                     .flatten();
                 self.leased_identities[index] = state_lease.map(|state| state.identity.clone());
-                let expires = started
-                    .saturating_add(Duration::from_millis(rule.duration_ms.unwrap()))
-                    .min(lease)
-                    .min(state_lease.map_or(Duration::MAX, |state| state.expires_at));
-                if expires > now {
+                let deadline =
+                    started.saturating_add(Duration::from_millis(rule.duration_ms.unwrap()));
+                let expires = if configured_event {
+                    // Event TTL gates acceptance, not an already-running visual.
+                    // Fresh state renewals keep the emitter present but never move
+                    // this fixed deadline. Removal/expiry is checked above.
+                    deadline
+                } else {
+                    deadline
+                        .min(lease)
+                        .min(state_lease.map_or(Duration::MAX, |state| state.expires_at))
+                };
+                if expires > now && state_lease.is_none_or(|state| state.expires_at > now) {
                     self.activations[index] = Some(Activation {
                         started,
                         expires: Some(expires),

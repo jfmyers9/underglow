@@ -616,3 +616,50 @@ fn export_connection_snapshots() {
         }
     }
 }
+
+#[test]
+#[ignore = "opt-in Finished duration captures; set UNDERGLOW_FINISHED_SNAPSHOTS"]
+fn export_finished_duration_snapshots() {
+    use super::workspace_test_ui::Harness;
+    let destination = std::path::PathBuf::from(
+        std::env::var_os("UNDERGLOW_FINISHED_SNAPSHOTS")
+            .expect("set UNDERGLOW_FINISHED_SNAPSHOTS to an explicit output directory"),
+    );
+    std::fs::create_dir_all(&destination).unwrap();
+    for size in [[940, 850], [620, 640], [1280, 800]] {
+        let (mut app, incoming) = state_fixture("normal");
+        let mut doc = app.setup_editor.draft.clone().unwrap();
+        if let underglow::setup::Activation::OnEvent { duration_ms, .. } =
+            &mut doc.layers[1].variants[1].activation
+        {
+            *duration_ms = 5250;
+        }
+        app.setup_editor.load(Some(doc));
+        app.setup_editor
+            .preview
+            .set_mode(super::setup_preview::Mode::Live);
+        let mut harness = Harness::new(egui::vec2(size[0] as f32, size[1] as f32));
+        let mut capture = Capture::new(size);
+        for label in [
+            "Idle / fallback",
+            "Finished (settled, not success)",
+            "Test behavior…",
+            "Finished",
+            "Pause test",
+        ] {
+            capture_click_label(&mut capture, &mut harness, &mut app, label);
+        }
+        for index in 0..30 {
+            let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+            capture.update_textures(&frame.output.textures_delta);
+            if index == 29 {
+                capture.paint(&harness.context, frame.output);
+            }
+        }
+        assert!(incoming.try_recv().is_err());
+        assert!(app.setup_editor.preview.sample().is_none());
+        let path = destination.join(format!("finished-duration-{}x{}.png", size[0], size[1]));
+        std::fs::write(&path, capture.png()).unwrap();
+        eprintln!("Headless software capture (not native): {}", path.display());
+    }
+}

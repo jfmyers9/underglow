@@ -781,14 +781,14 @@ mod tests {
             },
             20,
         );
-        for now in [20, 119, 120] {
+        for now in [20, 119, 120, 319, 320] {
             runtime.observe(
                 &registry.snapshot(),
                 &registry.events_since(0),
                 Duration::from_millis(now),
             );
             let captured = coverage(&runtime, &registry, now);
-            if now < 120 {
+            if now < 320 {
                 assert_eq!(
                     captured.layers[1].selected_variant.as_deref(),
                     Some("finished")
@@ -796,7 +796,7 @@ mod tests {
                 assert_eq!(captured.layers[0].status, CoverageStatus::PartiallyObscured);
                 assert_eq!(
                     captured.layers[1].deadline.unwrap().at,
-                    Duration::from_millis(120)
+                    Duration::from_millis(320)
                 );
                 assert!(
                     captured
@@ -997,15 +997,15 @@ mod tests {
         assert_eq!(active.layers[0].status, CoverageStatus::Visible);
         assert_eq!(
             active.layers[0].deadline.unwrap().at,
-            Duration::from_millis(120)
+            Duration::from_millis(320)
         );
         runtime.observe(
             &registry.snapshot(),
             &registry.events_since(0),
-            Duration::from_millis(120),
+            Duration::from_millis(320),
         );
         assert!(
-            coverage(&runtime, &registry, 120).layers[0]
+            coverage(&runtime, &registry, 320).layers[0]
                 .deadline
                 .is_none()
         );
@@ -1191,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_transient_uses_cached_deadline_clamped_to_trigger_lease_and_disappears_at_expiry() {
+    fn coverage_event_window_reports_configured_deadline_but_disappears_on_source_expiry() {
         let mut registry = Registry::default();
         state(&mut registry, "pi", "session", "working", 250);
         let mut runtime = CompiledSetup::compile(&document()).unwrap();
@@ -1226,8 +1226,8 @@ mod tests {
             green.layers[1].deadline,
             Some(CoverageDeadline {
                 kind: DeadlineKind::Transient,
-                at: Duration::from_millis(250),
-                remaining: Duration::from_millis(240),
+                at: Duration::from_millis(310),
+                remaining: Duration::from_millis(300),
             })
         );
         runtime.observe(
@@ -1240,7 +1240,7 @@ mod tests {
                 .deadline
                 .unwrap()
                 .remaining,
-            Duration::from_millis(1)
+            Duration::from_millis(61)
         );
         registry.expire(Duration::from_millis(250)).unwrap();
         runtime.observe(

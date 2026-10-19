@@ -104,9 +104,13 @@ See [descriptor schema and validation](../../docs/source-capabilities.md).
   pending completion. Socket requests have a 500 ms hard deadline, replies are
   capped at 4 KiB, and reconnect backs off from 250 ms to 5 seconds. Timers and
   sockets are unreferenced and cannot keep Pi alive by themselves.
-- Completion expires two seconds after settlement, with its remaining lifetime
-  sent as `ttl_ms`. Once attempted it is **never retried**, even if its ACK is
-  lost. This intentionally favors a missed flash over duplicate/stale completion.
+- Unsent completion expires two seconds after settlement, with its remaining
+  freshness lifetime sent as `ttl_ms`. Once attempted it is **never retried**,
+  even if its ACK is lost. This favors a missed notification over replay.
+  A freshly accepted event runs for the Finished appearance's **Looks → Show for**
+  duration (default 2 seconds, up to 60), saved in the setup. Event freshness and
+  animation duration are separate; an emitting session disappearing still ends
+  its state-backed appearance.
 - Quit, reload, and session replacement stop renewal, cancel pending work, and
   attempt removal once. Shutdown waits at most 250 ms for that attempt, then
   destroys resources. Removal failure falls back to lease expiry.

@@ -8,7 +8,7 @@ and reserves the **80HE ANSI function zone** for Pi:
 | No leased Pi session | Matrix, like the rest of the keyboard |
 | At least one session open | Dim cyan |
 | Any session working | Blue traveling sweep |
-| A session finishes | Green sweep for up to two seconds, then current state |
+| A session finishes | Green sweep for the configured duration (default two seconds), then current state |
 
 With several sessions, working wins over idle. A completion briefly wins over
 both, even if another session is still working; afterward blue returns if needed.
@@ -187,11 +187,15 @@ does not replace Matrix, Aurora, custom targets, or other layers. Use the target
 canvas, zones, keys or groups to move all Pi appearances together. Stack order is
 bottom to top, so place it above whichever supported background you prefer.
 
-The base/fallback appearance is dim cyan while a Pi session is present. In
-**Behavior appearances**, select Working to change its blue sweep or Finished
-to change its green sweep and two-second event duration. Colors, renderers,
-brightness, sweep periods and conditions are ordinary editable data. The
-finished event means **settled, not success**; there are no approval/focus facts.
+The base/fallback appearance is dim cyan while a Pi session is present. Under
+**Looks → Editing**, choose Working to change its blue sweep, or
+**Finished (settled, not success)** to change its green sweep. **Show for** sets
+Finished's display duration in seconds (up to 60; default 2). **Cycle duration
+(ms)** controls sweep speed instead. The display duration is saved with that
+appearance, not as a global Pi-plugin setting. The event must be fresh to start
+an animation, but its two-second transport lease no longer cuts an accepted
+animation short. A reporting session disappearing still stops its appearance.
+Finished means **settled, not success**; no approval/focus facts are assumed.
 By default each condition selects any session. To bind one exact session, choose
 its instance in the base condition and both appearance conditions; exact IDs can
 be ephemeral. Any working session beats idle; a completion briefly wins over

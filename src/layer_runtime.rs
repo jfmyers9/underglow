@@ -222,7 +222,9 @@ impl CompiledSetup {
                 zones: target_zones,
                 simulation,
                 variant_simulations,
-                variant_conditions: AutomationRuntime::new(variant_config)?.follow_state_leases(),
+                variant_conditions: AutomationRuntime::new(variant_config)?
+                    .follow_state_leases()
+                    .configured_event_durations(),
             });
         }
         if analog_count > 1 {
@@ -233,7 +235,7 @@ impl CompiledSetup {
         requirements.analog_input = analog_count == 1;
         Ok(Self {
             layers,
-            conditions: AutomationRuntime::new(conditions)?,
+            conditions: AutomationRuntime::new(conditions)?.configured_event_durations(),
             requirements,
             input_available: true,
         })
@@ -1429,7 +1431,7 @@ mod tests {
     }
 
     #[test]
-    fn state_backed_transients_cap_to_original_lease_and_hide_on_emitting_session_removal() {
+    fn state_backed_event_windows_follow_current_presence_without_restarting_and_hide_on_removal() {
         let mut definition = behavior();
         if let Activation::OnEvent { duration_ms, .. } = &mut definition.variants[0].activation {
             *duration_ms = 500;
@@ -1443,12 +1445,16 @@ mod tests {
         observe(&mut runtime, &mut registry, 10);
         assert_eq!(
             runtime.selected_appearance("sessions").unwrap().expires,
-            Some(Duration::from_millis(50))
+            Some(Duration::from_millis(510))
         );
         fact(&mut registry, "a", 3, state("working", 500), 20);
         observe(&mut runtime, &mut registry, 20);
         observe(&mut runtime, &mut registry, 50);
-        assert_eq!(selected(&runtime), Some("working")); // heartbeat cannot extend completion
+        assert_eq!(selected(&runtime), Some("finished")); // renewal keeps presence, not a new event
+        assert_eq!(
+            runtime.selected_appearance("sessions").unwrap().expires,
+            Some(Duration::from_millis(510))
+        );
         fact(&mut registry, "a", 4, event(500), 60);
         observe(&mut runtime, &mut registry, 60);
         assert_eq!(selected(&runtime), Some("finished"));
@@ -1507,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn event_only_behavior_obeys_event_lease_disabled_variants_and_base_fallback() {
+    fn event_only_behavior_obeys_configured_window_disabled_variants_and_base_fallback() {
         let mut definition = behavior();
         definition.variants[0].brightness = Some(128);
         let mut runtime = CompiledSetup::compile(&document(vec![definition.clone()])).unwrap();
@@ -1521,18 +1527,20 @@ mod tests {
             128
         );
         observe(&mut runtime, &mut registry, 21);
+        assert_eq!(selected(&runtime), Some("finished"));
+        observe(&mut runtime, &mut registry, 51);
         assert!(runtime.selected_appearance("sessions").is_none());
-        fact(&mut registry, "a", 2, state("unknown-state", 50), 22);
-        observe(&mut runtime, &mut registry, 22);
+        fact(&mut registry, "a", 2, state("unknown-state", 50), 52);
+        observe(&mut runtime, &mut registry, 52);
         assert_eq!(
             runtime.selected_appearance("sessions").unwrap().variant_id,
             None
         );
         definition.variants[0].enabled = false;
         let mut runtime = CompiledSetup::compile(&document(vec![definition.clone()])).unwrap();
-        runtime.baseline(&registry.snapshot(), Duration::from_millis(22));
-        fact(&mut registry, "a", 3, event(50), 23);
-        observe(&mut runtime, &mut registry, 23);
+        runtime.baseline(&registry.snapshot(), Duration::from_millis(52));
+        fact(&mut registry, "a", 3, event(50), 53);
+        observe(&mut runtime, &mut registry, 53);
         assert_eq!(
             runtime.selected_appearance("sessions").unwrap().variant_id,
             None
@@ -2473,3 +2481,7 @@ mod tests {
         assert_eq!(color(&runtime), Color::new(77, 0, 0));
     }
 }
+
+#[cfg(test)]
+#[path = "layer_event_duration_tests.rs"]
+mod event_duration_tests;

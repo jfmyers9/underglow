@@ -385,9 +385,7 @@ fn condition(ui: &mut Ui, activation: &mut Activation, choices: &Choices<'_>) {
                     .then_some("Source is present (any live state)"),
             );
         }
-        Activation::OnEvent {
-            event, duration_ms, ..
-        } => {
+        Activation::OnEvent { event, .. } => {
             let mut value = Some(event.clone());
             fact_picker(
                 ui,
@@ -399,7 +397,6 @@ fn condition(ui: &mut Ui, activation: &mut Activation, choices: &Choices<'_>) {
             if let Some(value) = value {
                 *event = value;
             }
-            duration(ui, duration_ms);
         }
         Activation::OnTransition {
             from_state,
@@ -442,6 +439,20 @@ fn condition_warnings(ui: &mut Ui, activation: &Activation, registry: &Capabilit
         }
     }
 }
+fn event_duration(ui: &mut Ui, ms: &mut u64) {
+    // Seconds are presentation only; preserve exact saved milliseconds until
+    // the user actually edits the control.
+    let mut seconds = *ms as f64 / 1000.0;
+    setup_inspector::field(ui, "Show for", |ui| {
+        if ui.add(egui::DragValue::new(&mut seconds).range(0.001..=60.0)
+            .clamp_existing_to_range(false).speed(0.1).max_decimals(3).suffix(" s"))
+            .on_hover_text("Display duration after a fresh event. A reporting session disappearing stops its appearance sooner. This does not change event freshness or enable lighting.")
+            .changed() {
+            *ms = (seconds * 1000.0).round().clamp(1.0, 60_000.0) as u64;
+        }
+    });
+}
+
 fn duration(ui: &mut Ui, ms: &mut u64) {
     setup_inspector::field(ui, "Transient duration (ms)", |ui| {
         ui.add(egui::Slider::new(ms, 1..=60_000));
@@ -602,6 +613,9 @@ impl BehaviorEditor {
                     .find(|v| Some(&v.id) == selected.as_ref())
                 {
                     setup_inspector::show_renderer_compact(ui, &mut variant.renderer);
+                    if let Activation::OnEvent { duration_ms, .. } = &mut variant.activation {
+                        event_duration(ui, duration_ms);
+                    }
                     let mut inherit = variant.brightness.is_none();
                     if ui.checkbox(&mut inherit, "Use layer brightness").changed() {
                         variant.brightness = (!inherit).then_some(layer.brightness);
@@ -611,6 +625,9 @@ impl BehaviorEditor {
                     }
                 } else {
                     setup_inspector::show_renderer_compact(ui, &mut layer.renderer);
+                    if let Activation::OnEvent { duration_ms, .. } = &mut layer.activation {
+                        event_duration(ui, duration_ms);
+                    }
                 }
             });
             setup_inspector::brightness_control(ui, &mut layer.brightness, "Layer brightness");
@@ -1160,7 +1177,24 @@ mod tests {
             duration_ms: 60_001,
         };
 
+        f.appearance = true;
         f.frame(vec![]);
+        assert!(
+            f.layer.activation.validate().is_err(),
+            "viewing must not silently repair invalid saved data"
+        );
+        let label = texts(&f.frame(vec![]))
+            .into_iter()
+            .find(|t| t.ends_with(" s"))
+            .unwrap();
+        f.replace_text(&label, "100");
+        f.frame(vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }]);
         assert!(matches!(
             f.layer.activation,
             Activation::OnEvent {
@@ -1168,13 +1202,27 @@ mod tests {
                 ..
             }
         ));
-        f.layer.activation = Activation::OnEvent {
-            source: "pi".into(),
-            instance: None,
-            event: "finished".into(),
-            duration_ms: 0,
-        };
+        if let Activation::OnEvent { duration_ms, .. } = &mut f.layer.activation {
+            *duration_ms = 0;
+        }
         f.frame(vec![]);
+        assert!(f.layer.activation.validate().is_err());
+        let label = texts(&f.frame(vec![]))
+            .into_iter()
+            .find(|t| t.ends_with(" s"))
+            .unwrap();
+        f.replace_text(&label, "-1");
+        f.frame(vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }]);
+        assert!(matches!(
+            f.layer.activation,
+            Activation::OnEvent { duration_ms: 1, .. }
+        ));
         f.layer.activation.validate().unwrap();
         f.snapshot.states = (0..300)
             .map(|i| state(&format!("s{i}"), "session", &format!("v{i}")))
@@ -1206,5 +1254,28 @@ mod tests {
         doc.validate().unwrap();
         doc.layers[0].activation = Activation::Always {};
         doc.validate().unwrap();
+    }
+
+    #[test]
+    fn viewing_event_durations_preserves_exact_saved_milliseconds() {
+        for ms in [1, 73, 999, 1234, 1999, 5250, 59_999, 60_000] {
+            let mut form = Form::new();
+            form.appearance = true;
+            form.layer.activation = Activation::OnEvent {
+                source: "pi".into(),
+                instance: None,
+                event: "finished".into(),
+                duration_ms: ms,
+            };
+            let before = form.layer.clone();
+            for _ in 0..3 {
+                form.frame(vec![]);
+            }
+            assert_eq!(
+                form.layer, before,
+                "viewing {ms}ms must not round or dirty a saved setup"
+            );
+            assert!(texts(&form.frame(vec![])).iter().any(|t| t == "Show for"));
+        }
     }
 }

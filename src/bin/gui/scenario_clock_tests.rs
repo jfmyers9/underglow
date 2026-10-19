@@ -194,8 +194,8 @@ fn coverage_countdowns_and_obscuration_follow_evaluation_clock_not_wall_time() {
     assert_eq!(baseline_deadline.kind, DeadlineKind::Transient);
     assert_eq!(
         baseline_deadline.remaining,
-        ms(150),
-        "trigger TTL caps duration"
+        ms(200),
+        "configured animation duration is separate from event freshness"
     );
     assert_eq!(
         p.coverage().unwrap().layers[1].status,
@@ -214,7 +214,7 @@ fn coverage_countdowns_and_obscuration_follow_evaluation_clock_not_wall_time() {
     );
     assert_eq!(p.frame(), &baseline_frame);
     assert_eq!(p.scenario.generation(), generation);
-    for (time, remaining) in [(149, 1), (150, 0)] {
+    for (time, remaining) in [(149, 51), (150, 50), (199, 1), (200, 0)] {
         p.scenario.advance_to(ms(time)).unwrap();
         render(&mut p, &doc);
         let coverage = p.coverage().unwrap();
@@ -230,7 +230,7 @@ fn coverage_countdowns_and_obscuration_follow_evaluation_clock_not_wall_time() {
             assert!(coverage.layers[5].deadline.is_none());
             assert_eq!(coverage.layers[5].status, CoverageStatus::Inactive);
             assert_eq!(coverage.layers[1].status, CoverageStatus::Visible);
-            assert_eq!(coverage.layers[1].deadline.unwrap().remaining, ms(250));
+            assert_eq!(coverage.layers[1].deadline.unwrap().remaining, ms(200));
         }
     }
     p.scenario.advance_to(ms(400)).unwrap();
@@ -289,7 +289,7 @@ fn paused_clock_freezes_all_animation_and_step_autopauses_without_catchup() {
 }
 
 #[test]
-fn replay_fixture_is_identical_and_retention_ttl_caps_duration_without_replay() {
+fn replay_fixture_is_identical_and_event_freshness_does_not_cap_display_duration() {
     let doc = document();
     let replay = || {
         let mut p = prepared(&doc);
@@ -309,7 +309,7 @@ fn replay_fixture_is_identical_and_retention_ttl_caps_duration_without_replay() 
             ));
             assert_eq!(
                 color(&p, "A"),
-                if time < 100 {
+                if time < 200 {
                     Color::new(0, 255, 0)
                 } else if time < 500 {
                     Color::new(0, 0, 255)
@@ -360,7 +360,7 @@ fn invalid_time_is_atomic_and_does_not_pause_or_extend_deadlines() {
 }
 
 #[test]
-fn removing_one_channel_keeps_leased_event_without_replaying_on_reappearance() {
+fn removing_one_channel_stops_its_window_without_replaying_on_reappearance() {
     let doc = document();
     let mut p = prepared(&doc);
     state(&mut p, "pi", "a", "working", 2000);
@@ -374,9 +374,9 @@ fn removing_one_channel_keeps_leased_event_without_replaying_on_reappearance() {
     assert_eq!(color(&p, "A"), Color::new(0, 255, 0));
     p.scenario.remove("pi", "a").unwrap();
     render(&mut p, &doc);
-    // Top-level OnEvent keeps its leased occurrence after state removal; this
-    // differs intentionally from the source-bound behavior-variant lifecycle.
-    assert_eq!(color(&p, "A"), Color::new(0, 255, 0));
+    // Canonical base appearances follow their emitting session just like
+    // variants. Retaining an event does not keep a removed session active.
+    assert_eq!(color(&p, "A"), Color::new(255, 0, 0));
     assert_eq!(color(&p, "C"), Color::new(0, 255, 255));
     assert_eq!(
         p.evaluation_facts().1.events.len(),
@@ -386,7 +386,7 @@ fn removing_one_channel_keeps_leased_event_without_replaying_on_reappearance() {
     p.advance_scenario_by(ms(100)).unwrap();
     state(&mut p, "pi", "a", "working", 2000);
     render(&mut p, &doc);
-    assert_eq!(color(&p, "A"), Color::new(0, 255, 0));
+    assert_eq!(color(&p, "A"), Color::new(255, 0, 0));
     p.advance_scenario_by(ms(100)).unwrap();
     render(&mut p, &doc);
     assert_eq!(

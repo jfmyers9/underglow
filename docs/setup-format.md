@@ -143,7 +143,7 @@ after observing facts/advancing input and before read-only render/composition or
 coverage capture, with the same render context. Existing callers that only
 render remain compatible and switch appearances instantly.
 
-Fades never prolong event deadlines or source leases. Expiry, removal and
+Fades never prolong configured appearance deadlines or source leases. Expiry, removal and
 unavailable selected input hard-hide the affected appearance (or immediately
 show its available fallback). Baseline, resume, generation/reset and document
 reconfiguration clear visual history; startup/resume shows current persistent
@@ -178,19 +178,23 @@ that hides offline, use source-presence activation on its fallback as below.
 
 Each transient variant has one bounded occurrence slot: a newer matching
 occurrence (from any session) replaces its previous occurrence, not a queue.
-Event IDs/cursors are deduplicated by the existing registry/evaluator. Deadlines
-are computed from receipt/transition time, capped by event/transition lease;
-delayed observations and state heartbeats never restart them. State-backed
-variant events are additionally capped by the emitting session's lease at
-observation and hide if that session disappears, even if another session is
-still connected. Event-only producers use their event lease, without inventing
-persistent state. Expiry is exclusive: an appearance hides at its deadline.
-Transitions need two observed, contiguous states of the same session; first
-appearance, expiry, removal, and same-state renewals are not transitions.
-Resume baselines all variants, discards historical events/transitions and
-restores only currently leased persistent state. Registry failure clears all
-conditional appearances. There is no stale-appearance hold or disconnect latch.
-Legacy standalone automation event lifetime semantics are unchanged.
+Event IDs/cursors are deduplicated by the existing registry/evaluator.
+
+An event must still be fresh when first observed. Once accepted, its canonical
+appearance ends at receipt time plus the configured duration (1–60,000 ms),
+rather than at the event's freshness deadline. Delayed observations and repeated
+batches never restart that window. If the emitting session had a state lease,
+removal, expiry or a renewal after an expiry gap ends its appearance immediately,
+even while other sessions report. Continuous state renewals keep that session
+present but never move the configured animation deadline. Event-only appearances
+have the same finite display window without inventing persistent state.
+
+State-transition windows remain capped by the triggering state lease.
+Transitions require two observed, contiguous states of the same session; first
+appearance, expiry, removal and same-state renewals are not transitions. Expiry
+is exclusive. Resume baselines all appearances and discards historical events
+and transitions; registry failure clears conditional appearances. The existing
+legacy standalone automation evaluator remains lease-capped and unchanged.
 
 For example, one editable Pi status item over an arbitrary background:
 
