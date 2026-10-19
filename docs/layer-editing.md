@@ -55,11 +55,11 @@ and advanced priority. These controls no longer interrupt condition editing.
 Effect descriptions and full input guidance are available through contextual
 help rather than repeated general-purpose paragraphs.
 
-Selecting Working to edit does not simulate it. Open **Test behavior…** beneath
-the keyboard and choose a private test; its selected label names the tested
-behavior and playback state. You can edit Working while testing Finished.
-The preview-input picker offers **Live data** for actual source observations
-and **Private test** for isolated facts.
+Selecting Working to edit does not simulate it. Open **Simulate activity…**
+beneath the keyboard and choose Working or Finished; the picker then names the
+simulated activity, with Pause simulation / Play simulation beside it. You can
+edit Working while simulating Finished. **Follow real activity** ends the
+simulation and previews the draft using actual source observations.
 Private tests never publish source messages, save or enable physical lighting.
 
 ## When: change the trigger

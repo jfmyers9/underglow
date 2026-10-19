@@ -49,6 +49,16 @@ fn visible(frame: &Frame, label: &str) -> egui::Rect {
         1,
         "one visible {label} in the real clipped canvas"
     );
+    assert!(
+        !frame.output.shapes.iter().any(|shape| {
+            if let egui::Shape::Text(text) = &shape.shape {
+                text.galley.text() == label && region.contains(text.pos) && text.galley.elided
+            } else {
+                false
+            }
+        }),
+        "ordinary preview controls must not truncate: {label}"
+    );
     matches[0].rect
 }
 
@@ -60,9 +70,7 @@ fn choose_test(harness: &mut Harness, app: &mut crate::Controller, label: &str) 
         .find(|text| {
             text.fully_visible()
                 && canvas(&frame).contains_rect(text.rect)
-                && (text.text == "Test behavior…"
-                    || text.text.starts_with("Testing:")
-                    || text.text.starts_with("No test facts"))
+                && (text.text == "Simulate activity…" || text.text.starts_with("Simulating:"))
         })
         .expect("one pinned test picker");
     harness.click_at(picker.rect.center(), |ctx| app.show_lighting(ctx));
@@ -95,10 +103,10 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
             );
         }
         for label in [
-            "Live data",
-            "Test behavior…",
+            "Follow real activity",
+            "Simulate activity…",
             "Preview only",
-            "Preview tools",
+            "More…",
         ] {
             visible(&frame, label);
         }
@@ -115,8 +123,8 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
             ("Working", Some("working"), Some("working")),
         ] {
             let started = choose_test(&mut harness, &mut app, label);
-            visible(&started, "Pause test");
-            visible(&started, "Preview tools");
+            visible(&started, "Pause simulation");
+            visible(&started, "More…");
             let frame = harness.settle(|ctx| app.show_lighting(ctx));
             assert!(app.setup_editor.preview.quick_active());
             assert_eq!(
@@ -125,9 +133,9 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
                 "testing cannot move the keyboard"
             );
             visible(&frame, "→");
-            visible(&frame, "Pause test");
-            visible(&frame, "Private test");
-            visible(&frame, &format!("Testing: {label} · playing"));
+            visible(&frame, "Pause simulation");
+            visible(&frame, "Follow real activity");
+            visible(&frame, &format!("Simulating: {label}"));
             visible(&frame, "Preview only");
             let inspector = frame
                 .texts()
@@ -196,17 +204,20 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
                 "quick tests have no engine/source/hardware intents"
             );
         }
-        harness.click("Pause test", Some(region), |ctx| app.show_lighting(ctx));
+        harness.click("Pause simulation", Some(region), |ctx| {
+            app.show_lighting(ctx)
+        });
         let frozen = app.setup_editor.preview.frame().clone();
         for _ in 0..5 {
             harness.run(vec![], |ctx| app.show_lighting(ctx));
         }
         assert_eq!(app.setup_editor.preview.frame(), &frozen);
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
-        visible(&frame, "Play test");
-        visible(&frame, "Testing: Working · paused");
-        harness.click("Private test", Some(region), |ctx| app.show_lighting(ctx));
-        harness.click("Live data", None, |ctx| app.show_lighting(ctx));
+        visible(&frame, "Play simulation");
+        visible(&frame, "Simulating: Working");
+        harness.click("Follow real activity", Some(region), |ctx| {
+            app.show_lighting(ctx)
+        });
         assert!(!app.setup_editor.preview.quick_active());
         assert!(app.setup_editor.preview.mode == Mode::Live);
         assert!(
@@ -288,7 +299,7 @@ fn many_custom_choices_use_a_contextual_picker_instead_of_a_toolbar_wall() {
     let mut harness = Harness::new(MINIMUM_SIZE);
     let frame = harness.settle(|ctx| app.show_lighting(ctx));
     let region = canvas(&frame);
-    visible(&frame, "Test behavior…");
+    visible(&frame, "Simulate activity…");
     assert!(
         !frame
             .texts()
@@ -331,10 +342,10 @@ fn three_long_quick_labels_use_measured_picker_budget_in_compact_workspace() {
     let frame = harness.settle(|ctx| app.show_lighting(ctx));
     let region = canvas(&frame);
     for label in [
-        "Live data",
-        "Test behavior…",
+        "Follow real activity",
+        "Simulate activity…",
         "Preview only",
-        "Preview tools",
+        "More…",
     ] {
         visible(&frame, label);
     }
@@ -347,7 +358,7 @@ fn three_long_quick_labels_use_measured_picker_budget_in_compact_workspace() {
     );
     choose_test(&mut harness, &mut app, "WWWWWWWWWWWWWWW0");
     let frame = harness.settle(|ctx| app.show_lighting(ctx));
-    visible(&frame, "Pause test");
+    visible(&frame, "Pause simulation");
     let facts = app.setup_editor.preview.evaluation_facts().0;
     assert_eq!(facts.states[0].state, "state-0");
     assert_eq!(facts.states[0].identity.instance, "exact");
@@ -356,21 +367,19 @@ fn three_long_quick_labels_use_measured_picker_budget_in_compact_workspace() {
 }
 
 #[test]
-fn explicitly_beginning_a_private_test_does_not_invent_idle_or_publish_facts() {
+fn opening_simulation_choices_does_not_change_mode_or_invent_activity() {
     for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
         let (mut app, incoming, doc) = app();
         let mut harness = Harness::new(size);
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
-        harness.click("Live data", Some(canvas(&frame)), |ctx| {
+        harness.click("Simulate activity…", Some(canvas(&frame)), |ctx| {
             app.show_lighting(ctx)
         });
-        harness.click("Private test", None, |ctx| app.show_lighting(ctx));
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
-        visible(&frame, "Private test");
-        visible(&frame, "No test facts · playing");
-        visible(&frame, "Pause test");
-        visible(&frame, "Preview tools");
-        assert!(app.setup_editor.preview.quick_active());
+        visible(&frame, "Follow real activity");
+        visible(&frame, "More…");
+        assert!(!app.setup_editor.preview.quick_active());
+        assert!(app.setup_editor.preview.mode == Mode::Live);
         let (facts, events) = app.setup_editor.preview.evaluation_facts();
         assert!(facts.states.is_empty());
         assert!(events.events.is_empty());
@@ -378,6 +387,67 @@ fn explicitly_beginning_a_private_test_does_not_invent_idle_or_publish_facts() {
         assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
         assert!(!app.setup_editor.dirty);
         assert!(!app.status.as_ref().unwrap().enabled);
+        assert!(incoming.try_recv().is_err());
+    }
+}
+#[test]
+fn advanced_preview_is_disclosed_without_changing_a_paused_simulation() {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
+        let (mut app, incoming, doc) = app();
+        let mut harness = Harness::new(size);
+        let first = harness.settle(|ctx| app.show_lighting(ctx));
+        let region = canvas(&first);
+        assert!(!first.texts().iter().any(|text| matches!(
+            text.text.as_str(),
+            "Advanced preview…" | "Composition preview:"
+        )));
+        choose_test(&mut harness, &mut app, "Working");
+        harness.click("Pause simulation", Some(region), |ctx| {
+            app.show_lighting(ctx)
+        });
+        let paused = harness.settle(|ctx| app.show_lighting(ctx));
+        let frozen = app.setup_editor.preview.frame().clone();
+        let clock = app.setup_editor.preview.evaluation_now();
+        let keyboard = visible(&paused, "F1");
+        harness.click("More…", Some(region), |ctx| app.show_lighting(ctx));
+        let menu = harness.settle(|ctx| app.show_lighting(ctx));
+        assert!(
+            !menu
+                .texts()
+                .iter()
+                .any(|text| text.text == "Close advanced preview")
+        );
+        assert_eq!(app.setup_editor.preview.frame(), &frozen);
+        harness.click("Advanced preview…", None, |ctx| app.show_lighting(ctx));
+        let tools = harness.settle(|ctx| app.show_lighting(ctx));
+        assert!(
+            tools
+                .texts()
+                .iter()
+                .any(|text| text.text == "Composition preview:" && text.fully_visible())
+        );
+        harness.click("Close advanced preview", None, |ctx| app.show_lighting(ctx));
+        let closed = harness.settle(|ctx| app.show_lighting(ctx));
+        assert!(
+            !closed
+                .texts()
+                .iter()
+                .any(|text| text.text == "Close advanced preview")
+        );
+        visible(&closed, "Simulating: Working");
+        visible(&closed, "Play simulation");
+        assert_eq!(visible(&closed, "F1"), keyboard);
+        assert_eq!(app.setup_editor.preview.frame(), &frozen);
+        assert_eq!(app.setup_editor.preview.evaluation_now(), clock);
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
+        assert_eq!(app.setup_editor.applied.as_ref(), Some(&doc));
+        assert!(app.setup_editor.preview.sample().is_none());
+        assert!(incoming.try_recv().is_err());
+        harness.click("Follow real activity", Some(region), |ctx| {
+            app.show_lighting(ctx)
+        });
+        assert!(app.setup_editor.preview.mode == Mode::Live);
+        assert!(!app.setup_editor.preview.quick_active());
         assert!(incoming.try_recv().is_err());
     }
 }

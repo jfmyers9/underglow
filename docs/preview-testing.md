@@ -6,11 +6,18 @@ producer configuration, lighting activation or keyboard output.
 
 ## Quick tests
 
-Select a layer, open **Test behavior…** below the keyboard and choose a
-capability-derived test. The selected label names the active test and playback
-state. The separate preview-input picker distinguishes **Live data**, **Private
-test**, isolated input demos and advanced scenarios. To end a private test,
-open **Private test** and choose **Live data**. This is not device feedback.
+The two everyday controls below the keyboard are:
+
+- **Follow real activity** previews the draft using read-only activity reported
+  by connected apps. It does not enable lighting or mirror the physical keyboard.
+- **Simulate activity…** lets you try a supported activity for the selected
+  layer, such as Pi Working or Finished, without running that activity in Pi.
+  Opening the picker changes nothing; choosing an activity starts the simulation.
+
+The picker then says **Simulating: Working** (or the chosen activity), with
+**Pause simulation / Play simulation** beside it. Click **Follow real activity**
+to end the simulation in one step. Editing an appearance remains independent
+of simulating it.
 
 Choices come from the selected layer's conditions and registered source
 capabilities. Presence conditions offer that source's declared states; specific
@@ -35,14 +42,16 @@ display duration, even after its event lease expires; this never creates
 persistent source state. State-transition windows remain source-lease-capped.
 Facts are never automatically renewed.
 
-Tests start playing so Matrix and other animations keep advancing. **Pause test**
-freezes animation, leases and transient time; **Play test** resumes without
+Tests start playing so Matrix and other animations keep advancing.
+**Pause simulation** freezes animation, leases and transient time;
+**Play simulation** resumes without
 catching up time spent paused. An expired test needs a new explicit choice.
 
 ## Advanced tests and inspection
 
-**Preview tools** retains the independent multi-source **Scenario**, arbitrary
-registered source/session controls, finite leases, Play/Pause, deterministic
+**More… → Advanced preview…** opens the advanced window, retaining the
+independent multi-source **Scenario**, registered source/session controls,
+finite leases, Play/Pause, deterministic
 steps and the hardware-free **Isolated input demo**. The advanced scenario is
 retained and paused when leaving its context, including while quick-testing.
 Returning baselines its old occurrences instead of replaying them. **Reset

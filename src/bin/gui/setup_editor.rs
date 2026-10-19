@@ -99,7 +99,8 @@ mod tests {
         editor.load(Some(original.clone()));
         editor.selected = Some(original.layers[0].id.clone());
         editor.preview.set_mode(setup_preview::Mode::Scenario);
-        click(&ctx, &mut editor, "Preview tools", 0);
+        click(&ctx, &mut editor, "More…", 0);
+        click(&ctx, &mut editor, "Advanced preview…", 0);
         run(&ctx, &mut editor, vec![]);
         let generation = editor.preview.scenario.generation();
         let frame = editor.preview.frame().clone();
@@ -159,7 +160,8 @@ mod tests {
         let selected = editor.selected.clone();
         let report = setup_explanation::report(&editor.preview, coord).unwrap();
         assert_eq!(report.color, editor.preview.frame().get_coord(coord));
-        click(&ctx, &mut editor, "Preview tools", 0);
+        click(&ctx, &mut editor, "More…", 0);
+        click(&ctx, &mut editor, "Advanced preview…", 0);
         let (output, intent) = run(&ctx, &mut editor, vec![]);
         assert!(
             intent.is_none(),

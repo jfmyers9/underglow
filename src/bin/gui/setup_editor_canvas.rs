@@ -209,10 +209,10 @@ impl Editor {
     pub(super) fn show_preview_tools_window(&mut self, context: &egui::Context) {
         let mut open = self.preview_tools_open;
         let bounds = context.screen_rect().shrink(12.0);
-        egui::Window::new("Preview tools").open(&mut open).collapsible(false)
+        egui::Window::new("Advanced preview").open(&mut open).collapsible(false)
             .default_width(560.0).max_width(bounds.width())
             .max_height(bounds.height() - 40.0).constrain_to(bounds).show(context, |ui| {
-                if ui.button("Close preview tools").clicked() { self.preview_tools_open = false; }
+                if ui.button("Close advanced preview").clicked() { self.preview_tools_open = false; }
                 egui::ScrollArea::vertical().id_salt("workspace-preview-tools")
                     .max_height(ui.available_height()).show(ui, |ui| {
                         // A key click must reveal its actual captured explanation,

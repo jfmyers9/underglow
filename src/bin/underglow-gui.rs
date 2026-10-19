@@ -2486,7 +2486,8 @@ mod tests {
             let mut click = |app: &mut Controller, label: &str| {
                 workspace_tests::click_workspace_control(&mut harness, app, label);
             };
-            click(&mut app, "Preview tools");
+            click(&mut app, "More…");
+            click(&mut app, "Advanced preview…");
             click(&mut app, "Scenario");
             click(&mut app, "Idle");
             assert_eq!(
@@ -2552,7 +2553,7 @@ mod tests {
             .map(|t| t.text)
             .collect::<Vec<_>>()
             .join("\n");
-        for label in ["Keyboard", "Save", "Preview tools"] {
+        for label in ["Keyboard", "Save", "More…"] {
             assert!(text.contains(label), "missing {label}");
         }
         let mut click = |app: &mut Controller, label: &str| {

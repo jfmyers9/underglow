@@ -77,16 +77,16 @@ you explicitly add another template. See [Editing layers](layer-editing.md).
 The keyboard previews the complete draft through the shared composition runtime.
 It is not device feedback.
 
-- The preview-input picker distinguishes **Live data** (real read-only
-  observations) from **Private test**, advanced scenarios and isolated demos.
-- **Test behavior…** offers contextual choices such as **Idle / Working /
-  Finished**. Its selected label names the active test and playback state.
+- **Follow real activity** previews read-only observations from connected apps.
+  It also ends a simulation in one click; it never enables physical lighting.
+- **Simulate activity…** offers contextual choices such as **Idle / Working /
+  Finished**. Its selected label says **Simulating:** and names the activity.
   Private facts do not edit the setup or publish to real connections.
   Finished is a transient settled event, never a success fact.
-- **Play test / Pause test** controls private time. Facts have finite lifetimes;
-  pausing freezes leases and animations.
-- **Preview tools** retains simultaneous-source scenarios, deterministic
-  stepping, isolated input demo, coverage and expiry. Quick testing preserves
+- **Play simulation / Pause simulation** controls private time. Facts have finite
+  lifetimes; pausing freezes leases and animations.
+- **More… → Advanced preview…** retains simultaneous-source scenarios,
+  deterministic stepping, isolated input demo, coverage and expiry. Quick testing preserves
   those advanced channels.
 - **Inspect** makes a key click open its actual **Why this key?** report before
   advanced forms. It never retargets a layer or enables lighting.

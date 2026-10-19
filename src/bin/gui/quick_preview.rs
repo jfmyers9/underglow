@@ -305,32 +305,12 @@ impl Preview {
         let mut advanced = false;
         ui.horizontal(|ui| {
             ui.set_min_height(28.0);
-            let context = match self.mode {
-                Mode::Live => "Live data",
-                Mode::InputDemo => "Input demo",
-                Mode::Scenario if self.quick_active() => "Private test",
-                Mode::Scenario => "Advanced scenario",
-            };
-            egui::ComboBox::from_id_salt("quick-preview-context")
-                .width(118.0)
-                .truncate()
-                .selected_text(context)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(self.mode == Mode::Live, "Live data")
-                        .on_hover_text("Read-only live connection observations. Missing or expired observations are not idle. Never publishes facts or enables lighting.")
-                        .clicked() {
-                        self.set_mode(Mode::Live);
-                        self.update(Some(document), brightness);
-                    }
-                    if ui.selectable_label(self.quick.active, "Private test")
-                        .on_hover_text("Start a fresh private selected-layer test. Retains and pauses advanced channels; never publishes real source facts.")
-                        .clicked() {
-                        self.begin_quick(document, layer, brightness);
-                        self.set_scenario_playing(true);
-                    }
-                })
-                .response
-                .on_hover_text(format!("{context}. Preview input only, independent of editing appearance and physical lighting."));
+            if ui.selectable_label(self.mode == Mode::Live, "Follow real activity")
+                .on_hover_text("Preview this draft using activity reported by connected apps. Missing data is not idle. This never enables lighting or mirrors the physical keyboard.")
+                .clicked() && self.mode != Mode::Live {
+                self.set_mode(Mode::Live);
+                self.update(Some(document), brightness);
+            }
 
             // Budget using the configured fonts. The choice is always bounded;
             // custom source labels cannot push playback or tools offscreen.
@@ -341,17 +321,18 @@ impl Preview {
             };
             // Reserve playback even before the first action: starting a test
             // must not push Tools offscreen for its first painted frame.
-            let playback_width = button_width("Pause test").max(button_width("Play test"))
+            let playback_width = button_width("Pause simulation").max(button_width("Play simulation"))
                 + ui.spacing().item_spacing.x;
-            let reserved = button_width("Preview tools") + playback_width
+            let reserved = button_width("More…") + playback_width
                 + ui.spacing().item_spacing.x * 2.0 + 4.0;
             let width = (ui.available_width() - reserved).clamp(100.0, 300.0);
             let playback = if self.scenario_playing() { "playing" } else { "paused" };
             let title = match self.quick_action_label() {
-                Some(label) => format!("Testing: {label} · {playback}"),
-                None if self.quick.active => format!("No test facts · {playback}"),
-                _ if self.mode == Mode::Scenario => format!("Advanced scenario · {playback}"),
-                _ => "Test behavior…".into(),
+                Some(label) => format!("Simulating: {label}"),
+                None if self.quick.active => "Simulate activity…".into(),
+                _ if self.mode == Mode::Scenario => format!("Scenario · {playback}"),
+                _ if self.mode == Mode::InputDemo => "Simulated keys".into(),
+                _ => "Simulate activity…".into(),
             };
             let mut picked = None;
             egui::ComboBox::from_id_salt("quick-test-choice")
@@ -359,13 +340,16 @@ impl Preview {
                 .truncate()
                 .selected_text(&title)
                 .show_ui(ui, |ui| {
+                    ui.strong("Simulate selected layer");
+                    ui.small("On-screen only. Does not change real app activity or lighting.");
+                    ui.separator();
                     if choices.actions.is_empty() {
                         ui.small(if layer.is_none() {
-                            "Select a layer to test"
+                            "Select a layer to simulate"
                         } else if choices.warnings.is_empty() {
-                            "Always shown · no source test needed"
+                            "Always shown · no activity simulation needed"
                         } else {
-                            "No declared quick tests"
+                            "No supported activity simulations"
                         });
                     }
                     for warning in &choices.warnings {
@@ -390,18 +374,25 @@ impl Preview {
                     }
                 })
                 .response
-                .on_hover_text(format!("{title}\nPrivate selected-layer tests, never real producer facts or hardware output.\n{}", choices.warnings.join("\n")));
+                .on_hover_text(format!("{title}\nTry an activity in the on-screen preview. This does not change the appearance you are editing, real app activity, or physical lighting.\n{}", choices.warnings.join("\n")));
             if let (Some(layer), Some(action)) = (layer, picked) {
                 self.quick.error = self.run_quick(document, layer, &action, brightness).err();
             }
-            if self.quick.active && ui.button(
-                if self.scenario_playing() { "Pause test" } else { "Play test" }
-            ).on_hover_text("Pause freezes animations and finite leases. Play advances private time without renewing facts. Return to Live data to end the test.").clicked() {
+            if self.quick_active() && ui.button(
+                if self.scenario_playing() { "Pause simulation" } else { "Play simulation" }
+            ).on_hover_text("Pause freezes the simulated activity and animation. Play resumes it. Follow real activity ends the simulation.").clicked() {
                 self.set_scenario_playing(!self.scenario_playing());
             }
-            advanced = ui.button("Preview tools")
-                .on_hover_text("Advanced simultaneous sources, finite leases, input demo, clock steps, key explanations and coverage.")
-                .clicked();
+            ui.menu_button("More…", |ui| {
+                if ui.button("Advanced preview…")
+                    .on_hover_text("Multiple simulated sessions, simulated key presses, manual time controls and layer coverage.")
+                    .clicked() {
+                    advanced = true;
+                    ui.close_menu();
+                }
+                ui.separator();
+                ui.small("These controls affect only the on-screen preview.");
+            }).response.on_hover_text("Advanced preview options");
         });
         advanced
     }

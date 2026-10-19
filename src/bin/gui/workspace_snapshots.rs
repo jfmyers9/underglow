@@ -112,6 +112,53 @@ impl Capture {
         png
     }
 }
+#[test]
+#[ignore = "opt-in preview control captures; set UNDERGLOW_PREVIEW_CONTROLS_SNAPSHOTS"]
+fn export_preview_controls_snapshots() {
+    use super::workspace_test_ui::Harness;
+    let destination = std::path::PathBuf::from(
+        std::env::var_os("UNDERGLOW_PREVIEW_CONTROLS_SNAPSHOTS")
+            .expect("set UNDERGLOW_PREVIEW_CONTROLS_SNAPSHOTS to an explicit directory"),
+    );
+    std::fs::create_dir_all(&destination).unwrap();
+    for size in [[940, 850], [620, 640], [1280, 800]] {
+        for state in ["real", "choices", "simulating", "more", "advanced"] {
+            let (mut app, incoming) = state_fixture("normal");
+            app.setup_editor
+                .preview
+                .set_mode(super::setup_preview::Mode::Live);
+            let draft = app.setup_editor.draft.clone();
+            let mut harness = Harness::new(egui::vec2(size[0] as f32, size[1] as f32));
+            let mut capture = Capture::new(size);
+            if matches!(state, "choices" | "simulating") {
+                capture_click_label(&mut capture, &mut harness, &mut app, "Simulate activity…");
+                if state == "simulating" {
+                    capture_click_label(&mut capture, &mut harness, &mut app, "Working");
+                    capture_click_label(&mut capture, &mut harness, &mut app, "Pause simulation");
+                }
+            }
+            if matches!(state, "more" | "advanced") {
+                capture_click_label(&mut capture, &mut harness, &mut app, "More…");
+                if state == "advanced" {
+                    capture_click_label(&mut capture, &mut harness, &mut app, "Advanced preview…");
+                }
+            }
+            for index in 0..30 {
+                let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+                capture.update_textures(&frame.output.textures_delta);
+                if index == 29 {
+                    capture.paint(&harness.context, frame.output);
+                }
+            }
+            assert_eq!(app.setup_editor.draft, draft);
+            assert!(!app.setup_editor.dirty);
+            assert!(app.setup_editor.preview.sample().is_none());
+            assert!(incoming.try_recv().is_err());
+            let path = destination.join(format!("preview-{state}-{}x{}.png", size[0], size[1]));
+            std::fs::write(path, capture.png()).unwrap();
+        }
+    }
+}
 
 fn chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     png.extend_from_slice(&(data.len() as u32).to_be_bytes());
@@ -313,7 +360,12 @@ fn export_workspace_snapshots() {
             if *state == "testing" {
                 // These are independent actual UI selections, not injected
                 // appearance state or fabricated live connection observations.
-                for label in ["Idle / fallback", "Working", "Test behavior…", "Finished"] {
+                for label in [
+                    "Idle / fallback",
+                    "Working",
+                    "Simulate activity…",
+                    "Finished",
+                ] {
                     capture_click_label(&mut capture, &mut harness, &mut app, label);
                 }
                 assert!(app.setup_editor.preview.quick_active());
@@ -643,9 +695,9 @@ fn export_finished_duration_snapshots() {
         for label in [
             "Idle / fallback",
             "Finished (settled, not success)",
-            "Test behavior…",
+            "Simulate activity…",
             "Finished",
-            "Pause test",
+            "Pause simulation",
         ] {
             capture_click_label(&mut capture, &mut harness, &mut app, label);
         }

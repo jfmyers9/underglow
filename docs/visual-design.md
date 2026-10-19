@@ -97,8 +97,11 @@ tooltips and do not invent unsupported Fn/light-bar mappings.
 
 ### Preview and testing
 
-Use one compact strip: real live observations versus private test input,
-active test identity, playback state and deliberate access to advanced tools.
+Use one compact strip: **Follow real activity** is a direct return to real
+observations; **Simulate activity…** starts a selected-layer simulation only
+after an activity is chosen. Show its identity with **Simulating:** and Pause
+simulation / Play simulation. Put advanced tools behind **More… → Advanced
+preview…**, not a third equally prominent workflow.
 Keep this distinct from Preview / Select keys / Inspect click modes and from
 the appearance currently being edited. Common capability-derived tests must
 remain discoverable, and long custom action labels need a measured fallback.

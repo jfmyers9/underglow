@@ -66,7 +66,7 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             .or(inspector);
         let tools = texts
             .iter()
-            .find(|t| t.text == "Close preview tools")
+            .find(|t| t.text == "Close advanced preview")
             .map(|t| t.clip);
         let keyboard = keyboard_region(&frame);
         let popup_action = matches!(
@@ -85,9 +85,19 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
         let region = match label {
             "F1" => Some(keyboard),
             // These controls intentionally live outside scrollable inspectors.
-            "Preview tools" | "Preview" | "Select keys" | "Inspect" | "Save composition"
-            | "Save" | "Cancel" | "Add layer" | "Test behavior…" | "Live data" | "Private test"
-            | "Play test" | "Pause test" => None,
+            "More…"
+            | "Advanced preview…"
+            | "Preview"
+            | "Select keys"
+            | "Inspect"
+            | "Save composition"
+            | "Save"
+            | "Cancel"
+            | "Add layer"
+            | "Simulate activity…"
+            | "Follow real activity"
+            | "Play simulation"
+            | "Pause simulation" => None,
             _ if popup_action => None, // Management popup is an explicit overlay.
             _ => tools.or(inspector),
         };
@@ -182,10 +192,10 @@ pub(super) fn choose_private_test(harness: &mut Harness, app: &mut Controller, l
         .find(|t| {
             t.fully_visible()
                 && canvas.contains_rect(t.rect)
-                && (t.text == "Test behavior…"
-                    || t.text.starts_with("Testing:")
-                    || t.text.starts_with("No test facts")
-                    || t.text.starts_with("Advanced scenario ·"))
+                && (t.text == "Simulate activity…"
+                    || t.text.starts_with("Simulating:")
+                    || t.text.starts_with("Scenario ·")
+                    || t.text == "Simulated keys")
         })
         .expect("a real visible contextual private-test picker");
     harness.click_at(chooser.rect.center(), |ctx| app.show_lighting(ctx));
@@ -271,7 +281,7 @@ fn workspace_primary_controls_and_complete_keyboard_are_reachable_at_real_sizes(
             "Resume lighting",
             "Save",
             "Add layer",
-            "Preview tools",
+            "More…",
             "Preview",
             "Select keys",
             "Inspect",
@@ -700,18 +710,28 @@ fn workspace_preview_badge_explains_source_and_playback_without_open_tools() {
         let (mut app, incoming) = app();
         let draft = app.setup_editor.draft.clone();
         for (mode, playing, context, playback) in [
-            (setup_preview::Mode::Live, false, "Live data", None),
-            (setup_preview::Mode::InputDemo, false, "Input demo", None),
+            (
+                setup_preview::Mode::Live,
+                false,
+                "Follow real activity",
+                None,
+            ),
+            (
+                setup_preview::Mode::InputDemo,
+                false,
+                "Simulated keys",
+                None,
+            ),
             (
                 setup_preview::Mode::Scenario,
                 false,
-                "Advanced scenario",
+                "Follow real activity",
                 Some("paused"),
             ),
             (
                 setup_preview::Mode::Scenario,
                 true,
-                "Advanced scenario",
+                "Follow real activity",
                 Some("playing"),
             ),
         ] {
@@ -721,7 +741,7 @@ fn workspace_preview_badge_explains_source_and_playback_without_open_tools() {
             visible(&frame, "Preview only");
             visible(&frame, context);
             if let Some(playback) = playback {
-                visible(&frame, &format!("Advanced scenario · {playback}"));
+                visible(&frame, &format!("Scenario · {playback}"));
             }
             key(&frame, "Esc");
             assert_eq!(app.setup_editor.draft, draft);
@@ -755,16 +775,18 @@ fn inspector_keeps_editing_choice_separate_from_preview_input_at_real_sizes() {
         assert!(app.setup_editor.preview.sample().is_none());
 
         let editing = harness.settle(|ctx| app.show_lighting(ctx));
-        harness.click("Test behavior…", Some(keyboard_region(&editing)), |ctx| {
-            app.show_lighting(ctx)
-        });
+        harness.click(
+            "Simulate activity…",
+            Some(keyboard_region(&editing)),
+            |ctx| app.show_lighting(ctx),
+        );
         harness.click("Finished", None, |ctx| app.show_lighting(ctx));
         let testing = harness.settle(|ctx| app.show_lighting(ctx));
         assert!(
             testing
                 .texts()
                 .iter()
-                .any(|t| t.text.contains("Testing: Finished") && t.fully_visible())
+                .any(|t| t.text.contains("Simulating: Finished") && t.fully_visible())
         );
         assert_eq!(
             app.setup_editor
