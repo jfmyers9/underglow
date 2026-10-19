@@ -167,7 +167,7 @@ fn secondary_missing_layer_connection_opens_correct_context_and_preserves_draft_
         assert!(rendered.contains("Selected connection: missing-monitor"));
         assert!(rendered.contains("Affected layer: Pi status"));
         assert!(rendered.contains("Missing connection binding"));
-        assert!(rendered.contains("Process health: unknown"));
+        assert!(!rendered.contains("Process health: unknown"));
         assert!(!rendered.contains("running=true"));
         if let Ok(action) = incoming.try_recv() {
             assert!(matches!(action, Action::ConnectionsShow));
@@ -237,13 +237,26 @@ fn secondary_connection_summary_hides_details_and_administration_remains_explici
         app.setup_editor.preview.set_sample(Some(live(false)));
         let mut harness = Harness::new(size);
         let rendered = text(&mut harness, &mut app);
-        assert!(rendered.contains("Recent data available"));
-        assert!(rendered.contains("Process health: unknown"));
+        assert!(rendered.contains("1 session reporting"));
+        assert!(!rendered.contains("Process health: unknown"));
         assert!(!rendered.contains("Instance live-session"));
         assert!(!rendered.contains("Managed producer controls"));
-        click(&mut harness, &mut app, "Connection details");
+        click(&mut harness, &mut app, "App details");
+        let details = text(&mut harness, &mut app);
+        assert!(details.contains("Session live-ses"));
+        assert!(!details.contains("Source ID: pi"));
+        click(&mut harness, &mut app, "Advanced details");
         assert!(text(&mut harness, &mut app).contains("Source ID: pi"));
-        click(&mut harness, &mut app, "Connection details");
+        // The diagnostics may exceed the compact viewport; return via real scrolling.
+        for _ in 0..20 {
+            harness.wheel(
+                egui::pos2(size.x * 0.5, size.y - 60.0),
+                egui::vec2(0.0, 500.0),
+                |ctx| app.show_lighting(ctx),
+            );
+        }
+        click(&mut harness, &mut app, "App details");
+        click(&mut harness, &mut app, "Advanced");
         click(&mut harness, &mut app, "Connection administration");
         click(&mut harness, &mut app, "Configure producer");
         assert!(app.setup_editor.draft.is_some());
@@ -458,8 +471,8 @@ fn secondary_long_connection_identity_keeps_summary_bounded_and_truthful() {
         );
         assert!(harness.screen().contains_rect(title.rect));
         let summary = text(&mut harness, &mut app);
-        assert!(summary.contains("No recent data"));
-        assert!(summary.contains("Process health: unknown"));
+        assert!(summary.contains("Live activity unavailable"));
+        assert!(!summary.contains("Process health: unknown"));
         assert!(!summary.contains("Application state: Fresh"));
         assert_eq!(app.setup_editor.draft, original);
         assert!(incoming.try_recv().is_err());
@@ -518,5 +531,156 @@ fn secondary_saved_copy_management_remains_explicit_and_reachable() {
             assert!(!app.status.as_ref().unwrap().enabled);
             assert!(incoming.try_recv().is_err());
         }
+    }
+}
+
+pub(super) fn connections_fixture() -> (Controller, Receiver<Action>) {
+    let (mut app, incoming, _) = fixture(false);
+    app.page = Page::Connections;
+    app.last_connections = Instant::now();
+    let mut sample = live(false);
+    let state = sample.snapshot.states[0].clone();
+    sample.snapshot.states = (1..=6)
+        .map(|index| {
+            let mut state = state.clone();
+            state.identity.instance = format!("pi-{index}-session");
+            state.state = if index <= 2 { "working" } else { "idle" }.into();
+            state
+        })
+        .collect();
+    app.setup_editor.preview.set_sample(Some(sample));
+    (app, incoming)
+}
+
+#[test]
+fn secondary_connections_six_sessions_are_clear_and_layer_link_is_safe_at_all_sizes() {
+    for size in [
+        DEFAULT_SIZE,
+        MINIMUM_SIZE,
+        super::workspace_test_ui::WIDE_SIZE,
+    ] {
+        let (mut app, incoming) = connections_fixture();
+        let draft = app.setup_editor.draft.clone();
+        let applied = app.setup_editor.applied.clone();
+        let registry = app.connections_panel.registry().cloned();
+        let mut harness = Harness::new(size);
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        let texts = frame.texts();
+        let summary = texts
+            .iter()
+            .find(|t| t.text.starts_with("6 sessions reporting"))
+            .unwrap();
+        assert!(summary.fully_visible(), "{size:?}: {summary:?}");
+        assert!(summary.text.contains("4 Idle") && summary.text.contains("2 Working"));
+        assert_eq!(
+            texts.iter().filter(|t| t.text == "Pi status").count(),
+            1,
+            "three appearances must produce only one layer link"
+        );
+        for label in ["Pi status", "App details", "Advanced"] {
+            assert!(
+                texts.iter().any(|t| t.text == label && t.fully_visible()),
+                "{label} at {size:?}"
+            );
+        }
+        let overview = texts
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for hidden in [
+            "Process health",
+            "Source ID:",
+            "lease",
+            "Repair input",
+            "Registry",
+            "Configure producer",
+        ] {
+            assert!(
+                !overview.contains(hidden),
+                "unexpected technical detail {hidden}: {overview}"
+            );
+        }
+        click(&mut harness, &mut app, "App details");
+        let details = text(&mut harness, &mut app);
+        assert_eq!(
+            details.matches("Session pi-").count(),
+            6,
+            "{size:?}: {details}"
+        );
+        assert!(!details.contains("process health"));
+        click(&mut harness, &mut app, "Setup instructions");
+        let help = text(&mut harness, &mut app);
+        assert!(help.contains("Load the Underglow extension"));
+        assert!(
+            incoming.try_recv().is_err(),
+            "browsing must never start a connector"
+        );
+        assert_eq!(app.setup_editor.draft, draft);
+        assert_eq!(app.setup_editor.applied, applied);
+        assert_eq!(app.connections_panel.registry(), registry.as_ref());
+        for _ in 0..20 {
+            harness.wheel(
+                egui::pos2(size.x * 0.5, size.y - 60.0),
+                egui::vec2(0.0, 500.0),
+                |ctx| app.show_lighting(ctx),
+            );
+        }
+        click(&mut harness, &mut app, "Pi status");
+        assert!(app.page == Page::Editor);
+        assert_eq!(app.setup_editor.selected.as_deref(), Some("pi-status"));
+        assert_eq!(app.setup_editor.draft, draft);
+        assert_eq!(app.setup_editor.applied, applied);
+        assert!(!app.status.as_ref().unwrap().enabled);
+        assert!(incoming.try_recv().is_err());
+    }
+}
+
+#[test]
+fn secondary_connections_many_sessions_scroll_without_changing_setup_or_starting_producers() {
+    for size in [
+        MINIMUM_SIZE,
+        DEFAULT_SIZE,
+        super::workspace_test_ui::WIDE_SIZE,
+    ] {
+        let (mut app, incoming) = connections_fixture();
+        let original = app.setup_editor.draft.clone();
+        let mut sample = app.setup_editor.preview.sample().unwrap().clone();
+        let template = sample.snapshot.states[0].clone();
+        sample.snapshot.states = (1..=32)
+            .map(|index| {
+                let mut state = template.clone();
+                state.identity.instance = format!("pi-{index}-session");
+                state
+            })
+            .collect();
+        app.setup_editor.preview.set_sample(Some(sample));
+        let mut harness = Harness::new(size);
+        assert!(text(&mut harness, &mut app).contains("32 sessions reporting"));
+        click(&mut harness, &mut app, "App details");
+        let mut visible = false;
+        for _ in 0..30 {
+            let frame = harness.settle(|ctx| app.show_lighting(ctx));
+            if frame
+                .texts()
+                .iter()
+                .any(|t| t.text == "Session pi-32-se" && t.fully_visible())
+            {
+                visible = true;
+                break;
+            }
+            harness.wheel(
+                egui::pos2(size.x * 0.5, size.y - 65.0),
+                egui::vec2(0.0, -130.0),
+                |ctx| app.show_lighting(ctx),
+            );
+        }
+        assert!(
+            visible,
+            "last session must be genuinely scrollable at {size:?}"
+        );
+        assert_eq!(app.setup_editor.draft, original);
+        assert!(!app.setup_editor.dirty);
+        assert!(incoming.try_recv().is_err());
     }
 }

@@ -6,12 +6,13 @@ pub fn draw<T>(
     events: Vec<egui::Event>,
     mut show: impl FnMut(&mut egui::Ui) -> T,
 ) -> (egui::FullOutput, T) {
-    // Advance animation time deterministically even on very fast CI workers.
-    static FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // Parallel UI contexts need independent clocks: a shared counter can turn
+    // another test's press/release into a long press instead of a click.
+    let time = ctx.input(|input| input.time) + 0.25;
     let mut result = None;
     let output = ctx.run(
         egui::RawInput {
-            time: Some(FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as f64 * 0.25),
+            time: Some(time),
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(1500.0, 18000.0),
@@ -59,4 +60,16 @@ fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
             modifiers: Default::default(),
         },
     ]
+}
+
+#[test]
+fn independent_contexts_do_not_advance_each_others_input_clock() {
+    let first = egui::Context::default();
+    let second = egui::Context::default();
+    let (_, before) = draw(&first, vec![], |ui| ui.input(|input| input.time));
+    for _ in 0..10 {
+        draw(&second, vec![], |_| ());
+    }
+    let (_, after) = draw(&first, vec![], |ui| ui.input(|input| input.time));
+    assert_eq!(after - before, 0.25);
 }

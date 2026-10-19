@@ -79,29 +79,35 @@ fn draw(panel: &mut Panel, view: View<'_>) -> String {
             assert!(panel.show(ui, view).is_none());
         });
     };
-    harness.click("Connection report details", None, &mut show);
+    harness.click("Advanced", None, &mut show);
     for _ in 0..20 {
         harness.run(vec![], &mut show);
     }
-    let count = harness
-        .settle(&mut show)
-        .texts()
-        .iter()
-        .filter(|t| t.text == "Connection details")
-        .count();
-    for index in 0..count {
-        let frame = harness.settle(&mut show);
-        let pos = frame
-            .texts()
-            .into_iter()
-            .filter(|t| t.text == "Connection details")
-            .nth(index)
-            .unwrap()
-            .rect
-            .center();
-        harness.click_at(pos, &mut show);
+    harness.click("Connection report details", None, &mut show);
+    for label in ["App details", "Advanced details"] {
         for _ in 0..20 {
             harness.run(vec![], &mut show);
+        }
+        let count = harness
+            .settle(&mut show)
+            .texts()
+            .iter()
+            .filter(|t| t.text == label)
+            .count();
+        for index in 0..count {
+            let frame = harness.settle(&mut show);
+            let pos = frame
+                .texts()
+                .into_iter()
+                .filter(|t| t.text == label)
+                .nth(index)
+                .unwrap()
+                .rect
+                .center();
+            harness.click_at(pos, &mut show);
+            for _ in 0..20 {
+                harness.run(vec![], &mut show);
+            }
         }
     }
     harness.click("Connection administration", None, &mut show);
@@ -426,4 +432,126 @@ fn history_is_bounded_deduplicated_and_cleared_on_engine_generation_change() {
     panel.observe(&sample(&empty, &empty_events, 400, 2));
     assert!(panel.states.is_empty());
     assert!(panel.events.is_empty());
+}
+
+fn overview(panel: &mut Panel, sample: Option<SourceSample<'_>>) -> String {
+    let mut harness = super::super::workspace_test_ui::Harness::new(egui::vec2(940.0, 850.0));
+    harness
+        .settle(|ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                assert!(
+                    panel
+                        .show(
+                            ui,
+                            View {
+                                sample,
+                                setup: None,
+                                runtime: None,
+                                connected: true,
+                                busy: false
+                            }
+                        )
+                        .is_none()
+                );
+            });
+        })
+        .texts()
+        .into_iter()
+        .map(|t| t.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn overview_counts_only_current_reports_not_removed_expired_or_delayed_history() {
+    let mut panel = Panel::default();
+    panel.receive_report(Ok(report()));
+    let all = snapshot(
+        (1..=6)
+            .map(|i| state(&format!("session-{i}"), "building"))
+            .collect(),
+    );
+    let events = events();
+    assert!(
+        overview(&mut panel, Some(sample(&all, &events, 200, 1))).contains("6 sessions reporting")
+    );
+    let mut expired = state("expired", "building");
+    expired.expires_at = Duration::from_millis(150);
+    let current = snapshot(vec![
+        state("session-1", "building"),
+        state("session-2", "idle"),
+        expired,
+    ]);
+    let text = overview(&mut panel, Some(sample(&current, &events, 200, 1)));
+    assert!(
+        text.contains("2 sessions reporting · 1 Building project · 1 idle"),
+        "{text}"
+    );
+    assert!(!text.contains("6 sessions reporting"));
+    assert!(!text.contains("session-3"));
+    let mut delayed = sample(&current, &events, 200, 1);
+    delayed.stale = true;
+    let text = overview(&mut panel, Some(delayed));
+    assert!(text.contains("Live data delayed · session status unavailable"));
+    assert!(!text.contains("sessions reporting"));
+    let text = overview(&mut panel, Some(sample(&current, &events, 1200, 1)));
+    assert!(text.contains("No recent data"));
+    assert!(!text.contains("sessions reporting"));
+    assert!(overview(&mut panel, None).contains("Live activity unavailable"));
+}
+
+#[test]
+fn event_only_activity_never_creates_a_session_or_idle_state() {
+    let mut panel = Panel::default();
+    panel.receive_report(Ok(report()));
+    let empty = snapshot(vec![]);
+    let mut events = events();
+    events.events.push(EventSnapshot {
+        cursor: 1,
+        identity: state("event-source", "unused").identity,
+        sequence: 1,
+        event: "finished".into(),
+        received_at: Duration::from_millis(100),
+        expires_at: Duration::from_millis(1000),
+        revision: 1,
+    });
+    let text = overview(&mut panel, Some(sample(&empty, &events, 200, 1)));
+    assert!(text.contains("Recent activity received · no current state reports"));
+    assert!(!text.contains("sessions reporting") && !text.contains("Idle"));
+    assert!(panel.states.is_empty());
+    let text = overview(&mut panel, Some(sample(&empty, &events, 1000, 1)));
+    assert!(text.contains("No recent data"));
+    assert!(!text.contains("Recent activity received"));
+}
+
+#[test]
+fn overview_respects_generic_instance_semantics_and_declared_state_labels() {
+    let mut panel = Panel::default();
+    let mut data: serde_json::Value = serde_json::from_str(&report()).unwrap();
+    data["connections"]["registry"]["connections"][0]["descriptor"]["instances"]["semantics"] =
+        "producer-defined".into();
+    panel.receive_report(Ok(data.to_string()));
+    let snapshot = snapshot(vec![
+        state("first", "building"),
+        state("second", "undeclared"),
+    ]);
+    let events = events();
+    let text = overview(&mut panel, Some(sample(&snapshot, &events, 200, 1)));
+    assert!(
+        text.contains("2 instances reporting · 1 Building project · 1 undeclared"),
+        "{text}"
+    );
+    assert!(!text.contains("2 sessions"));
+    assert!(!text.contains("Unknown") && !text.contains("SECRET"));
+    assert_eq!(
+        panel
+            .capabilities()
+            .unwrap()
+            .descriptor("custom")
+            .unwrap()
+            .states
+            .len(),
+        1,
+        "observations must not change capability metadata"
+    );
 }

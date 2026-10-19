@@ -21,19 +21,39 @@ Recent data, registration and process health are different facts:
 
 Private preview scenarios never become live connection observations.
 
-## Open details or administration deliberately
+## Browse apps first
 
-The Connections destination starts with concise source summaries. Expand
-**Connection details** for instances, recent/retained facts, bounded event
-history, layer/appearance selectors and capability declarations. **Connection
-report details** exposes capture age and registry revision. Managed health older
-than ten seconds is treated as unavailable until refreshed.
+The Connections overview shows each app's **current reporting sessions or
+instances**, a breakdown of their reported states, and **Used by** links to
+layers in the current draft. A layer appears once even when several of its
+appearances use the app. Opening a layer preserves its draft; it does not enable
+lighting.
 
-**Connection administration** contains capability-manifest import and producer
-configuration. The executable review, explicit trust acknowledgement and
-separate enablement controls remain at their consequential actions. Choosing an
-appearance never installs a producer, grants trust or starts executable code.
-Diagnostics remain available from the header; engine settings remain separate.
+Counts include only fresh state reports. Removed/expired sessions and retained
+history are excluded. **Live data delayed** means current session activity is
+unknown, not idle. An event-only publisher can show **Recent activity received**
+without establishing session presence.
+
+Open **App details** for current sessions and their last-update ages. Short
+session IDs identify reports, not tmux pane numbers or focus; hover for the full
+ID. **Setup instructions** explains how the app reports activity. Pi sessions
+need the Underglow extension loaded against the same engine; session IDs change
+when sessions restart.
+
+## Open technical details deliberately
+
+Within App details, **Advanced details** contains exact IDs, lease timing,
+process health, capabilities, event history and per-appearance binding repair.
+Externally run Pi sessions normally have unknown process health because
+Underglow does not supervise them; that is not itself a reporting error.
+
+The page's **Advanced** section contains **Connection report details** (capture
+age and registry revision) and **Connection administration** (capability-manifest
+import and producer configuration). Managed health older than ten seconds is
+treated as unavailable until refreshed. Executable review, explicit trust and
+separate enablement controls remain unchanged. Browsing any of these sections
+never starts a producer or enables lighting. Diagnostics remain available from
+the header; engine settings remain separate.
 
 ## Share without switching
 

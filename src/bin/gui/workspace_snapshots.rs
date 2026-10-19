@@ -566,3 +566,53 @@ fn representative_states_keep_navigation_and_preview_truthful_at_real_sizes() {
         }
     }
 }
+
+#[test]
+#[ignore = "opt-in Connections captures; set UNDERGLOW_CONNECTION_SNAPSHOTS"]
+fn export_connection_snapshots() {
+    use super::workspace_test_ui::Harness;
+    let destination = std::path::PathBuf::from(
+        std::env::var_os("UNDERGLOW_CONNECTION_SNAPSHOTS")
+            .expect("set UNDERGLOW_CONNECTION_SNAPSHOTS to an explicit output directory"),
+    );
+    std::fs::create_dir_all(&destination).unwrap();
+    for size in [[940, 850], [620, 640], [1280, 800]] {
+        for state in ["overview", "details", "no-data", "delayed", "missing"] {
+            let (mut app, incoming) = super::secondary_flow_tests::connections_fixture();
+            let mut sample = app.setup_editor.preview.sample().unwrap().clone();
+            if state == "no-data" {
+                sample.snapshot.states.clear();
+            }
+            if state == "delayed" {
+                sample.stale = true;
+            }
+            if state == "missing" {
+                app.connections_panel
+                    .receive_report(Ok(serde_json::json!({"ok":true,
+                    "connections":{"registry":{"schema_version":1,"revision":1,"connections":[]},
+                    "runtime_index":{}}})
+                    .to_string()));
+            }
+            app.setup_editor.preview.set_sample(Some(sample));
+            let mut harness = Harness::new(egui::vec2(size[0] as f32, size[1] as f32));
+            let mut capture = Capture::new(size);
+            if state == "details" {
+                capture_click_label(&mut capture, &mut harness, &mut app, "App details");
+            }
+            for index in 0..30 {
+                let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+                capture.update_textures(&frame.output.textures_delta);
+                if index == 29 {
+                    capture.paint(&harness.context, frame.output);
+                }
+            }
+            assert!(
+                incoming.try_recv().is_err(),
+                "capture must not dispatch any action"
+            );
+            let path = destination.join(format!("connections-{state}-{}x{}.png", size[0], size[1]));
+            std::fs::write(&path, capture.png()).unwrap();
+            eprintln!("Headless software capture (not native): {}", path.display());
+        }
+    }
+}

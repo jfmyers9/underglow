@@ -45,8 +45,9 @@ editing tasks at 620×640 and resize to a wider window.
    and reopen it. Restart the development session if needed to check persistence.
    Pi must not be silently reinserted.
 8. **Navigate without losing context.** Make an unsaved edit, visit Connections,
-   and return. The edit and selected layer must remain. Explain the difference
-   between reported source activity and a managed producer's process health.
+   and return. The edit and selected layer must remain. Identify the apps
+   reporting activity and the layers that use them. Open App details to find
+   sessions and setup help without needing technical diagnostics.
 9. **Inspect and go deeper.** Explain a key's composition without changing its
    targets. Find advanced scenario testing, sharing and diagnostics, then return
    to ordinary editing without being stuck in an administrative flow.
@@ -100,3 +101,14 @@ key/condition editors and independent appearance-editing/private-testing views.
 Pending/error messages are illustrative
 fixtures, not evidence that an actual save failed; workflow acknowledgement,
 conflict and recovery tests exercise those paths separately.
+
+The Connections-specific exporter includes a six-session overview, expanded app
+details, no recent data, delayed data and a missing registration at all three
+window sizes:
+
+```sh
+UNDERGLOW_CONNECTION_SNAPSHOTS=/tmp/underglow-connections \
+  cargo test --features gui --bin underglow-gui \
+  workspace_snapshots::export_connection_snapshots --locked -- \
+  --ignored --exact --test-threads=1
+```

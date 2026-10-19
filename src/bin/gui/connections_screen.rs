@@ -308,45 +308,19 @@ impl Panel {
                 }
             });
         });
+        ui.label("Apps report activity here. Layers in your setup decide how it looks.");
         if let Some(notice) = &self.binding_notice {
             ui.label(notice);
         }
-        ui.small(
-            "Recent data and process health are separate. Browsing never starts a connection.",
-        );
         if let Some(error) = &self.error {
-            ui.colored_label(super::brand::ERROR, format!("Connection health: {error}"));
+            ui.colored_label(super::brand::WARNING, format!("Connection health: {error}"));
+            ui.small(
+                "Connection settings could not be refreshed. Live activity may still be available.",
+            );
         }
-        ui.collapsing("Connection report details", |ui| {
-            if let Some(captured) = self.captured {
-                ui.small(format!(
-                    "Registry/producer health captured {:.1}s ago{}",
-                    captured.elapsed().as_secs_f32(),
-                    if view.connected {
-                        ""
-                    } else {
-                        " · engine unavailable; health is last known, not current"
-                    }
-                ));
-            }
-            if let Some(report) = &self.report {
-                ui.small(format!(
-                    "Connection registry revision {}",
-                    report.registry.revision
-                ));
-            }
-        });
         let now = view.sample.as_ref().map(|s| s.now);
         // The facts endpoint and control/health transport can fail independently.
         let fresh_sample = view.sample.as_ref().is_some_and(|s| !s.stale);
-        if !fresh_sample {
-            ui.label("Live facts unavailable or delayed. Process health remains separate.");
-        }
-        if view.sample.as_ref().is_some_and(|s| s.events.gap) {
-            ui.label(
-                "Event history has a gap; some events expired or were evicted before inspection.",
-            );
-        }
         let mut sources: BTreeSet<String> = self
             .report
             .iter()
@@ -366,7 +340,8 @@ impl Panel {
             .chain(self.events.values().map(|e| e.identity.source.clone()))
             .collect();
         if sources.is_empty() {
-            ui.label("No configured sources yet. Refresh to load the machine-local registry.");
+            ui.label("No apps configured or reporting yet.");
+            ui.small("Refresh connections to load configured apps, or open Advanced to configure a connector.");
         }
         if let Some(source) = self.focused_source.clone() {
             ui.label(format!("Selected connection: {source}"));
@@ -380,91 +355,153 @@ impl Panel {
         }
         for source in sources {
             let process_summary = self.process_summary(&source, view.connected);
-            let connection = self.report.as_ref().and_then(|r| {
-                r.registry
-                    .connections
-                    .iter()
-                    .find(|c| c.descriptor.source == source)
-            });
-            let label =
-                connection.map_or_else(|| source.clone(), |c| c.descriptor.display_name.clone());
+            let connection = self
+                .report
+                .as_ref()
+                .and_then(|r| r.registry.connection(&source));
+            let descriptor = connection.map(|c| &c.descriptor);
+            let label = descriptor.map_or(source.as_str(), |d| d.display_name.as_str());
+            let current: Vec<_> = view
+                .sample
+                .as_ref()
+                .filter(|_| fresh_sample)
+                .into_iter()
+                .flat_map(|s| &s.snapshot.states)
+                .filter(|s| s.identity.source == source && s.expires_at > s_now(&view))
+                .collect();
+            let bound: Vec<_> = view
+                .setup
+                .into_iter()
+                .flat_map(bindings)
+                .filter(|b| b.source == source)
+                .collect();
             ui.push_id(&source, |ui| {
                 super::brand::card().show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    ui.add(egui::Label::new(egui::RichText::new(&label).strong()).truncate()).on_hover_text(&label);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.small(if recent_facts(view.sample, &source) { "Recent data available" } else { "No recent data" });
-                        ui.small(process_summary);
-                    });
-                    if connection.is_none() && self.report.is_some() { ui.colored_label(super::brand::WARNING, "Missing connection binding"); }
-                    let focused = view.setup.into_iter().flat_map(bindings).find(|binding| {
-                        binding.source == source && self.focused_layer.as_deref() == Some(binding.layer_id)
-                    });
-                    if let Some(binding) = focused {
-                        ui.label(format!("Affected layer: {}", binding.layer_name));
-                        if ui.add_enabled(self.report.is_some() && !view.busy, egui::Button::new("Repair layer binding")).clicked()
-                            && let Some(setup) = view.setup {
-                            self.binding_editor = Some(binding_editor::Editor::new(setup,
-                                underglow::binding_repair::BindingKey { layer_id: binding.layer_id.into(), variant_id: binding.variant.map(|variant| variant.0.into()) }, binding.activation));
-                        }
+                    ui.add(egui::Label::new(egui::RichText::new(label).strong()).truncate()).on_hover_text(label);
+                    ui.label(activity_summary(view.sample, &source, descriptor, &current));
+                    if connection.is_none() && self.report.is_some() {
+                        ui.colored_label(super::brand::WARNING, "Missing connection binding");
                     }
-                    egui::CollapsingHeader::new("Connection details").id_salt(&source).default_open(false).show(ui, |ui| {
-                    ui.small(format!("Source ID: {source}"));
-                    match connection {
-                        Some(connection) => {
-                            show_process(ui, connection, self.report.as_ref().and_then(|r| r.runtime_index.get(&source)),
-                                self.error.is_some() || !view.connected || self.captured.is_none_or(|captured| captured.elapsed() >= HEALTH_AGE));
-                            show_capabilities(ui, &connection.descriptor);
-                        }
-                        None if self.report.is_some() => {
-                            ui.strong("Missing connection binding");
-                            ui.label("Repair: restore/register a connection with this source ID, or edit the affected layer binding. Layers are preserved.");
-                        }
-                        None => { ui.label("Connection registration unknown — refresh the registry to inspect binding health."); }
-                    }
-                    let current: Vec<_> = view.sample.as_ref().filter(|_| fresh_sample).into_iter()
-                        .flat_map(|s| &s.snapshot.states)
-                        .filter(|s| s.identity.source == source && s.expires_at > s_now(&view)).collect();
-                    ui.strong(if current.is_empty() { "Application state: Not reporting (no fresh state lease)" }
-                        else { "Application state: Fresh" });
-                    if current.is_empty() {
-                        ui.small("A running/healthy connector can still have stale state. Check publication, source/instance IDs and lease renewal; external process health remains unknown.");
-                    }
-                    for state in self.states.values().filter(|s| s.identity.source == source) {
-                        let active = current.iter().any(|s| s.identity == state.identity && s.sequence == state.sequence);
-                        ui.label(format!("Instance {} · state {} · {} · last update {} · lease {}",
-                            state.identity.instance, state.state, if active { "fresh" } else { "last seen / not reporting" },
-                            age(now, state.updated_at), lease(now, state.expires_at, active)));
-                    }
-                    ui.collapsing("Observed events (bounded history)", |ui| {
-                        for event in self.events.values().filter(|e| e.identity.source == source) {
-                            let active = fresh_sample && now.is_some_and(|n| event.expires_at > n);
-                            ui.label(format!("{} / {} · {} · lease {}", event.identity.instance, event.event,
-                                age(now, event.received_at), lease(now, event.expires_at, active)));
-                        }
-                        ui.small("Events are occurrences, not persistent application state or task success.");
-                    });
-                    ui.strong("Layer binding impact (current draft; not proof of hardware output)");
-                    let bound: Vec<_> = view.setup.into_iter().flat_map(bindings).filter(|b| b.source == source).collect();
-                    if bound.is_empty() { ui.label("No layers reference this source. Fresh facts alone do not create visuals."); }
-                    for binding in bound {
-                        if ui.button(binding.label()).clicked() { request = Some(Request::OpenLayer(binding.layer_id.into())); }
-                        ui.label(binding.explanation(&view, &current));
-                        ui.push_id((binding.layer_id, binding.variant.map(|v| v.0)), |ui| {
-                            if ui.add_enabled(self.report.is_some(), egui::Button::new("Repair input binding…")).clicked()
-                                && let Some(setup) = view.setup
-                            {
-                                self.binding_editor = Some(binding_editor::Editor::new(setup,
-                                    underglow::binding_repair::BindingKey {
-                                        layer_id: binding.layer_id.into(), variant_id: binding.variant.map(|v| v.0.into()),
-                                    }, binding.activation));
-                                self.binding_notice = None;
+                    // A layer may have several appearances using this app. List
+                    // the layer once here; per-appearance selectors stay Advanced.
+                    let layers: BTreeMap<_, _> = bound.iter().map(|b| (b.layer_id, b.layer_name)).collect();
+                    if layers.is_empty() {
+                        ui.small("Not used by any layers in this setup.");
+                    } else {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.small("Used by");
+                            for (id, name) in layers {
+                                if ui.add(egui::Button::new(name).truncate().fill(egui::Color32::TRANSPARENT))
+                                    .on_hover_text("Open this layer in the Editor").clicked() {
+                                    request = Some(Request::OpenLayer(id.into()));
+                                }
                             }
                         });
                     }
+                    let focused = bound.iter().find(|b| self.focused_layer.as_deref() == Some(b.layer_id));
+                    if let Some(binding) = focused {
+                        ui.label(format!("Affected layer: {}", binding.layer_name));
+                        if connection.is_none() && self.report.is_some()
+                            && ui.add_enabled(!view.busy, egui::Button::new("Repair layer binding")).clicked()
+                            && let Some(setup) = view.setup {
+                            self.binding_editor = Some(binding_editor::Editor::new(setup,
+                                underglow::binding_repair::BindingKey { layer_id: binding.layer_id.into(), variant_id: binding.variant.map(|v| v.0.into()) }, binding.activation));
+                        }
+                    }
+                    ui.collapsing("App details", |ui| {
+                        ui.strong("Reporting now");
+                        if current.is_empty() {
+                            ui.label(if fresh_sample { "No sessions or instances are reporting a current state." }
+                                else { "Current session activity is unavailable." });
+                            ui.small("Missing reports do not mean an app is idle or stopped.");
+                        }
+                        for state in &current {
+                            let session = descriptor.is_some_and(|d| d.instances.semantics == underglow::source_capabilities::InstanceSemantics::Session);
+                            let short: String = state.identity.instance.chars().take(8).collect();
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(format!("{} {short}", if session { "Session" } else { "Instance" }))
+                                    .on_hover_text(format!("Exact instance ID: {}", state.identity.instance));
+                                ui.strong(state_label(descriptor, &state.state));
+                                ui.small(format!("updated {}", age(now, state.updated_at)));
+                            });
+                        }
+                        ui.collapsing("Setup instructions", |ui| {
+                            if source == "pi" {
+                                ui.label("Load the Underglow extension in each Pi session you want to report activity.");
+                                ui.label("In this checkout, Pi loads the project extension after project trust approval. Use /reload in sessions already running.");
+                                ui.label("Outside this checkout, load connectors/pi/index.ts explicitly or install the complete connector directory. See connectors/pi/README.md for setup and engine discovery.");
+                                ui.small("Pi reports independent sessions, not tmux panes or terminal focus. Session IDs change when sessions restart.");
+                            } else if connection.is_some_and(|c| c.producer.is_some()) {
+                                ui.label("This app uses a locally configured connector. Review its executable, trust and enablement under Advanced → Connection administration.");
+                            } else {
+                                ui.label("Run this app's connector against the same Underglow engine. It must publish activity using the source ID shown under Advanced details.");
+                            }
+                            ui.small("Browsing and preview tests never start a connector or enable lighting.");
+                        });
+                        ui.collapsing("Advanced details", |ui| {
+                            ui.small(process_summary);
+                            if !fresh_sample {
+                                ui.label("Live facts unavailable or delayed. Process health remains separate.");
+                            }
+                            if view.sample.as_ref().is_some_and(|s| s.events.gap) {
+                                ui.label("Event history has a gap; some events expired or were evicted before inspection.");
+                            }
+                            ui.small(format!("Source ID: {source}"));
+                            match connection {
+                                Some(connection) => {
+                                    show_process(ui, connection, self.report.as_ref().and_then(|r| r.runtime_index.get(&source)),
+                                        self.error.is_some() || !view.connected || self.captured.is_none_or(|captured| captured.elapsed() >= HEALTH_AGE));
+                                    show_capabilities(ui, &connection.descriptor);
+                                }
+                                None if self.report.is_some() => {
+                                    ui.strong("Missing connection binding");
+                                    ui.label("Repair: restore/register a connection with this source ID, or edit the affected layer binding. Layers are preserved.");
+                                }
+                                None => { ui.label("Connection registration unknown — refresh the registry to inspect binding health."); }
+                            }
+                            ui.strong(if current.is_empty() { "Application state: Not reporting (no fresh state lease)" }
+                                else { "Application state: Fresh" });
+                            if current.is_empty() {
+                                ui.small("A running/healthy connector can still have stale state. Check publication, source/instance IDs and lease renewal; external process health remains unknown.");
+                            }
+                            for state in self.states.values().filter(|s| s.identity.source == source) {
+                                let active = current.iter().any(|s| s.identity == state.identity && s.sequence == state.sequence);
+                                ui.label(format!("Instance {} · state {} · {} · last update {} · lease {}",
+                                    state.identity.instance, state.state, if active { "fresh" } else { "last seen / not reporting" },
+                                    age(now, state.updated_at), lease(now, state.expires_at, active)));
+                            }
+                            ui.collapsing("Observed events (bounded history)", |ui| {
+                                for event in self.events.values().filter(|e| e.identity.source == source) {
+                                    let active = fresh_sample && now.is_some_and(|n| event.expires_at > n);
+                                    ui.label(format!("{} / {} · {} · lease {}", event.identity.instance, event.event,
+                                        age(now, event.received_at), lease(now, event.expires_at, active)));
+                                }
+                                ui.small("Events are occurrences, not persistent application state or task success.");
+                            });
+                            ui.strong("Layer binding impact (current draft; not proof of hardware output)");
+                            let bound: Vec<_> = view.setup.into_iter().flat_map(bindings).filter(|b| b.source == source).collect();
+                            if bound.is_empty() { ui.label("No layers reference this source. Fresh facts alone do not create visuals."); }
+                            for binding in bound {
+                                if ui.button(binding.label()).clicked() { request = Some(Request::OpenLayer(binding.layer_id.into())); }
+                                ui.label(binding.explanation(&view, &current));
+                                ui.push_id((binding.layer_id, binding.variant.map(|v| v.0)), |ui| {
+                                    if ui.add_enabled(self.report.is_some(), egui::Button::new("Repair input binding…")).clicked()
+                                        && let Some(setup) = view.setup
+                                    {
+                                        self.binding_editor = Some(binding_editor::Editor::new(setup,
+                                            underglow::binding_repair::BindingKey {
+                                                layer_id: binding.layer_id.into(), variant_id: binding.variant.map(|v| v.0.into()),
+                                            }, binding.activation));
+                                        self.binding_notice = None;
+                                    }
+                                });
+                            }
+                        });
                     });
                 });
             });
+            ui.add_space(8.0);
         }
         if let (Some(editor), Some(report), Some(setup)) =
             (&mut self.binding_editor, &self.report, view.setup)
@@ -477,36 +514,110 @@ impl Panel {
                 self.binding_editor = None;
             }
         }
-        ui.collapsing("Connection administration", |ui| {
-            if let Some(report) = &self.report
-                && let Some(replacement) = self.manifest_editor.show(
-                    ui,
-                    &report.registry,
-                    view.connected && !view.busy && self.error.is_none(),
-                )
-            {
-                self.metadata_write = true;
-                request = Some(Request::Replace {
-                    revision: replacement.revision,
-                    registry: replacement.registry,
-                });
-            }
-            if let Some(report) = &self.report
-                && let Some(replacement) = self.producer_editor.show(
-                    ui,
-                    &report.registry,
-                    view.connected && !view.busy && self.error.is_none(),
-                )
-            {
-                self.metadata_write = false;
-                request = Some(Request::Replace {
-                    revision: replacement.revision,
-                    registry: replacement.registry,
-                });
-            }
+        ui.collapsing("Advanced", |ui| {
+            ui.small("Technical diagnostics and local connector configuration. Changes require explicit actions.");
+            ui.collapsing("Connection report details", |ui| {
+                if let Some(captured) = self.captured {
+                    ui.small(format!(
+                        "Registry/producer health captured {:.1}s ago{}",
+                        captured.elapsed().as_secs_f32(),
+                        if view.connected {
+                            ""
+                        } else {
+                            " · engine unavailable; health is last known, not current"
+                        }
+                    ));
+                }
+                if let Some(report) = &self.report {
+                    ui.small(format!(
+                        "Connection registry revision {}",
+                        report.registry.revision
+                    ));
+                }
+            });
+            ui.collapsing("Connection administration", |ui| {
+                if let Some(report) = &self.report
+                    && let Some(replacement) = self.manifest_editor.show(
+                        ui,
+                        &report.registry,
+                        view.connected && !view.busy && self.error.is_none(),
+                    )
+                {
+                    self.metadata_write = true;
+                    request = Some(Request::Replace {
+                        revision: replacement.revision,
+                        registry: replacement.registry,
+                    });
+                }
+                if let Some(report) = &self.report
+                    && let Some(replacement) = self.producer_editor.show(
+                        ui,
+                        &report.registry,
+                        view.connected && !view.busy && self.error.is_none(),
+                    )
+                {
+                    self.metadata_write = false;
+                    request = Some(Request::Replace {
+                        revision: replacement.revision,
+                        registry: replacement.registry,
+                    });
+                }
+            });
         });
         request
     }
+}
+
+fn state_label<'a>(descriptor: Option<&'a SourceDescriptor>, value: &'a str) -> &'a str {
+    descriptor
+        .and_then(|d| d.states.iter().find(|s| s.id == value))
+        .map_or(value, |s| s.label.as_str())
+}
+
+/// Summarize only fresh leased state, never retained history, private tests or
+/// process health. Event-only sources can report activity without state presence.
+fn activity_summary(
+    sample: Option<SourceSample<'_>>,
+    source: &str,
+    descriptor: Option<&SourceDescriptor>,
+    current: &[&StateSnapshot],
+) -> String {
+    let Some(sample) = sample else {
+        return "Live activity unavailable".into();
+    };
+    if sample.stale {
+        return "Live data delayed · session status unavailable".into();
+    }
+    if current.is_empty() {
+        return if recent_facts(Some(sample), source) {
+            "Recent activity received · no current state reports".into()
+        } else {
+            "No recent data".into()
+        };
+    }
+    let noun = if descriptor.is_some_and(|d| {
+        d.instances.semantics == underglow::source_capabilities::InstanceSemantics::Session
+    }) {
+        "session"
+    } else {
+        "instance"
+    };
+    let mut result = format!(
+        "{} {noun}{} reporting",
+        current.len(),
+        if current.len() == 1 { "" } else { "s" }
+    );
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for state in current {
+        *counts.entry(&state.state).or_default() += 1;
+    }
+    for (state, count) in counts.iter().take(3) {
+        result.push_str(&format!(" · {count} {}", state_label(descriptor, state)));
+    }
+    if counts.len() > 3 {
+        result.push_str(" · more states in App details");
+    }
+    result
 }
 
 fn recent_facts(sample: Option<SourceSample<'_>>, source: &str) -> bool {

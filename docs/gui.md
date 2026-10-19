@@ -119,9 +119,11 @@ A source-driven layer shows a concise note and **Connections: …** link. Recent
 data, registration and process health are separate: no recent facts do not prove
 an application stopped. Private tests never become live health observations.
 
-Connections starts with summaries; open details or **Connection administration**
-when needed. Executable review, trust and enablement remain separate explicit
-actions. Selecting visuals never installs or starts a producer. **Diagnostics**
+Connections starts with reporting apps, session/state counts and **Used by**
+layer links. **App details** shows current sessions and setup help; **Advanced
+details** contains technical diagnostics. Local connector configuration stays
+under **Advanced → Connection administration**, with executable review, trust
+and enablement as separate explicit actions. Browsing never starts a producer. **Diagnostics**
 and **Settings** are secondary windows.
 
 **Setup-name switcher → Share setups** opens import/export. A new imported copy
