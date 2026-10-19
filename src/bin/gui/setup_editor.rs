@@ -151,7 +151,7 @@ mod tests {
         let original = document();
         editor.load(Some(original.clone()));
         // Preview is read-only; inspection requires the explicit Inspect mode.
-        click(&ctx, &mut editor, "Inspect", 0);
+        click(&ctx, &mut editor, "Inspect key", 0);
         click(&ctx, &mut editor, "F3", 0);
         let coord = underglow::key_targets::canonical_coord("F3").unwrap();
         assert_eq!(editor.explained_key, Some(coord));
@@ -488,7 +488,7 @@ mod tests {
                 color: [0, 255, 255]
             }
         );
-        click(&ctx, &mut editor, "Keyboard", 0); // close color popup
+        click(&ctx, &mut editor, "Keyboard interaction", 0); // close color popup
         click(&ctx, &mut editor, "Edit keys", 0);
         click(&ctx, &mut editor, "Arrow keys (4 physical)", 0);
         click(&ctx, &mut editor, "Add layer", 0);

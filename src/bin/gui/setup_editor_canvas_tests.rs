@@ -57,7 +57,7 @@ fn key(frame: &crate::workspace_test_ui::Frame, label: &str) -> egui::Pos2 {
     let texts = frame.texts();
     let region = texts
         .iter()
-        .find(|text| text.text == "Keyboard")
+        .find(|text| text.text == "Keyboard interaction")
         .unwrap()
         .clip;
     let keys: Vec<_> = texts
@@ -80,7 +80,7 @@ fn rgb_keys(frame: &crate::workspace_test_ui::Frame) -> Vec<(egui::Rect, egui::C
     let region = frame
         .texts()
         .into_iter()
-        .find(|text| text.text == "Keyboard")
+        .find(|text| text.text == "Keyboard interaction")
         .unwrap()
         .clip;
     let result: Vec<_> = frame
@@ -118,6 +118,9 @@ fn mounted_modes_keep_one_readable_rgb_capture_and_usable_inspector_at_real_size
         let doc = document();
         let (mut app, incoming) = app(doc.clone());
         app.setup_editor.highlight_coverage = true;
+        harness.settle(|ctx| app.show_lighting(ctx));
+        let frozen = app.setup_editor.preview.frame().clone();
+        let clock = app.setup_editor.preview.evaluation_now();
         let mut geometry = None;
         for mode in [
             setup_targets::CanvasMode::Preview,
@@ -127,13 +130,32 @@ fn mounted_modes_keep_one_readable_rgb_capture_and_usable_inspector_at_real_size
             harness.click(mode.label(), None, |ctx| app.show_lighting(ctx));
             let frame = harness.settle(|ctx| app.show_lighting(ctx));
             assert_eq!(app.setup_editor.canvas_mode, mode);
-            for label in ["Preview", "Select keys", "Inspect"] {
+            let header = frame
+                .texts()
+                .into_iter()
+                .find(|text| text.text == "Keyboard interaction")
+                .unwrap();
+            assert!(header.fully_visible());
+            for label in ["View", "Select keys", "Inspect key", "Preview only"] {
                 assert!(
                     frame
                         .texts()
                         .iter()
                         .any(|text| text.text == label && text.fully_visible())
                 );
+                let text = frame
+                    .texts()
+                    .into_iter()
+                    .find(|text| text.text == label)
+                    .unwrap();
+                assert!(
+                    text.rect.top() < header.rect.bottom()
+                        && header.rect.top() < text.rect.bottom(),
+                    "interaction controls stay on a single row at {size:?}"
+                );
+                assert!(!frame.output.shapes.iter().any(|shape| matches!(
+                    &shape.shape, egui::Shape::Text(text) if text.galley.text() == label && text.galley.elided
+                )), "interaction controls must not truncate: {label}");
             }
             key(&frame, "Esc");
             key(&frame, "→");
@@ -169,6 +191,10 @@ fn mounted_modes_keep_one_readable_rgb_capture_and_usable_inspector_at_real_size
             assert!(keys.iter().any(|(_, fill)| *fill == egui::Color32::BLACK));
             assert!(keys.iter().any(|(_, fill)| *fill != egui::Color32::BLACK));
             assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
+            assert_eq!(app.setup_editor.applied.as_ref(), Some(&doc));
+            assert_eq!(app.setup_editor.preview.frame(), &frozen);
+            assert_eq!(app.setup_editor.preview.evaluation_now(), clock);
+            assert!(app.setup_editor.preview.mode == setup_preview::Mode::Scenario);
             assert!(!app.setup_editor.dirty);
             assert!(incoming.try_recv().is_err());
         }
@@ -199,7 +225,7 @@ fn mounted_pi_retargeting_is_scoped_and_inspect_uses_the_actual_capture() {
         assert_eq!(expected.layers.len(), 2);
         assert_eq!(expected.layers[1].variants, original.layers[1].variants);
         assert!(app.setup_editor.dirty);
-        harness.click("Inspect", None, |ctx| app.show_lighting(ctx));
+        harness.click("Inspect key", None, |ctx| app.show_lighting(ctx));
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         harness.click_at(key(&frame, "F1"), |ctx| app.show_lighting(ctx));
         let coord = canonical_coord("F1").unwrap();
@@ -389,7 +415,7 @@ fn keys_tab_and_canvas_selection_mode_share_the_same_editing_context() {
                 .map(|state| state.keys_open),
             Some(true)
         );
-        harness.click("Preview", None, |ctx| app.show_lighting(ctx));
+        harness.click("View", None, |ctx| app.show_lighting(ctx));
         assert_eq!(
             app.setup_editor.canvas_mode,
             setup_targets::CanvasMode::Preview

@@ -30,7 +30,7 @@ fn canvas(frame: &Frame) -> egui::Rect {
     frame
         .texts()
         .into_iter()
-        .find(|text| text.text == "Keyboard")
+        .find(|text| text.text == "Keyboard interaction")
         .unwrap()
         .clip
 }
@@ -95,8 +95,8 @@ fn mounted_pi_quick_tests_are_reachable_read_only_and_keep_a_readable_stable_can
             );
         }
         if size == MINIMUM_SIZE {
-            let title = visible(&frame, "Keyboard");
-            let mode = visible(&frame, "Preview");
+            let title = visible(&frame, "Keyboard interaction");
+            let mode = visible(&frame, "View");
             assert!(
                 title.top() < mode.bottom() && mode.top() < title.bottom(),
                 "compact title and modes share one row rather than shrinking the keyboard"
@@ -240,7 +240,7 @@ fn inspect_click_reveals_the_canonical_report_before_advanced_controls() {
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         let region = canvas(&frame);
         choose_test(&mut harness, &mut app, "Working");
-        harness.click("Inspect", Some(region), |ctx| app.show_lighting(ctx));
+        harness.click("Inspect key", Some(region), |ctx| app.show_lighting(ctx));
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         harness.click_at(visible(&frame, "F1").center(), |ctx| app.show_lighting(ctx));
         let frame = harness.settle(|ctx| app.show_lighting(ctx));

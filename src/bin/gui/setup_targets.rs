@@ -356,22 +356,22 @@ pub enum CanvasMode {
 impl CanvasMode {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Preview => "Preview",
+            Self::Preview => "View",
             Self::SelectKeys => "Select keys",
-            Self::Inspect => "Inspect",
+            Self::Inspect => "Inspect key",
         }
     }
 
     pub fn help(self) -> &'static str {
         match self {
             Self::Preview => {
-                "Read-only composed output. Choose Select keys to edit targets or Inspect to explain a key."
+                "View the lighting without editing. Clicking keys does nothing. Choose Select keys to change the layer's keys, or Inspect key to explain a color."
             }
             Self::SelectKeys => {
-                "Click replaces direct keys; Shift/Ctrl/⌘-click toggles; drag selects; modifier-drag adds. Zones/groups stay unioned."
+                "Choose keys for the selected layer. Click replaces direct keys; Shift/Ctrl/⌘-click toggles; drag selects; modifier-drag adds. Zones/groups stay unioned. Changes stay in the draft until Save."
             }
             Self::Inspect => {
-                "Click a key or matrix position to explain the captured composition. Targets are unchanged."
+                "Click a key to see why it has its current color. This only opens an explanation; it does not change the layer's keys or the activity being previewed."
             }
         }
     }

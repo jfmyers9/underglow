@@ -569,3 +569,63 @@ fn quiet_layer_names_show_keyboard_focus_on_the_row_not_a_text_box() {
         assert_eq!(found, 2, "Tab reaches both layer names at {size:?}");
     }
 }
+
+#[test]
+fn keyboard_interaction_modes_are_focusable_without_changing_preview_activity() {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
+        let (mut app, incoming) = app();
+        let mut harness = Harness::new(size);
+        harness.settle(|ctx| app.show_lighting(ctx));
+        let draft = app.setup_editor.draft.clone();
+        let applied = app.setup_editor.applied.clone();
+        let preview = app.setup_editor.preview.frame().clone();
+        let clock = app.setup_editor.preview.evaluation_now();
+        let mut reached = Vec::new();
+        for _ in 0..40 {
+            let frame = key(&mut harness, &mut app, egui::Key::Tab, false);
+            let response = focused(&harness, &frame);
+            let Some(mode) = [
+                setup_targets::CanvasMode::Preview,
+                setup_targets::CanvasMode::SelectKeys,
+                setup_targets::CanvasMode::Inspect,
+            ]
+            .into_iter()
+            .find(|mode| {
+                frame.texts().iter().any(|text| {
+                    text.text == mode.label()
+                        && text.fully_visible()
+                        && response.rect.contains_rect(text.rect)
+                })
+            }) else {
+                continue;
+            };
+            assert!(
+                frame.output.shapes.iter().any(|shape| has_focus_outline(
+                    &shape.shape,
+                    shape.clip_rect,
+                    response.rect
+                )),
+                "interaction mode retains visible keyboard focus"
+            );
+            key(&mut harness, &mut app, egui::Key::Enter, false);
+            assert_eq!(app.setup_editor.canvas_mode, mode);
+            assert_eq!(app.setup_editor.draft, draft);
+            assert_eq!(app.setup_editor.applied, applied);
+            assert_eq!(app.setup_editor.preview.frame(), &preview);
+            assert_eq!(app.setup_editor.preview.evaluation_now(), clock);
+            assert!(app.setup_editor.preview.mode == setup_preview::Mode::Scenario);
+            assert!(incoming.try_recv().is_err());
+            if !reached.contains(&mode) {
+                reached.push(mode);
+            }
+            if reached.len() == 3 {
+                break;
+            }
+        }
+        assert_eq!(
+            reached.len(),
+            3,
+            "Tab and Enter reach all three interaction modes at {size:?}"
+        );
+    }
+}

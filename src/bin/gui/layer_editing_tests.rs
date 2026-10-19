@@ -50,7 +50,10 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
                     .map(|t| t.clip)
             })
             .or(pane);
-        let keyboard = texts.iter().find(|t| t.text == "Keyboard").map(|t| t.clip);
+        let keyboard = texts
+            .iter()
+            .find(|t| t.text == "Keyboard interaction")
+            .map(|t| t.clip);
         if let Some(t) = texts.iter().find(|t| {
             t.text == label
                 && t.fully_visible()
@@ -58,7 +61,7 @@ fn click(h: &mut Harness, app: &mut Controller, label: &str) {
                 // Quick tests repeat capability labels such as Working. An
                 // inspector choice must come from its pane/popup, not the
                 // independently clipped canonical keyboard's test toolbar.
-                && (matches!(label, "F1" | "Keyboard")
+                && (matches!(label, "F1" | "Keyboard interaction")
                     || keyboard.is_none_or(|r| r != t.clip))
         }) {
             h.click_at(t.rect.center(), |ctx| app.show_lighting(ctx));
@@ -310,7 +313,7 @@ fn compact_stack_overflow_actions_follow_top_first_display_and_stable_ids() {
     click(&mut h, &mut app, "Enabled");
     assert!(!app.setup_editor.draft.as_ref().unwrap().layers[1].enabled);
     assert_eq!(app.setup_editor.draft.as_ref().unwrap().layers[0], bottom);
-    click(&mut h, &mut app, "Keyboard");
+    click(&mut h, &mut app, "Keyboard interaction");
     click(&mut h, &mut app, "...");
     click(&mut h, &mut app, "Toward bottom");
     let doc = app.setup_editor.draft.as_ref().unwrap();

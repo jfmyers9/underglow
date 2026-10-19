@@ -62,8 +62,9 @@ Save, Discard and document replacement baseline the evaluator and clear quick oc
 they do not replay old Finished events. Switching back to Live also baselines
 the live cursor, so historical real events cannot be replayed as new activity.
 
-In **Inspect** mode, click a key to open its explanation before the advanced
-forms. The report uses the same captured frame, facts and evaluation clock as
+Under **Keyboard interaction**, choose **Inspect key**, then click a key to open
+its explanation before the advanced forms. The report uses the same captured
+frame, facts and evaluation clock as
 the RGB canvas. Target/coverage/inspection annotations never replace RGB fills.
 
 Headless interaction tests cover the production-styled 940×850, 620×640 and

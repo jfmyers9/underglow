@@ -88,12 +88,15 @@ It is not device feedback.
 - **More… → Advanced preview…** retains simultaneous-source scenarios,
   deterministic stepping, isolated input demo, coverage and expiry. Quick testing preserves
   those advanced channels.
-- **Inspect** makes a key click open its actual **Why this key?** report before
+- **Inspect key** makes a key click open its actual **Why this key?** report before
   advanced forms. It never retargets a layer or enables lighting.
 
-Keyboard modes are **Preview** (read-only), **Select keys** (target editing), and
-**Inspect** (explanation). Outlines do not replace rendered RGB colors. Missing
-source data is not treated as idle or success. Physical targets remain 80HE ANSI;
+The **Keyboard interaction** group controls what clicking the on-screen keys
+does: **View** leaves clicks inactive, **Select keys** edits the selected layer's
+targets, and **Inspect key** explains a color. Switching modes does not change
+the real or simulated activity being previewed. Outlines do not replace rendered
+RGB colors. Missing source data is not treated as idle or success.
+Physical targets remain 80HE ANSI;
 unsupported keys, remaps and light-bar positions are not guessed. See
 [Preview testing](preview-testing.md) for advanced contexts and clocks.
 

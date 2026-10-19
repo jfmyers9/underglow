@@ -122,7 +122,15 @@ fn export_preview_controls_snapshots() {
     );
     std::fs::create_dir_all(&destination).unwrap();
     for size in [[940, 850], [620, 640], [1280, 800]] {
-        for state in ["real", "choices", "simulating", "more", "advanced"] {
+        for state in [
+            "real",
+            "choices",
+            "simulating",
+            "more",
+            "advanced",
+            "select-keys",
+            "inspect-key",
+        ] {
             let (mut app, incoming) = state_fixture("normal");
             app.setup_editor
                 .preview
@@ -130,6 +138,13 @@ fn export_preview_controls_snapshots() {
             let draft = app.setup_editor.draft.clone();
             let mut harness = Harness::new(egui::vec2(size[0] as f32, size[1] as f32));
             let mut capture = Capture::new(size);
+            if let Some(label) = match state {
+                "select-keys" => Some("Select keys"),
+                "inspect-key" => Some("Inspect key"),
+                _ => None,
+            } {
+                capture_click_label(&mut capture, &mut harness, &mut app, label);
+            }
             if matches!(state, "choices" | "simulating") {
                 capture_click_label(&mut capture, &mut harness, &mut app, "Simulate activity…");
                 if state == "simulating" {

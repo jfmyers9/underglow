@@ -102,7 +102,10 @@ observations; **Simulate activity…** starts a selected-layer simulation only
 after an activity is chosen. Show its identity with **Simulating:** and Pause
 simulation / Play simulation. Put advanced tools behind **More… → Advanced
 preview…**, not a third equally prominent workflow.
-Keep this distinct from Preview / Select keys / Inspect click modes and from
+Keep this distinct from the **Keyboard interaction** group above the keyboard:
+**View / Select keys / Inspect key** describe click behavior, not preview input.
+Keep the group quiet, on one row, with visible selection and keyboard focus, and
+keep all three modes one click away. Activity simulation is also independent of
 the appearance currently being edited. Common capability-derived tests must
 remain discoverable, and long custom action labels need a measured fallback.
 Details, manual clock, simultaneous sources, explanations and coverage remain

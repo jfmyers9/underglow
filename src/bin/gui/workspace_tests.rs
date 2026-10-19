@@ -87,9 +87,9 @@ pub(super) fn click_workspace_control(harness: &mut Harness, app: &mut Controlle
             // These controls intentionally live outside scrollable inspectors.
             "More…"
             | "Advanced preview…"
-            | "Preview"
+            | "View"
             | "Select keys"
-            | "Inspect"
+            | "Inspect key"
             | "Save composition"
             | "Save"
             | "Cancel"
@@ -229,7 +229,7 @@ fn keyboard_region(frame: &workspace_test_ui::Frame) -> egui::Rect {
     // Resolve the containing canvas from an actual mode control, not its title.
     texts
         .iter()
-        .find(|t| t.text == "Preview" && t.clip.contains_rect(key.rect))
+        .find(|t| t.text == "View" && t.clip.contains_rect(key.rect))
         .map(|t| t.clip)
         .unwrap_or(key.clip)
 }
@@ -282,9 +282,9 @@ fn workspace_primary_controls_and_complete_keyboard_are_reachable_at_real_sizes(
             "Save",
             "Add layer",
             "More…",
-            "Preview",
+            "View",
             "Select keys",
-            "Inspect",
+            "Inspect key",
         ] {
             visible(&frame, label);
         }
@@ -866,7 +866,7 @@ fn inspector_retains_independent_editors_without_an_extra_navigation_index() {
             .contains(&t.text.as_str())
         }));
         // Close the mode picker without making a model change.
-        harness.click("Keyboard", None, |ctx| app.show_lighting(ctx));
+        harness.click("Keyboard interaction", None, |ctx| app.show_lighting(ctx));
         for section in ["Where", "Looks", "When"] {
             click_workspace_control(&mut harness, &mut app, section);
         }

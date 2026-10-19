@@ -74,7 +74,8 @@ impl Editor {
     pub(super) fn show_workspace_canvas(&mut self, ui: &mut egui::Ui) {
         self.sync_canvas_selection();
         ui.horizontal(|ui| {
-            ui.strong("Keyboard");
+            ui.label(egui::RichText::new("Keyboard interaction").color(crate::brand::MUTED))
+                .on_hover_text("Choose what clicking the on-screen keyboard does. This does not change the activity being previewed or enable physical lighting.");
             self.show_canvas_modes(ui);
             let (caption, ink) = if self.preview.error.is_some() {
                 ("Preview issue · retained frame", crate::brand::WARNING)
