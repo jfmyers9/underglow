@@ -149,6 +149,7 @@ fn document(config: &AppConfig) -> Result<SetupDocument, String> {
                     .filter(|key| mask.contains(key))
                     .count();
                 Renderer::Sweep {
+                    background: Default::default(),
                     color: scene.color,
                     period_ms: count.max(1) as u64 * 100,
                 }

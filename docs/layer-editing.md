@@ -33,6 +33,11 @@ logical layer share its target.
 For a layer with multiple appearances, **Editing** chooses which one to change.
 Pi has **Idle / fallback**, **Working** and **Finished (settled, not success)**.
 Choose an effect and its supported parameters, then adjust brightness.
+For **Sweep**, set **Active color**, then choose **Background → Transparent**
+or **Solid color** and its color swatch. Transparent reveals layers below
+(off if none); solid black turns the background off while covering lower layers.
+These same controls apply to whole-keyboard layers and Pi's Working/Finished
+appearances. Existing sweeps keep their solid-black background until edited.
 Event appearances such as Finished also show **Show for** under Looks. Enter
 the display duration in seconds (up to 60, with millisecond precision); the Pi
 default remains 2 seconds. This differs from the sweep's cycle speed. Save

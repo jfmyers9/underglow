@@ -569,3 +569,54 @@ fn finished_duration_is_edited_in_looks_in_seconds_and_saves_only_that_appearanc
         assert!(incoming.try_recv().is_err());
     }
 }
+#[test]
+fn sweep_background_controls_edit_whole_layers_and_pi_appearances_without_other_changes() {
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
+        for pi in [false, true] {
+            let (mut app, incoming) = app();
+            let mut doc = underglow::setup_library::starter(
+                underglow::setup_library::Starter::MatrixPi,
+                "sweep-ui".into(),
+                "Sweep UI".into(),
+            )
+            .unwrap();
+            doc.layers[0].renderer = super::setup_inspector::default_renderer("sweep").unwrap();
+            app.setup_editor.load(Some(doc.clone()));
+            app.setup_editor.selected = Some(doc.layers[usize::from(pi)].id.clone());
+            let mut h = Harness::new(size);
+            if pi {
+                click(&mut h, &mut app, "Idle / fallback");
+                click(&mut h, &mut app, "Working");
+            }
+            click(&mut h, &mut app, "Solid color");
+            click(&mut h, &mut app, "Transparent");
+            let mut expected = doc.clone();
+            let renderer = if pi {
+                &mut expected.layers[1].variants[0].renderer
+            } else {
+                &mut expected.layers[0].renderer
+            };
+            if let underglow::setup::Renderer::Sweep { background, .. } = renderer {
+                *background = underglow::setup::SweepBackground::Transparent {};
+            } else {
+                panic!("expected sweep");
+            }
+            assert_eq!(
+                app.setup_editor.draft.as_ref(),
+                Some(&expected),
+                "only selected background changes at {size:?}"
+            );
+            assert_eq!(app.setup_editor.applied.as_ref(), Some(&doc));
+            assert!(
+                incoming.try_recv().is_err(),
+                "editing must not enable lighting or publish"
+            );
+            click(&mut h, &mut app, "Save");
+            let Action::SetupReplace { document, .. } = incoming.try_recv().unwrap() else {
+                panic!("ordinary Save required");
+            };
+            assert_eq!(document, expected);
+            assert!(incoming.try_recv().is_err());
+        }
+    }
+}

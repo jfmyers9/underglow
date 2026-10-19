@@ -308,7 +308,7 @@ pub fn analyze_coverage(
             }
         }
         for contribution in &contributions {
-            if !contribution.mask.contains(key) || contribution.opacity == 0 {
+            if contribution.opacity_at(key) == 0 {
                 continue;
             }
             let index = contribution.priority as usize;
@@ -330,6 +330,9 @@ pub fn analyze_coverage(
         }
     }
     for layer in &mut layers {
+        if layer.status == CoverageStatus::Noncovering && !layer.targeted.is_empty() {
+            layer.status = CoverageStatus::Transparent;
+        }
         if !layer.contributing.is_empty() {
             layer.status = if layer.visible.is_empty() {
                 CoverageStatus::FullyObscured
@@ -341,7 +344,8 @@ pub fn analyze_coverage(
         }
         layer.reason = match layer.status {
             CoverageStatus::Transparent => {
-                "Zero opacity: transparent, does not obscure lower layers".into()
+                "Zero opacity or renderer coverage: transparent, does not obscure lower layers"
+                    .into()
             }
             CoverageStatus::Disabled => "Disabled layer".into(),
             CoverageStatus::Inactive => layer
@@ -412,11 +416,11 @@ fn explain_key_from_layers(
     let mut steps = vec![None; contributions.len()];
     for i in compositor::ordered_layers(contributions, Duration::ZERO) {
         let layer = &contributions[i];
-        if layer.mask.contains(key) {
+        if layer.opacity_at(key) != 0 {
             color = compositor::blend_color(
                 color,
                 layer.frame.get_coord(coord),
-                layer.opacity,
+                layer.opacity_at(key),
                 layer.blend,
             );
             steps[i] = Some(color);
@@ -433,7 +437,10 @@ fn explain_key_from_layers(
             let source_index = contributions
                 .iter()
                 .position(|layer| layer.priority == index as i32 && layer.mask.contains(key));
-            let contribution = source_index.map(|i| contributions[i].frame.get_coord(coord));
+            let contribution = source_index
+                .filter(|&i| contributions[i].frame.alpha_coord(coord) != 0)
+                .map(|i| contributions[i].frame.get_coord(coord));
+            let effective_opacity = source_index.map_or(0, |i| contributions[i].opacity_at(key));
             let is_visible = source_index.is_some_and(|i| visible.contains(&i));
             let active = selected.is_some();
             let obscured_by = contribution.and_then(|_| {
@@ -449,9 +456,11 @@ fn explain_key_from_layers(
                 "Inactive: no eligible appearance, or input unavailable".into()
             } else if definition.opacity == 0 {
                 "Transparent: zero opacity, lower layers remain visible".into()
+            } else if source_index.is_some_and(|i| contributions[i].frame.alpha_coord(coord) == 0) {
+                "Transparent renderer background at this key; lower layers remain visible".into()
             } else if let Some(winner) = obscured_by {
                 format!("Obscured by higher stack layer #{}", winner + 1)
-            } else if definition.opacity == 255
+            } else if effective_opacity == 255
                 && definition.blend == compositor::BlendMode::Normal
                 && contribution == Some(Color::BLACK)
             {
@@ -460,7 +469,7 @@ fn explain_key_from_layers(
                 format!(
                     "Contributes with {:?} blend at {}/255 opacity; {} visible contribution(s)",
                     definition.blend,
-                    definition.opacity,
+                    effective_opacity,
                     visible.len()
                 )
             };

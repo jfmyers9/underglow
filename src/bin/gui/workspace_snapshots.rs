@@ -663,3 +663,119 @@ fn export_finished_duration_snapshots() {
         eprintln!("Headless software capture (not native): {}", path.display());
     }
 }
+#[test]
+#[ignore = "opt-in Sweep background captures; set UNDERGLOW_SWEEP_SNAPSHOTS"]
+fn export_sweep_background_snapshots() {
+    use super::workspace_test_ui::Harness;
+    use underglow::setup::{Renderer, SweepBackground};
+    let destination = std::path::PathBuf::from(
+        std::env::var_os("UNDERGLOW_SWEEP_SNAPSHOTS")
+            .expect("set UNDERGLOW_SWEEP_SNAPSHOTS to an explicit output directory"),
+    );
+    std::fs::create_dir_all(&destination).unwrap();
+    for size in [[940, 850], [620, 640], [1280, 800]] {
+        for state in ["whole-solid", "pi-solid", "pi-transparent"] {
+            let (mut app, incoming) = state_fixture("normal");
+            let mut doc = app.setup_editor.draft.clone().unwrap();
+            let background = if state == "pi-transparent" {
+                SweepBackground::Transparent {}
+            } else {
+                SweepBackground::Solid { color: [24, 4, 38] }
+            };
+            if state == "whole-solid" {
+                doc.layers.truncate(1);
+                doc.layers[0].renderer = Renderer::Sweep {
+                    color: [0, 180, 255],
+                    period_ms: 1300,
+                    background,
+                };
+            } else {
+                if let Renderer::Sweep {
+                    background: saved, ..
+                } = &mut doc.layers[1].variants[0].renderer
+                {
+                    *saved = background;
+                }
+            }
+            let selected = doc.layers.last().unwrap().id.clone();
+            app.setup_editor.load(Some(doc));
+            app.setup_editor.selected = Some(selected);
+            let mut harness = Harness::new(egui::vec2(size[0] as f32, size[1] as f32));
+            let mut capture = Capture::new(size);
+            if state != "whole-solid" {
+                for label in ["Idle / fallback", "Working"] {
+                    capture_click_label(&mut capture, &mut harness, &mut app, label);
+                }
+            }
+            capture_click_label(
+                &mut capture,
+                &mut harness,
+                &mut app,
+                if state == "pi-transparent" {
+                    "Transparent"
+                } else {
+                    "Solid color"
+                },
+            );
+            // Close the real picker without altering the configured mode.
+            for pressed in [true, false] {
+                let frame = harness.run(
+                    vec![egui::Event::Key {
+                        key: egui::Key::Escape,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    }],
+                    |ctx| app.show_lighting(ctx),
+                );
+                capture.update_textures(&frame.output.textures_delta);
+            }
+            // Bring the whole Sweep control group into view with real wheel
+            // input; clicking Background alone can leave Active color clipped.
+            for step in 0..24 {
+                for _ in 0..30 {
+                    let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+                    capture.update_textures(&frame.output.textures_delta);
+                }
+                let frame = harness.run(vec![], |ctx| app.show_lighting(ctx));
+                capture.update_textures(&frame.output.textures_delta);
+                let texts = frame.texts();
+                let labels = ["Active color", "Background", "Cycle duration (ms)"];
+                let visible = |label: &str| {
+                    texts.iter().any(|text| {
+                        text.text == label
+                            && text.fully_visible()
+                            && text.rect.top() - 6.0 >= text.clip.top()
+                            && text.rect.bottom() + 6.0 <= text.clip.bottom()
+                    })
+                };
+                if labels.iter().all(|label| visible(label)) {
+                    capture.paint(&harness.context, frame.output);
+                    break;
+                }
+                assert!(
+                    step < 23,
+                    "Sweep controls cannot be fully revealed at {size:?}"
+                );
+                let active = texts.iter().find(|text| text.text == "Active color");
+                let up = active.is_none_or(|text| text.rect.top() - 6.0 < text.clip.top());
+                let pane = texts
+                    .iter()
+                    .find(|text| text.text == "Layer actions")
+                    .unwrap()
+                    .clip;
+                let frame = harness.wheel(
+                    egui::pos2(pane.center().x, pane.bottom() - 20.0),
+                    egui::vec2(0.0, if up { 12.0 } else { -12.0 }),
+                    |ctx| app.show_lighting(ctx),
+                );
+                capture.update_textures(&frame.output.textures_delta);
+            }
+            assert!(incoming.try_recv().is_err());
+            assert!(app.setup_editor.preview.sample().is_none());
+            let path = destination.join(format!("sweep-{state}-{}x{}.png", size[0], size[1]));
+            std::fs::write(&path, capture.png()).unwrap();
+        }
+    }
+}

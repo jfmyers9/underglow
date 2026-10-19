@@ -48,21 +48,39 @@ impl Transition {
     }
 }
 
-/// Interpolate straight RGB channels, round nearest, without applying brightness
-/// or opacity again. Logical layer composition applies those separately.
+/// Interpolate renderer coverage and premultiplied RGB to avoid dark/color halos.
+/// Opaque frames retain the original round-nearest RGB interpolation exactly.
 pub fn interpolate(from: &Frame, to: &Frame, progress: f64) -> Frame {
     let t = if progress.is_finite() {
         progress.clamp(0.0, 1.0)
     } else {
         1.0
     };
+    if t == 0.0 {
+        return from.clone();
+    }
+    if t == 1.0 {
+        return to.clone();
+    }
     let mut frame = Frame::black();
     for row in 0..MAX_ROWS {
         for column in 0..MAX_COLUMNS {
             let a = from.get(row, column);
             let b = to.get(row, column);
-            let channel =
-                |a: u8, b: u8| (f64::from(a) * (1.0 - t) + f64::from(b) * t).round() as u8;
+            let from_alpha = f64::from(from.alpha(row, column));
+            let to_alpha = f64::from(to.alpha(row, column));
+            let alpha = from_alpha * (1.0 - t) + to_alpha * t;
+            let channel = |a: u8, b: u8| {
+                if from_alpha == 255.0 && to_alpha == 255.0 {
+                    (f64::from(a) * (1.0 - t) + f64::from(b) * t).round() as u8
+                } else if alpha == 0.0 {
+                    0
+                } else {
+                    ((f64::from(a) * from_alpha * (1.0 - t) + f64::from(b) * to_alpha * t) / alpha)
+                        .round() as u8
+                }
+            };
+            frame.set_alpha(row, column, alpha.round() as u8);
             frame.set(
                 row,
                 column,

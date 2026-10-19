@@ -196,6 +196,10 @@ appearance, not as a global Pi-plugin setting. The event must be fresh to start
 an animation, but its two-second transport lease no longer cuts an accepted
 animation short. A reporting session disappearing still stops its appearance.
 Finished means **settled, not success**; no approval/focus facts are assumed.
+Both Working and Finished use the shared Sweep controls: **Active color** and
+**Background → Transparent / Solid color**. Transparent shows the underlying
+theme between the moving trail keys; a solid color replaces it on Pi's targets.
+Black is an opaque background, not transparency.
 By default each condition selects any session. To bind one exact session, choose
 its instance in the base condition and both appearance conditions; exact IDs can
 be ephemeral. Any working session beats idle; a completion briefly wins over

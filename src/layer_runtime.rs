@@ -837,7 +837,18 @@ fn render_appearance(
                 .collect();
             keys.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
             let count = keys.len();
-            let mut frame = Frame::black();
+            let transparent = matches!(
+                renderer,
+                Renderer::Sweep {
+                    background: crate::setup::SweepBackground::Transparent {},
+                    ..
+                }
+            );
+            let mut frame = if transparent {
+                Frame::transparent()
+            } else {
+                Frame::black()
+            };
             for (index, key) in keys.into_iter().enumerate() {
                 let amount = if let Renderer::Sweep { period_ms, .. } = renderer {
                     let head = (elapsed.as_secs_f64() * (count as f64 * 1000.0 / *period_ms as f64))
@@ -852,7 +863,32 @@ fn render_appearance(
                 } else {
                     255
                 };
-                frame.set_coord(key.coord, color.scale(amount));
+                if transparent {
+                    frame.set_coord(key.coord, color);
+                    frame.set_alpha_coord(key.coord, amount);
+                } else if let Renderer::Sweep {
+                    background: crate::setup::SweepBackground::Solid { color: background },
+                    ..
+                } = renderer
+                {
+                    let background = Color::new(background[0], background[1], background[2])
+                        .scale(ctx.brightness);
+                    let channel = |a: u8, b: u8| {
+                        ((u16::from(a) * u16::from(amount)
+                            + u16::from(b) * u16::from(255 - amount))
+                            / 255) as u8
+                    };
+                    frame.set_coord(
+                        key.coord,
+                        Color::new(
+                            channel(color.red, background.red),
+                            channel(color.green, background.green),
+                            channel(color.blue, background.blue),
+                        ),
+                    );
+                } else {
+                    frame.set_coord(key.coord, color.scale(amount));
+                }
             }
             frame
         }
@@ -2078,6 +2114,7 @@ mod tests {
             layer(
                 "sweep",
                 Renderer::Sweep {
+                    background: Default::default(),
                     color: [255, 0, 0],
                     period_ms: 2000,
                 },
@@ -2129,6 +2166,7 @@ mod tests {
             ),
             (
                 Renderer::Sweep {
+                    background: Default::default(),
                     color: [0, 180, 255],
                     period_ms: 600,
                 },
@@ -2485,3 +2523,6 @@ mod tests {
 #[cfg(test)]
 #[path = "layer_event_duration_tests.rs"]
 mod event_duration_tests;
+#[cfg(test)]
+#[path = "sweep_background_tests.rs"]
+mod sweep_background_tests;

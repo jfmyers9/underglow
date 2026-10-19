@@ -66,8 +66,8 @@ pub fn cap_color(color: Color, brightness: u8) -> Color {
     )
 }
 
-/// One overlay. Black is a color; only zero opacity is transparent. Greater
-/// priority is on top; first declaration is on top at equal priority.
+/// One overlay. Black is a color; transparency uses explicit renderer coverage
+/// and layer opacity. Greater priority is on top; first declaration wins ties.
 #[derive(Clone, Debug)]
 pub struct Layer {
     pub opacity: u8,
@@ -81,6 +81,14 @@ pub struct Layer {
 }
 
 impl Layer {
+    /// Combine layer opacity and renderer coverage once; black never implies a hole.
+    pub fn opacity_at(&self, key: &KeyPosition) -> u8 {
+        if !self.mask.contains(key) {
+            return 0;
+        }
+        ((u16::from(self.opacity) * u16::from(self.frame.alpha_coord(key.coord)) + 127) / 255) as u8
+    }
+
     pub fn is_active(&self, now: Duration) -> bool {
         self.expires.is_none_or(|expires| now < expires)
     }
@@ -92,8 +100,7 @@ pub fn winning_layer(layers: &[Layer], key: &KeyPosition, now: Duration) -> Opti
     let mut winner: Option<usize> = None;
     for (index, layer) in layers.iter().enumerate() {
         if layer.is_active(now)
-            && layer.opacity != 0
-            && layer.mask.contains(key)
+            && layer.opacity_at(key) != 0
             && winner.is_none_or(|winner| layer.priority > layers[winner].priority)
         {
             winner = Some(index);
@@ -122,8 +129,9 @@ pub fn contributing_layers(layers: &[Layer], key: &KeyPosition, now: Duration) -
     let mut contributors = Vec::new();
     for i in ordered_layers(layers, now) {
         let layer = &layers[i];
-        if layer.mask.contains(key) {
-            if layer.opacity == 255 && layer.blend == BlendMode::Normal {
+        let opacity = layer.opacity_at(key);
+        if opacity != 0 {
+            if opacity == 255 && layer.blend == BlendMode::Normal {
                 contributors.clear();
             }
             contributors.push(i);
@@ -135,16 +143,34 @@ pub fn contributing_layers(layers: &[Layer], key: &KeyPosition, now: Duration) -
 /// Combine active layers onto the current background, leaving every uncovered
 /// key (and non-key matrix cell) unchanged. The result is a single RGB frame.
 pub fn compose(mut base: Frame, layout: &KeyboardLayout, layers: &[Layer], now: Duration) -> Frame {
+    // Composition resolves renderer coverage to physical RGB. With no lower
+    // contribution, transparent backdrop positions are off, not stale pixels.
+    for key in layout.keys() {
+        let alpha = base.alpha_coord(key.coord);
+        if alpha != 255 {
+            base.set_coord(
+                key.coord,
+                blend_color(
+                    Color::BLACK,
+                    base.get_coord(key.coord),
+                    alpha,
+                    BlendMode::Normal,
+                ),
+            );
+            base.set_alpha_coord(key.coord, 255);
+        }
+    }
     for i in ordered_layers(layers, now) {
         let layer = &layers[i];
         for key in layout.keys() {
-            if layer.mask.contains(key) {
+            let opacity = layer.opacity_at(key);
+            if opacity != 0 {
                 base.set_coord(
                     key.coord,
                     blend_color(
                         base.get_coord(key.coord),
                         layer.frame.get_coord(key.coord),
-                        layer.opacity,
+                        opacity,
                         layer.blend,
                     ),
                 );

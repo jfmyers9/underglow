@@ -38,6 +38,7 @@ pub fn pi_status_layer(id: String, target: Target, instance: Option<String>) -> 
                     state: Some("working".into()),
                 },
                 renderer: Renderer::Sweep {
+                    background: Default::default(),
                     color: [0, 100, 255],
                     period_ms: 1300,
                 },
@@ -54,6 +55,7 @@ pub fn pi_status_layer(id: String, target: Target, instance: Option<String>) -> 
                     duration_ms: 2000,
                 },
                 renderer: Renderer::Sweep {
+                    background: Default::default(),
                     color: [0, 255, 80],
                     period_ms: 1300,
                 },
@@ -227,6 +229,7 @@ mod tests {
                 assert_eq!(
                     working.renderer,
                     &Renderer::Sweep {
+                        background: Default::default(),
                         color: [0, 100, 255],
                         period_ms: 1300
                     }
@@ -252,6 +255,7 @@ mod tests {
                 assert_eq!(
                     finished.renderer,
                     &Renderer::Sweep {
+                        background: Default::default(),
                         color: [0, 255, 80],
                         period_ms: 1300
                     }

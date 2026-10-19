@@ -5,7 +5,7 @@ use clap::ValueEnum;
 use eframe::egui::{self, Ui};
 use underglow::catalog::{self, PaletteControl, RendererKind, Visualization};
 use underglow::render::PaletteName;
-use underglow::setup::{BlendMode, Layer, Renderer, TransitionCurve};
+use underglow::setup::{BlendMode, Layer, Renderer, SweepBackground, TransitionCurve};
 
 // Scene primitives are not catalog visualizations: these are their only extra
 // capabilities (color; Pulse/Sweep also period), never a copied effect catalog.
@@ -307,8 +307,10 @@ fn renderer_description(ui: &mut Ui, renderer: &Renderer) {
                 "Diagnostic effect: preserved from this setup, not offered as an everyday effect.",
             );
         }
+    } else if matches!(renderer, Renderer::Sweep { .. }) {
+        ui.small("Active color sweeps over a transparent or solid-color background.");
     } else {
-        ui.small("Uses a fixed color. Pulse and Sweep also have a timing control.")
+        ui.small("Uses a fixed color. Pulse also has a timing control.")
             .on_hover_text("Palettes and effect speed do not apply to these appearances.");
     }
 }
@@ -341,7 +343,7 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
             if inline_color {
                 match renderer {
                     Renderer::Solid { color } | Renderer::Pulse { color, .. } | Renderer::Sweep { color, .. } => {
-                        ui.label(egui::RichText::new("Color").color(super::brand::MUTED));
+                        ui.label(egui::RichText::new(if matches!(before, Renderer::Sweep { .. }) { "Active color" } else { "Color" }).color(super::brand::MUTED));
                         ui.color_edit_button_srgb(color);
                     }
                     _ => {}
@@ -395,11 +397,34 @@ fn renderer_controls(ui: &mut Ui, renderer: &mut Renderer, compact: bool) -> boo
                 if !compact { ui.small("Input: key presses. Preview uses synthetic input; live input requires separate explicit activation. No SDK paths or permission toggles belong to this layer."); }
             }
             Renderer::Solid { color } => { if !inline_color { color_control(ui, "Color", color); } }
-            Renderer::Pulse { color, period_ms } | Renderer::Sweep { color, period_ms } => {
+            Renderer::Pulse { color, period_ms } => {
                 if !inline_color { color_control(ui, "Color", color); }
                 field(ui, "Cycle duration (ms)", |ui| {
                     ui.add(egui::Slider::new(period_ms, 1..=60_000))
                         .on_hover_text("Time for one animation cycle. A smaller duration makes the animation faster.");
+                });
+            }
+            Renderer::Sweep { color, period_ms, background } => {
+                if !inline_color { color_control(ui, "Active color", color); }
+                field(ui, "Background", |ui| {
+                    let mut transparent = matches!(background, SweepBackground::Transparent {});
+                    let before = transparent;
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("sweep-background").width(ui.available_width().min(180.0))
+                            .selected_text(if transparent { "Transparent" } else { "Solid color" })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut transparent, true, "Transparent");
+                                ui.selectable_value(&mut transparent, false, "Solid color");
+                            }).response.on_hover_text("Transparent reveals lower layers (off if none). Solid black is opaque and switches the background off.");
+                        if transparent != before {
+                            *background = if transparent { SweepBackground::Transparent {} } else { SweepBackground::default() };
+                        }
+                        if let SweepBackground::Solid { color } = background { ui.color_edit_button_srgb(color); }
+                    });
+                });
+                field(ui, "Cycle duration (ms)", |ui| {
+                    ui.add(egui::Slider::new(period_ms, 1..=60_000))
+                        .on_hover_text("Time for one sweep cycle. This is separate from the appearance's Show for duration.");
                 });
             }
             Renderer::Focus { focus_minutes, break_minutes, cycles, start_paused, meeting_safe, dim } => {
@@ -590,6 +615,7 @@ mod tests {
         assert_eq!(
             layer.renderer,
             Renderer::Sweep {
+                background: Default::default(),
                 color: [1, 2, 3],
                 period_ms: 1234
             }

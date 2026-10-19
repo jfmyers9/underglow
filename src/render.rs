@@ -32,13 +32,44 @@ impl Color {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     bytes: [u8; FRAME_BYTES],
+    /// Renderer coverage, independent of RGB. Existing frames remain opaque.
+    alpha: [u8; MAX_ROWS * MAX_COLUMNS],
 }
 
 impl Frame {
     pub fn black() -> Self {
         Self {
             bytes: [0; FRAME_BYTES],
+            alpha: [255; MAX_ROWS * MAX_COLUMNS],
         }
+    }
+
+    pub fn transparent() -> Self {
+        Self {
+            bytes: [0; FRAME_BYTES],
+            alpha: [0; MAX_ROWS * MAX_COLUMNS],
+        }
+    }
+
+    pub fn alpha(&self, row: usize, column: usize) -> u8 {
+        if row >= MAX_ROWS || column >= MAX_COLUMNS {
+            return 0;
+        }
+        self.alpha[row * MAX_COLUMNS + column]
+    }
+
+    pub fn alpha_coord(&self, coord: MatrixCoord) -> u8 {
+        self.alpha(usize::from(coord.row), usize::from(coord.column))
+    }
+
+    pub fn set_alpha(&mut self, row: usize, column: usize, alpha: u8) {
+        if row < MAX_ROWS && column < MAX_COLUMNS {
+            self.alpha[row * MAX_COLUMNS + column] = alpha;
+        }
+    }
+
+    pub fn set_alpha_coord(&mut self, coord: MatrixCoord, alpha: u8) {
+        self.set_alpha(usize::from(coord.row), usize::from(coord.column), alpha);
     }
 
     pub fn set(&mut self, row: usize, column: usize, color: Color) {

@@ -109,6 +109,25 @@ fn cycles() -> u32 {
     1
 }
 
+/// Black is an opaque color; transparency must be an explicit saved choice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SweepBackground {
+    Transparent {},
+    Solid { color: [u8; 3] },
+}
+
+impl Default for SweepBackground {
+    fn default() -> Self {
+        Self::Solid { color: [0, 0, 0] }
+    }
+}
+impl SweepBackground {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Typed settings prevent nonsensical combinations (for example speed on a
 /// reactive effect). Missing palettes use that renderer's catalog default.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +150,8 @@ pub enum Renderer {
     },
     Sweep {
         color: [u8; 3],
+        #[serde(default, skip_serializing_if = "SweepBackground::is_default")]
+        background: SweepBackground,
         #[serde(default = "period")]
         period_ms: u64,
     },
@@ -974,6 +995,7 @@ mod tests {
                 period_ms: 0,
             },
             Renderer::Sweep {
+                background: Default::default(),
                 color: [0; 3],
                 period_ms: 60_001,
             },

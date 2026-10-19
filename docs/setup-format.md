@@ -58,7 +58,8 @@ Renderer tables use `kind`:
 | --- | --- |
 | `effect` | Existing `effect` enum, optional `palette`, `speed` (100; 10..400) |
 | `solid` | RGB `color` |
-| `pulse`, `sweep` | RGB `color`, `period_ms` (1000; 1..60000) |
+| `pulse` | RGB `color`, `period_ms` (1000; 1..60000) |
+| `sweep` | Active RGB `color`, `period_ms`, optional `background` (opaque black) |
 | `ripples` | Optional `palette`, or both `base_color` and `ripple_color` |
 | `reactive` | `effect` (`constellation`, `heatmap`, `afterimage`), optional `palette` |
 | `focus` | `focus_minutes` (25), `break_minutes` (5), `cycles` (1), `start_paused`, `meeting_safe`, `dim` (all false) |
@@ -72,9 +73,20 @@ not silently ignored settings. `Renderer::catalog_id()` connects built-in
 renderers to the existing shared visualization catalog.
 Pulse is a smooth cosine from 64/255 to full intensity over one period. Sweep
 sorts target keys by physical x/y and moves a cyclic four-key fading trail over
-one period, retaining opaque black pixels elsewhere in the target. These reuse
-legacy scene appearances (`period_ms = 2000` for legacy pulse; target key count
-times 100 ms for legacy sweep).
+one period. Its background is explicit: `background = { kind = "solid",
+color = [0, 0, 0] }` (the default when omitted), or
+`background = { kind = "transparent" }`. Any solid color, including black,
+covers the target. Transparent background reveals lower layers; with no lower
+layer it is off. The trail fades toward the solid color or through to the lower
+layers using renderer coverage, never by treating black RGB as transparency.
+Old sweeps and migrated legacy scenes retain exactly their opaque-black look.
+
+Per-key renderer coverage multiplies layer opacity once, using
+`R(layer_opacity * coverage)`, then uses the same blend math above. Inspection,
+coverage and transitions use that same coverage. Crossfades interpolate
+premultiplied color and coverage to avoid dark/color halos. Opaque renderers
+retain their previous RGB and blend behavior. These reuse legacy scene
+appearances (`period_ms = 2000` for legacy pulse; target key count times 100 ms for legacy sweep).
 
 Targets use `kind = "whole"` or `kind = "selection"`. Selections combine `zones`,
 physical `keys`, and named `groups` by union. Empty selections are invalid, never
