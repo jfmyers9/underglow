@@ -417,6 +417,7 @@ fn workspace_layer_list_scroll_is_independent_and_topmost_first() {
         let inspector = visible(&frame, "Looks");
         let doc = app.setup_editor.draft.as_ref().unwrap();
         visible(&frame, &doc.layers.last().unwrap().name);
+        let headers = ["Layers", "Add layer", "Topmost first"].map(|label| visible(&frame, label));
         let list_pos = visible(&frame, "Topmost first").center() + egui::vec2(0.0, 55.0);
         for _ in 0..16 {
             harness.wheel(list_pos, egui::vec2(0.0, -500.0), |ctx| {
@@ -426,6 +427,11 @@ fn workspace_layer_list_scroll_is_independent_and_topmost_first() {
         let frame = harness.settle(|ctx| app.show_lighting(ctx));
         assert_eq!(key(&frame, "Esc"), esc);
         assert_eq!(visible(&frame, "Looks"), inspector);
+        assert_eq!(
+            ["Layers", "Add layer", "Topmost first"].map(|label| visible(&frame, label)),
+            headers,
+            "the layer panel header stays pinned while its list scrolls",
+        );
         let bottom = original.name.clone();
         visible(&frame, &bottom);
         harness.click(&bottom, None, |ctx| app.show_lighting(ctx));
@@ -847,5 +853,110 @@ fn inspector_retains_independent_editors_without_an_extra_navigation_index() {
         assert_eq!(key(&frame, "Esc"), keyboard);
         assert_eq!(app.setup_editor.draft, original);
         assert!(incoming.try_recv().is_err());
+    }
+}
+#[test]
+fn layer_rail_matches_inspector_surface_and_selection_does_not_edit_or_move_the_workspace() {
+    fn rect(bounds: [i32; 4]) -> egui::Rect {
+        egui::Rect::from_min_max(
+            egui::pos2(bounds[0] as f32 / 10.0, bounds[1] as f32 / 10.0),
+            egui::pos2(bounds[2] as f32 / 10.0, bounds[3] as f32 / 10.0),
+        )
+    }
+    for size in [DEFAULT_SIZE, MINIMUM_SIZE, WIDE_SIZE] {
+        let (mut app, incoming) = app();
+        let doc = underglow::setup_library::starter(
+            underglow::setup_library::Starter::MatrixPi,
+            "rail-surface".into(),
+            "Rail surface".into(),
+        )
+        .unwrap();
+        app.setup_editor = setup_editor::Editor::default();
+        app.setup_editor.load(Some(doc.clone()));
+        let mut harness = Harness::new(size);
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        let panels: Vec<_> = frame
+            .paint_summary()
+            .into_iter()
+            .filter(|shape| {
+                shape.kind == "rect"
+                    && shape.fill == Some(brand::SURFACE.to_array())
+                    && shape.bounds[2] - shape.bounds[0] == 1820
+                    && shape.bounds[3] - shape.bounds[1] > 4000
+            })
+            .map(|shape| rect(shape.bounds))
+            .collect();
+        if size == MINIMUM_SIZE {
+            assert!(
+                panels.is_empty(),
+                "compact layout keeps its existing picker"
+            );
+            visible(&frame, "Layer:");
+        } else {
+            assert_eq!(
+                panels.len(),
+                1,
+                "dedicated full-height layer surface at {size:?}"
+            );
+            let panel = panels[0];
+            let header = visible_in(&frame, "Layers", Some(panel));
+            assert!((header.left() - panel.left() - 12.0).abs() < 1.0);
+            for name in ["Background", "Pi status"] {
+                let labels: Vec<_> = frame
+                    .output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            (text.galley.text() == name && panel.contains(text.pos))
+                                .then_some(&text.galley)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(labels.len(), 1, "one real layer label for {name}");
+                assert!(
+                    !labels[0].elided,
+                    "default layer names must fit at {size:?}"
+                );
+            }
+            let pinned = [visible(&frame, "Save"), key(&frame, "F1")];
+            let region = Some(panel);
+            let target = &doc.layers[1];
+            let label = visible_in(&frame, &target.name, region);
+            harness.click_at(label.center(), |ctx| app.show_lighting(ctx));
+            let frame = harness.settle(|ctx| app.show_lighting(ctx));
+            assert_eq!(app.setup_editor.selected.as_ref(), Some(&target.id));
+            assert_eq!([visible(&frame, "Save"), key(&frame, "F1")], pinned);
+            let selected_fill = harness.context.style().visuals.selection.bg_fill.to_array();
+            let row = frame
+                .paint_summary()
+                .into_iter()
+                .filter(|shape| shape.kind == "rect" && shape.fill == Some(selected_fill))
+                .map(|shape| rect(shape.bounds))
+                .find(|row| row.width() > 140.0 && row.contains(label.center()))
+                .expect("selection covers the row, not just the name button");
+            assert!(panel.shrink(11.0).contains_rect(row));
+            assert!(
+                !frame.output.shapes.iter().any(|shape| {
+                    if let egui::Shape::Rect(painted) = &shape.shape {
+                        painted.rect.contains(label.center())
+                            && painted.rect.width() < row.width() - 4.0
+                            && painted.stroke.width > 0.0
+                    } else {
+                        false
+                    }
+                }),
+                "selected/hovered names must not get a nested button border"
+            );
+        }
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
+        assert_eq!(app.setup_editor.applied.as_ref(), Some(&doc));
+        assert!(!app.setup_editor.dirty);
+        assert!(
+            incoming.try_recv().is_err(),
+            "navigation cannot activate or publish"
+        );
     }
 }

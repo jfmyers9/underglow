@@ -519,3 +519,53 @@ fn overflowing_layer_list_tab_and_reverse_tab_reveal_focus_without_moving_pinned
         }
     }
 }
+#[test]
+fn quiet_layer_names_show_keyboard_focus_on_the_row_not_a_text_box() {
+    for size in [DEFAULT_SIZE, WIDE_SIZE] {
+        let (mut app, incoming) = app();
+        let draft = app.setup_editor.draft.clone();
+        let mut harness = Harness::new(size);
+        let mut found = 0;
+        for _ in 0..40 {
+            let frame = key(&mut harness, &mut app, egui::Key::Tab, false);
+            let response = focused(&harness, &frame);
+            let name = frame.texts().into_iter().find(|text| {
+                matches!(text.text.as_str(), "Background" | "Pi status")
+                    && text.rect.left() < 200.0
+                    && response.rect.contains_rect(text.rect)
+            });
+            if name.is_none() {
+                continue;
+            }
+            assert!(
+                !frame.output.shapes.iter().any(|shape| has_focus_outline(
+                    &shape.shape,
+                    shape.clip_rect,
+                    response.rect
+                )),
+                "focus must not draw a tight box around the name"
+            );
+            assert!(
+                frame.output.shapes.iter().any(|shape| {
+                    if let egui::Shape::Rect(painted) = &shape.shape {
+                        painted.rect.contains_rect(response.rect)
+                            && painted.rect.width() > response.rect.width() + 20.0
+                            && painted.stroke.width == 2.0
+                            && painted.stroke.color == brand::ACCENT
+                            && shape.clip_rect.contains_rect(painted.rect)
+                    } else {
+                        false
+                    }
+                }),
+                "real keyboard focus retains a fully visible row outline"
+            );
+            assert_eq!(app.setup_editor.draft, draft);
+            assert!(incoming.try_recv().is_err());
+            found += 1;
+            if found == 2 {
+                break;
+            }
+        }
+        assert_eq!(found, 2, "Tab reaches both layer names at {size:?}");
+    }
+}

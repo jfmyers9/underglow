@@ -70,8 +70,12 @@ tooltips and do not invent unsupported Fn/light-bar mappings.
   truthful output state and explicit Enable/Pause when applicable.
 - Simulation clearly says hardware disabled; do not present that label as a
   primary action. Native output controls retain existing guards.
-- Readable flat layer rows, subtle selected treatment, consistent enable control
-  and overflow menu. Place Add layer in the layer region or compact picker.
+- Give the Layers rail the inspector's surface color, 6px corners and 12px
+  inset. Keep Layers / Add layer and the stack-order hint pinned above a quiet
+  divider; only the rows scroll. The compact layer picker stays unchanged.
+- Use consistent 32px layer rows and full-row selection, hover and keyboard-focus
+  cues; names must not have an extra button-shaped highlight. Preserve the native
+  enable control and overflow menu.
 - Keep setup identity, Save, layer context, keyboard and essential preview
   context pinned while long layer lists and inspector content scroll.
 

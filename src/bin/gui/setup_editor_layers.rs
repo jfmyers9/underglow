@@ -130,13 +130,27 @@ impl Editor {
         let Some(doc) = self.draft.clone() else {
             return;
         };
+        let bounds = ui.max_rect();
+        ui.painter().rect_filled(bounds, 6, crate::brand::SURFACE);
+        let mut content = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("layer-list-surface")
+                .max_rect(bounds.shrink(12.0))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        let ui = &mut content;
         ui.horizontal(|ui| {
             ui.strong("Layers");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.show_add_layer_menu(ui);
             });
         });
-        ui.small("Topmost first");
+        ui.label(
+            egui::RichText::new("Topmost first")
+                .small()
+                .color(crate::brand::MUTED),
+        );
+        crate::brand::divider(ui);
         egui::ScrollArea::vertical()
             .id_salt("layer-list")
             .max_height(ui.available_height())
@@ -145,7 +159,14 @@ impl Editor {
                 ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
                 for layer in doc.layers.iter().rev() {
                     ui.push_id(&layer.id, |ui| {
-                        ui.horizontal(|ui| {
+                        // Reserve the background before widgets so the full-row
+                        // selection never paints over native hover/focus outlines.
+                        let background = ui.painter().add(egui::Shape::Noop);
+                        let row_width = ui.available_width();
+                        let mut name_hovered = false;
+                        let mut name_focused = false;
+                        let row = ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
                             let mut enabled = layer.enabled;
                             if ui
                                 .checkbox(&mut enabled, "")
@@ -159,20 +180,21 @@ impl Editor {
                                     })
                                     .err();
                             }
-                            let width = (ui.available_width() - 44.0).max(28.0);
+                            let width = (ui.available_width() - 40.0).max(28.0);
                             // A vertical slot gives truncation a bounded wrap width even
                             // when a long label has expanded a horizontal row's min rect.
                             if ui
                                 .allocate_ui_with_layout(
-                                    egui::vec2(width, 26.0),
+                                    egui::vec2(width, 32.0),
                                     egui::Layout::top_down(egui::Align::Min),
                                     |ui| {
-                                        ui.add_sized(
-                                            [width, 26.0],
-                                            egui::Button::new(&layer.name)
-                                                .selected(self.selected.as_ref() == Some(&layer.id))
-                                                .truncate(),
-                                        )
+                                        let response = ui.add_sized(
+                                            [width, 32.0],
+                                            egui::Button::new(&layer.name).frame(false).truncate(),
+                                        );
+                                        name_hovered = response.hovered();
+                                        name_focused = response.has_focus();
+                                        response
                                     },
                                 )
                                 .inner
@@ -185,6 +207,35 @@ impl Editor {
                                 .response
                                 .on_hover_text("Layer actions");
                         });
+                        let row_rect = egui::Rect::from_min_size(
+                            row.response.rect.min,
+                            egui::vec2(row_width, row.response.rect.height()),
+                        );
+                        let selected = self.selected.as_ref() == Some(&layer.id);
+                        if selected || name_hovered {
+                            ui.painter().set(
+                                background,
+                                egui::Shape::rect_filled(
+                                    row_rect,
+                                    5,
+                                    if selected {
+                                        ui.visuals().selection.bg_fill
+                                    } else {
+                                        crate::brand::RAISED
+                                    },
+                                ),
+                            );
+                        }
+                        if name_focused {
+                            // The quiet name button still needs a focus cue,
+                            // but it belongs to the row, not a box around text.
+                            ui.painter().rect_stroke(
+                                row_rect,
+                                5,
+                                egui::Stroke::new(2.0, crate::brand::ACCENT),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
                     });
                 }
                 if let Some(response) = ui
