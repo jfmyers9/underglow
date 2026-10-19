@@ -3,7 +3,8 @@ use super::*;
 
 const PANE_GAP: f32 = 16.0;
 const LAYER_RAIL: f32 = 184.0;
-const WIDE_INSPECTOR: f32 = 320.0;
+// One 700px keyboard/form column plus its pane inset, rail, and gap.
+const MAX_WORKSPACE: f32 = 902.0;
 const MIN_INSPECTOR: f32 = 177.0;
 
 fn pane(ui: &mut egui::Ui, id: &str, rect: egui::Rect, show: impl FnOnce(&mut egui::Ui)) {
@@ -21,11 +22,17 @@ fn pane(ui: &mut egui::Ui, id: &str, rect: egui::Rect, show: impl FnOnce(&mut eg
 impl Editor {
     pub(super) fn show_workspace(&mut self, ui: &mut egui::Ui) {
         let compact = ui.available_width() < 760.0;
-        let wide = ui.available_width() >= 1200.0;
         if compact {
             self.show_layer_picker(ui);
         }
-        let bounds = ui.available_rect_before_wrap();
+        let available = ui.available_rect_before_wrap();
+        // Keep one editing column at every width. Extra window width becomes
+        // balanced margins, not a tall empty canvas beside a narrow inspector.
+        let width = available.width().min(MAX_WORKSPACE);
+        let bounds = egui::Rect::from_min_size(
+            egui::pos2(available.center().x - width / 2.0, available.top()),
+            egui::vec2(width, available.height()),
+        );
         let main = if compact {
             bounds
         } else {
@@ -39,39 +46,27 @@ impl Editor {
                 bounds.max,
             )
         };
-        let (canvas, inspector) = if wide {
-            let inspector = egui::Rect::from_min_max(
-                egui::pos2(main.right() - WIDE_INSPECTOR, main.top()),
-                main.max,
-            );
-            let canvas = egui::Rect::from_min_max(
-                main.min,
-                egui::pos2(inspector.left() - PANE_GAP, main.bottom()),
-            );
-            (canvas, inspector)
-        } else {
-            // Give the keyboard its natural aspect ratio first, but never take
-            // away the compact inspector's independently scrolling viewport.
-            let chrome = 78.0;
-            let preferred = (main.width() - 2.0).min(700.0) / 18.5 * 6.4 + chrome;
-            let height = preferred.min((main.height() - MIN_INSPECTOR - 12.0).max(0.0));
-            let canvas = egui::Rect::from_min_size(main.min, egui::vec2(main.width(), height));
-            let inspector =
-                egui::Rect::from_min_max(egui::pos2(main.left(), canvas.bottom() + 12.0), main.max);
-            (canvas, inspector)
-        };
+        // Give the keyboard its natural aspect ratio first, but never take
+        // away the inspector's independently scrolling viewport. Each surface
+        // shrinks to its content; these rectangles are only overflow limits.
+        let chrome = 78.0;
+        let preferred = (main.width() - 2.0).min(700.0) / 18.5 * 6.4 + chrome;
+        let height = preferred.min((main.height() - MIN_INSPECTOR - 12.0).max(0.0));
+        let canvas = egui::Rect::from_min_size(main.min, egui::vec2(main.width(), height));
+        let inspector =
+            egui::Rect::from_min_max(egui::pos2(main.left(), canvas.bottom() + 12.0), main.max);
         pane(ui, "workspace-canvas", canvas, |ui| {
             self.show_workspace_canvas(ui)
         });
         pane(ui, "workspace-inspector", inspector, |ui| {
             self.show_inspector_pane(ui, compact);
         });
-        ui.advance_cursor_after_rect(bounds);
+        ui.advance_cursor_after_rect(available);
     }
 
     fn show_inspector_pane(&mut self, ui: &mut egui::Ui, compact: bool) {
         let bounds = ui.max_rect();
-        ui.painter().rect_filled(bounds, 6, crate::brand::SURFACE);
+        let background = ui.painter().add(egui::Shape::Noop);
         let mut content = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("inspector-surface")
@@ -91,6 +86,17 @@ impl Editor {
             .unwrap_or_else(|| "No layer selected".into());
         if self.draft.as_ref().is_some_and(|doc| doc.layers.is_empty()) {
             ui.label("Empty composition · no hidden layers or Pi behavior. Add a layer to begin.");
+            let panel = egui::Rect::from_min_max(
+                bounds.min,
+                egui::pos2(
+                    bounds.right(),
+                    (ui.min_rect().bottom() + 12.0).min(bounds.bottom()),
+                ),
+            );
+            ui.painter().set(
+                background,
+                egui::Shape::rect_filled(panel, 6, crate::brand::SURFACE),
+            );
             return;
         }
         ui.horizontal(|ui| {
@@ -116,8 +122,8 @@ impl Editor {
         egui::ScrollArea::vertical()
             .id_salt(("selected-layer-inspector", &self.selected))
             .max_height(ui.available_height())
-            .auto_shrink([false, false])
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .auto_shrink([false, true])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
             .show(ui, |ui| {
                 self.show_selected_inspector(ui, compact);
                 if let Some(response) = ui
@@ -135,5 +141,18 @@ impl Editor {
                     response.scroll_to_me(None);
                 }
             });
+        // Resolve after layout, but paint behind the controls. Expanded forms
+        // grow naturally up to the available height, then scroll in place.
+        let panel = egui::Rect::from_min_max(
+            bounds.min,
+            egui::pos2(
+                bounds.right(),
+                (ui.min_rect().bottom() + 12.0).min(bounds.bottom()),
+            ),
+        );
+        ui.painter().set(
+            background,
+            egui::Shape::rect_filled(panel, 6, crate::brand::SURFACE),
+        );
     }
 }

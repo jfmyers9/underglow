@@ -318,17 +318,10 @@ fn workspace_primary_controls_and_complete_keyboard_are_reachable_at_real_sizes(
             let layers = visible(&frame, "Layers");
             assert!(layers.left() < canvas_top.left());
         }
-        if size == WIDE_SIZE {
-            assert!(
-                heading.left() > canvas_bottom.right(),
-                "wide inspector alongside keyboard"
-            );
-        } else {
-            assert!(
-                heading.top() > canvas_bottom.bottom(),
-                "normal and compact inspector below keyboard"
-            );
-        }
+        assert!(
+            heading.top() > canvas_bottom.bottom(),
+            "inspector stays below the keyboard at every width"
+        );
         let draft = app.setup_editor.draft.clone().unwrap();
         harness.click("Save", None, |ctx| app.show_lighting(ctx));
         assert!(
@@ -393,6 +386,84 @@ fn workspace_inspector_scroll_preserves_pinned_canvas_save_and_selected_context(
         assert_eq!(app.setup_editor.draft, draft);
         assert_eq!(app.setup_editor.selected, selected);
         assert!(app.setup_editor.preview.mode == setup_preview::Mode::InputDemo);
+        assert!(incoming.try_recv().is_err());
+    }
+}
+
+#[test]
+fn widening_the_window_keeps_the_inspector_under_the_keyboard_without_an_empty_column() {
+    let (mut app, incoming) = app();
+    app.setup_editor
+        .preview
+        .set_mode(setup_preview::Mode::Scenario);
+    let mut harness = Harness::new(DEFAULT_SIZE);
+    harness.settle(|ctx| app.show_lighting(ctx));
+    let draft = app.setup_editor.draft.clone();
+    let applied = app.setup_editor.applied.clone();
+    let selected = app.setup_editor.selected.clone();
+    let frozen = app.setup_editor.preview.frame().clone();
+    let clock = app.setup_editor.preview.evaluation_now();
+    let mut inspector_top: Option<f32> = None;
+    // Cross the removed side-inspector breakpoint in both directions, then
+    // exercise genuinely large windows rather than only the 1280px fixture.
+    for width in [
+        940.0, 1200.0, 1220.0, 1240.0, 1280.0, 1600.0, 1920.0, 1240.0, 1200.0, 940.0,
+    ] {
+        harness.resize(egui::vec2(width, 850.0));
+        let frame = harness.settle(|ctx| app.show_lighting(ctx));
+        let inspector = frame
+            .texts()
+            .into_iter()
+            .find(|text| text.text == "Layer actions")
+            .unwrap()
+            .clip;
+        let rail = frame
+            .texts()
+            .into_iter()
+            .find(|text| text.text == "Layers")
+            .unwrap()
+            .clip;
+        let canvas = keyboard_region(&frame);
+        let controls = visible(&frame, "More…");
+        assert!(inspector.top() > controls.bottom());
+        assert!(
+            inspector.top() - controls.bottom() < 32.0,
+            "no unused vertical canvas below preview controls at width {width}"
+        );
+        assert!((inspector.left() - canvas.left()).abs() < 1.0);
+        assert!((inspector.width() - canvas.width()).abs() < 1.0);
+        assert!(
+            inspector.height() > 350.0 && 850.0 - inspector.bottom() < 16.0,
+            "remaining height belongs to the inspector"
+        );
+        assert!(inspector.right() - rail.left() <= 902.0);
+        assert!(
+            ((rail.left() + inspector.right()) / 2.0 - width / 2.0).abs() < 1.0,
+            "extra width becomes balanced margins"
+        );
+        if let Some(top) = inspector_top {
+            assert!(
+                (inspector.top() - top).abs() < 1.0,
+                "widening must not relocate the inspector"
+            );
+        }
+        inspector_top = Some(inspector.top());
+        for label in [
+            "Esc",
+            "F1",
+            "→",
+            "View",
+            "Select keys",
+            "Inspect key",
+            "Save",
+        ] {
+            visible(&frame, label);
+        }
+        assert_eq!(app.setup_editor.draft, draft);
+        assert_eq!(app.setup_editor.applied, applied);
+        assert_eq!(app.setup_editor.selected, selected);
+        assert_eq!(app.setup_editor.preview.frame(), &frozen);
+        assert_eq!(app.setup_editor.preview.evaluation_now(), clock);
         assert!(incoming.try_recv().is_err());
     }
 }
@@ -904,7 +975,7 @@ fn layer_rail_matches_inspector_surface_and_selection_does_not_edit_or_move_the_
                 shape.kind == "rect"
                     && shape.fill == Some(brand::SURFACE.to_array())
                     && shape.bounds[2] - shape.bounds[0] == 1820
-                    && shape.bounds[3] - shape.bounds[1] > 4000
+                    && shape.bounds[3] - shape.bounds[1] > 1000
             })
             .map(|shape| rect(shape.bounds))
             .collect();
@@ -918,9 +989,13 @@ fn layer_rail_matches_inspector_surface_and_selection_does_not_edit_or_move_the_
             assert_eq!(
                 panels.len(),
                 1,
-                "dedicated full-height layer surface at {size:?}"
+                "dedicated content-sized layer surface at {size:?}"
             );
             let panel = panels[0];
+            assert!(
+                panel.height() < 200.0,
+                "two layers must not create a full-height slab"
+            );
             let header = visible_in(&frame, "Layers", Some(panel));
             assert!((header.left() - panel.left() - 12.0).abs() < 1.0);
             for name in ["Background", "Pi status"] {
@@ -980,5 +1055,131 @@ fn layer_rail_matches_inspector_surface_and_selection_does_not_edit_or_move_the_
             incoming.try_recv().is_err(),
             "navigation cannot activate or publish"
         );
+    }
+}
+
+#[test]
+fn short_panels_fit_their_content_and_expanded_settings_scroll_without_moving_the_keyboard() {
+    fn panel(frame: &workspace_test_ui::Frame, label: &str) -> egui::Rect {
+        let text = visible(frame, label);
+        frame
+            .output
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Rect(rect) = &shape.shape {
+                    (rect.fill == brand::SURFACE
+                        && rect.rect.contains_rect(text)
+                        && shape.clip_rect.contains_rect(rect.rect))
+                    .then_some(rect.rect)
+                } else {
+                    None
+                }
+            })
+            .min_by(|a, b| a.area().total_cmp(&b.area()))
+            .expect("painted content surface")
+    }
+    for size in [
+        DEFAULT_SIZE,
+        WIDE_SIZE,
+        egui::vec2(1714.0, 1378.0),
+        egui::vec2(1920.0, 1080.0),
+    ] {
+        let (mut app, incoming) = app();
+        let doc = underglow::setup_library::starter(
+            underglow::setup_library::Starter::MatrixPi,
+            "content-panels".into(),
+            "Content panels".into(),
+        )
+        .unwrap();
+        app.setup_editor = setup_editor::Editor::default();
+        app.setup_editor.load(Some(doc.clone()));
+        app.setup_editor
+            .preview
+            .set_mode(setup_preview::Mode::Scenario);
+        let mut harness = Harness::new(size);
+        let first = harness.settle(|ctx| app.show_lighting(ctx));
+        let rail = panel(&first, "Layers");
+        let inspector = panel(&first, "Layer actions");
+        assert!(rail.height() < 200.0, "a two-row panel ends below its rows");
+        let last_row = visible_in(&first, "Background", Some(rail));
+        assert!((rail.bottom() - last_row.bottom()) < 25.0);
+        for (heading, action) in [("Where", "Edit keys"), ("When", "Edit condition")] {
+            let title = visible(&first, heading);
+            let action = visible(&first, action);
+            assert!(
+                action.left() - title.right() < 24.0,
+                "actions stay with their sections"
+            );
+        }
+        let canvas = keyboard_region(&first);
+        assert!(
+            (canvas.width() - 702.0).abs() < 1.0,
+            "700px column plus its pane inset: {canvas:?}"
+        );
+        // The first physical key begins 0.5 keyboard units inside the board.
+        let esc = key(&first, "Esc");
+        assert!(
+            esc.left() - canvas.left() < 40.0,
+            "the board is not floating in a wider form column"
+        );
+        if size.y > 1000.0 {
+            let last = visible(&first, "Technical details");
+            assert!(
+                inspector.bottom() - last.bottom() < 24.0,
+                "no panel fill below its content"
+            );
+            assert!(
+                size.y - inspector.bottom() > 100.0,
+                "unused height stays outside the panel"
+            );
+            let frozen = app.setup_editor.preview.frame().clone();
+            let keys = [key(&first, "Esc"), key(&first, "→")];
+            harness.click("Edit keys", None, |ctx| app.show_lighting(ctx));
+            for label in [
+                "Selection options",
+                "Edit condition",
+                "Layer mixing & transitions",
+            ] {
+                click_workspace_control(&mut harness, &mut app, label);
+            }
+            // Start at the top before testing genuine overflow scrolling.
+            for _ in 0..30 {
+                harness.wheel(
+                    egui::pos2(inspector.center().x, inspector.top() + 100.0),
+                    egui::vec2(0.0, 500.0),
+                    |ctx| app.show_lighting(ctx),
+                );
+            }
+            let expanded = harness.settle(|ctx| app.show_lighting(ctx));
+            let grown = panel(&expanded, "Layer actions");
+            assert!(
+                grown.height() > inspector.height() + 100.0,
+                "expanded controls grow the panel"
+            );
+            let viewport = visible(&expanded, "Layer actions");
+            for _ in 0..30 {
+                harness.wheel(
+                    egui::pos2(grown.center().x, grown.bottom() - 20.0),
+                    egui::vec2(0.0, -150.0),
+                    |ctx| app.show_lighting(ctx),
+                );
+            }
+            let scrolled = harness.settle(|ctx| app.show_lighting(ctx));
+            assert_eq!([key(&scrolled, "Esc"), key(&scrolled, "→")], keys);
+            assert_eq!(visible(&scrolled, "Layer actions"), viewport);
+            assert!(
+                !scrolled
+                    .texts()
+                    .iter()
+                    .any(|text| text.text == "Where" && text.fully_visible()),
+                "overflow really scrolls"
+            );
+            assert_eq!(app.setup_editor.preview.frame(), &frozen);
+        }
+        assert_eq!(app.setup_editor.draft.as_ref(), Some(&doc));
+        assert_eq!(app.setup_editor.applied.as_ref(), Some(&doc));
+        assert!(!app.setup_editor.dirty);
+        assert!(incoming.try_recv().is_err());
     }
 }

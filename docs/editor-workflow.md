@@ -20,12 +20,12 @@ being displayed by the keyboard.
 
 ## Workspace
 
-Use real production fonts and three responsive compositions:
+Use real production fonts and a stable keyboard-over-inspector composition:
 
 | Window | Layout |
 | --- | --- |
-| 1280×800 | Readable layer rail, generous keyboard canvas, right inspector |
-| 940×850 | Layer rail beside a larger keyboard with the inspector below |
+| 1280×800 and wider | Centered 902px workspace; short Layers panel beside aligned keyboard and content-sized settings |
+| 940×850 | Same composition; panels grow only with their content |
 | 620×640 | Layer picker, pinned keyboard/testing strip, scrolling inspector |
 
 The quiet header owns setup identity/switching, save state and the one Save

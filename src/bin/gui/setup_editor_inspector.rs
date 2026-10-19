@@ -110,9 +110,7 @@ impl Editor {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Looks").strong().size(14.0));
                         self.behaviors.show_inline_editing_picker(ui, &edited);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            self.behaviors.show_appearance_menu(ui, &mut edited);
-                        });
+                        self.behaviors.show_appearance_menu(ui, &mut edited);
                     });
                     self.behaviors.show_appearance_fields(ui, &mut edited);
                 } else {

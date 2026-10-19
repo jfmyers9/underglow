@@ -167,7 +167,7 @@ pub fn field<R>(ui: &mut Ui, label: &str, control: impl FnOnce(&mut Ui) -> R) ->
 pub fn section_heading(ui: &mut Ui, title: &str, action: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(title).strong().size(14.0));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), action);
+        action(ui);
     });
 }
 

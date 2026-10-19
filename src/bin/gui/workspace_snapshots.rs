@@ -121,7 +121,14 @@ fn export_preview_controls_snapshots() {
             .expect("set UNDERGLOW_PREVIEW_CONTROLS_SNAPSHOTS to an explicit directory"),
     );
     std::fs::create_dir_all(&destination).unwrap();
-    for size in [[940, 850], [620, 640], [1280, 800]] {
+    for size in [
+        [940, 850],
+        [620, 640],
+        [1280, 800],
+        [1600, 900],
+        [1920, 1080],
+        [1714, 1378],
+    ] {
         for state in [
             "real",
             "choices",
@@ -130,6 +137,7 @@ fn export_preview_controls_snapshots() {
             "advanced",
             "select-keys",
             "inspect-key",
+            "expanded",
         ] {
             let (mut app, incoming) = state_fixture("normal");
             app.setup_editor
@@ -144,6 +152,16 @@ fn export_preview_controls_snapshots() {
                 _ => None,
             } {
                 capture_click_label(&mut capture, &mut harness, &mut app, label);
+            }
+            if state == "expanded" {
+                for label in [
+                    "Edit keys",
+                    "Selection options",
+                    "Edit condition",
+                    "Layer mixing & transitions",
+                ] {
+                    capture_click_label(&mut capture, &mut harness, &mut app, label);
+                }
             }
             if matches!(state, "choices" | "simulating") {
                 capture_click_label(&mut capture, &mut harness, &mut app, "Simulate activity…");

@@ -529,9 +529,15 @@ fn quiet_layer_names_show_keyboard_focus_on_the_row_not_a_text_box() {
         for _ in 0..40 {
             let frame = key(&mut harness, &mut app, egui::Key::Tab, false);
             let response = focused(&harness, &frame);
+            let rail = frame
+                .texts()
+                .into_iter()
+                .find(|text| text.text == "Layers")
+                .unwrap()
+                .clip;
             let name = frame.texts().into_iter().find(|text| {
                 matches!(text.text.as_str(), "Background" | "Pi status")
-                    && text.rect.left() < 200.0
+                    && rail.contains_rect(text.rect)
                     && response.rect.contains_rect(text.rect)
             });
             if name.is_none() {

@@ -45,9 +45,12 @@ Save → explicitly enable lighting**. For hardware-free development, use
 - The fixed header shows the setup, **Saved / Unsaved changes**, the one **Save**
   action and keyboard-lighting state. **Start engine / Resume lighting / Pause
   lighting** controls physical output separately.
-- At 940×850, layers sit beside a larger keyboard with the inspector below it.
-  At 1280×800, the inspector moves to the right; at 620×640, use the **Layer**
-  picker and scrolling inspector below the pinned keyboard/testing strip.
+- Layer controls stay directly below the pinned keyboard/testing strip at every
+  width. Wider windows keep the layer rail beside this column and center a
+  bounded workspace rather than moving the inspector into a side column.
+  The keyboard and form share a 700px column. Layers and settings panels fit
+  their content, growing when expanded and scrolling only on overflow.
+  At 620×640, use the **Layer** picker instead of the rail.
   Resizing or visiting Connections preserves the draft and selected layer.
 
 ### Create and customize

@@ -536,11 +536,7 @@ fn responsive_geometry_keeps_a_large_keyboard_pinned_above_the_scrolling_inspect
                 "normal and wide keyboards use their canvas: {face}"
             );
         }
-        if size == WIDE_SIZE {
-            assert!(inspector.clip.left() > keys.last().unwrap().0.right());
-        } else {
-            assert!(inspector.clip.top() > keys.last().unwrap().0.bottom());
-        }
+        assert!(inspector.clip.top() > keys.last().unwrap().0.bottom());
         for text in frame.texts().iter().filter(|t| {
             ["Esc", "F1", "Shift", "Enter"].contains(&t.text.as_str())
                 && !inspector.clip.contains(t.rect.center())

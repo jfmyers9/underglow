@@ -51,12 +51,15 @@ Validate the actual available width and font/control fit. Approximate budgets:
 
 | Window | Composition | Main dimensions |
 | --- | --- | --- |
-| 1280×800 | Layers / canvas / right inspector | 184px rail, 320px inspector, 16px gaps, keyboard up to 700px |
-| 940×850 | Layers beside canvas; inspector below keyboard | 184px rail, 16px gap, main area about 716px |
+| 1280×800 and wider | Short layer panel beside keyboard with content-sized inspector below | Centered workspace up to 902px, 184px rail, 16px gap, aligned 700px keyboard/form column |
+| 940×850 | Same stable keyboard-over-inspector composition | Same width cap; no wide-layout switch |
 | 620×640 | Layer picker / pinned canvas / scrolling inspector | Header ≤100px; picker about 34px; pinned canvas about 280–295px |
 
-Use roughly 1200px available width for three columns and 760px for a persistent
-layer rail; settle precise thresholds from actual captures. At minimum size,
+Use 760px available width for a persistent layer rail. Keep the inspector below
+the keyboard at every width; never reserve a full-height keyboard column beside
+it. Panel surfaces fit their content and grow when expanded, scrolling only when
+they exceed the available height. Width beyond 902px becomes balanced workspace
+margins. Keep section actions next to their headings. At minimum size,
 keep a genuinely usable inspector viewport (at least the existing 175px pane
 regression) rather than shrinking keys or placing controls beyond the window.
 The keyboard retains the existing ≥18px key-face regression. Increase tiny
@@ -72,7 +75,8 @@ tooltips and do not invent unsupported Fn/light-bar mappings.
   primary action. Native output controls retain existing guards.
 - Give the Layers rail the inspector's surface color, 6px corners and 12px
   inset. Keep Layers / Add layer and the stack-order hint pinned above a quiet
-  divider; only the rows scroll. The compact layer picker stays unchanged.
+  divider; only the rows scroll. Fit the surface to the rows until overflow.
+  The compact layer picker stays unchanged.
 - Use consistent 32px layer rows and full-row selection, hover and keyboard-focus
   cues; names must not have an extra button-shaped highlight. Preserve the native
   enable control and overflow menu.

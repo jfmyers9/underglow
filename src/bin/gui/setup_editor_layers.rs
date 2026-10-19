@@ -131,7 +131,7 @@ impl Editor {
             return;
         };
         let bounds = ui.max_rect();
-        ui.painter().rect_filled(bounds, 6, crate::brand::SURFACE);
+        let background = ui.painter().add(egui::Shape::Noop);
         let mut content = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("layer-list-surface")
@@ -154,7 +154,7 @@ impl Editor {
         egui::ScrollArea::vertical()
             .id_salt("layer-list")
             .max_height(ui.available_height())
-            .auto_shrink([false, false])
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
                 for layer in doc.layers.iter().rev() {
@@ -252,5 +252,16 @@ impl Editor {
                     response.scroll_to_me(None);
                 }
             });
+        let panel = egui::Rect::from_min_max(
+            bounds.min,
+            egui::pos2(
+                bounds.right(),
+                (ui.min_rect().bottom() + 12.0).min(bounds.bottom()),
+            ),
+        );
+        ui.painter().set(
+            background,
+            egui::Shape::rect_filled(panel, 6, crate::brand::SURFACE),
+        );
     }
 }
